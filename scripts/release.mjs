@@ -51,9 +51,16 @@ const output = (executable, args, options = {}) => {
 };
 
 const statusFiles = () => {
-  const value = output('git', ['status', '--porcelain']);
+  const value = execFileSync('git', ['status', '--porcelain'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   if (!value) return [];
-  return value.split('\n').map(line => line.slice(3));
+  return value
+    .split('\n')
+    .filter(Boolean)
+    .map(line => line.slice(3));
 };
 
 const hasOnlyReleaseFiles = files =>
