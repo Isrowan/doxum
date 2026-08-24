@@ -1,0 +1,59 @@
+{
+  "name": "@doxa/react",
+  "version": "0.1.2",
+  "private": false,
+  "license": "MIT",
+  "description": "React adapter for the Doxa typed document runtime.",
+  "type": "module",
+  "keywords": [
+    "document",
+    "react",
+    "state",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RealRong/Doxa.git",
+    "directory": "react"
+  },
+  "homepage": "https://github.com/RealRong/Doxa#readme",
+  "bugs": {
+    "url": "https://github.com/RealRong/Doxa/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "dependencies": {
+    "@doxa/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/react-test-renderer": "^19.1.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-test-renderer": "19.2.4"
+  },
+  "scripts": {
+    "build": "tsdown --config tsdown.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false
+}

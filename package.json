@@ -1,0 +1,33 @@
+{
+  "name": "doxa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Doxa is a typed runtime for complex mutable documents.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.5",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
+    "bench": "pnpm --filter @doxa/core run bench",
+    "profile": "pnpm --filter @doxa/core run profile",
+    "format": "prettier --write --ignore-unknown .",
+    "format:check": "prettier --check --ignore-unknown .",
+    "lint": "eslint .",
+    "clean": "pnpm -r exec rimraf dist",
+    "release": "node scripts/release.mjs",
+    "release:resume": "node scripts/release.mjs --resume"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "prettier": "^3.6.2",
+    "rimraf": "^6.1.3",
+    "tsdown": "^0.21.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.43.0",
+    "vitest": "^4.0.16"
+  }
+}

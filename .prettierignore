@@ -1,0 +1,6 @@
+node_modules
+core/dist
+react/dist
+coverage
+pnpm-lock.yaml
+pnpm-workspace.yaml
