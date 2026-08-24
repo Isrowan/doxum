@@ -1,6 +1,6 @@
-# Doxa 模式参考
+# Doxum 模式参考
 
-实现 Doxa 应用代码时阅读本页。它按能保持 runtime 模型正确的决策组织，而不是机械穷举所有导出符号。
+实现 Doxum 应用代码时阅读本页。它按能保持 runtime 模型正确的决策组织，而不是机械穷举所有导出符号。
 
 ## 按修改语义建模数据
 
@@ -20,7 +20,7 @@
 当顺序对产品可见时使用 table。不要用 map 加另一份 ids array 表示顺序：这会产生两套 mutation protocol 和两个顺序来源。list 只适合每个条目都有稳定、唯一应用 key 的情形；不能把当前 index 当作 `keyOf`。
 
 ```ts
-import { field, list, map, object, schema, table, tree } from '@doxa/core';
+import { field, list, map, object, schema, table, tree } from 'doxum';
 
 type Tag = { id: string; name: string };
 
@@ -63,11 +63,11 @@ function completeTask(id: string) {
 }
 ```
 
-`tx.report` 不会拒绝 transaction，适合 warning、审计反馈或伴随合法 commit 的应用消息。`tx.reject` 会中止 transaction，并让外层调用者得到 rejected result。两者都不能替代 malformed operation 的处理：引擎失败由 Doxa 提供的 `MutationIssue` 表示。
+`tx.report` 不会拒绝 transaction，适合 warning、审计反馈或伴随合法 commit 的应用消息。`tx.reject` 会中止 transaction，并让外层调用者得到 rejected result。两者都不能替代 malformed operation 的处理：引擎失败由 Doxum 提供的 `MutationIssue` 表示。
 
 ## 在一个边界应用外部 operation
 
-将序列化、授权、网络排序和冲突策略集中在应用 adapter 中。adapter 判断一个 batch 可以应用后，再把完整 batch 交给 Doxa。
+将序列化、授权、网络排序和冲突策略集中在应用 adapter 中。adapter 判断一个 batch 可以应用后，再把完整 batch 交给 Doxum。
 
 ```ts
 async function receiveRemote(batch: unknown) {
@@ -85,7 +85,7 @@ async function receiveRemote(batch: unknown) {
 }
 ```
 
-上面的断言只应存在于真正接受未知运行时输入的动态边界；不要把 operation type 放宽到整个应用。Doxa 仍会在发布 commit 前校验 malformed envelope 与语义错误。
+上面的断言只应存在于真正接受未知运行时输入的动态边界；不要把 operation type 放宽到整个应用。Doxum 仍会在发布 commit 前校验 malformed envelope 与语义错误。
 
 `replace` 只用于新的、可信的 canonical snapshot。它会产生 reset impact 并使 local history 失效，不是表达微小变更的便捷写法。
 
@@ -108,7 +108,7 @@ table 与 list 共用同一套 `DocumentAnchor` 词汇：
 }
 ```
 
-不要在应用代码中计算 index，而应使用 anchor。它表达领域位置，让 Doxa 校验缺失的引用，并让 table、list 与 operation replay 语义保持一致。
+不要在应用代码中计算 index，而应使用 anchor。它表达领域位置，让 Doxum 校验缺失的引用，并让 table、list 与 operation replay 语义保持一致。
 
 ```ts
 runtime.update(tx => {
@@ -120,7 +120,7 @@ runtime.update(tx => {
 
 ## 将 tree 视为一个整体不变量
 
-Doxa tree 要么为空，要么存在唯一且连通的 root。`nodes` 必须维护双向 parent/child 关系、无重复 child、全量可达与无环。root replace 会校验完整 snapshot；本地 writer 会以增量方式维持该不变量。
+Doxum tree 要么为空，要么存在唯一且连通的 root。`nodes` 必须维护双向 parent/child 关系、无重复 child、全量可达与无环。root replace 会校验完整 snapshot；本地 writer 会以增量方式维持该不变量。
 
 ```ts
 runtime.update(tx => {
@@ -202,7 +202,7 @@ const noteCount = createMaterializedView(runtime, {
 });
 ```
 
-局部增量逻辑无法安全处理一个 commit 时，返回 `rebuild`。后创建的 view 可以在 `sources` 中声明更早创建的 view；Doxa 会按创建顺序处理该图，并在外部 listener 看到 commit 前将其 flush 完成。
+局部增量逻辑无法安全处理一个 commit 时，返回 `rebuild`。后创建的 view 可以在 `sources` 中声明更早创建的 view；Doxum 会按创建顺序处理该图，并在外部 listener 看到 commit 前将其 flush 完成。
 
 ## 在 React 中绑定读模型
 
@@ -233,7 +233,7 @@ function UndoButton() {
 }
 ```
 
-selector 应保持纯粹：读取 Doxa state 并计算结果即可；不要在 selector 执行中写入、手动订阅或发起 I/O。
+selector 应保持纯粹：读取 Doxum state 并计算结果即可；不要在 selector 执行中写入、手动订阅或发起 I/O。
 
 ## 测试真正发生变化的行为
 

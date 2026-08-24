@@ -24,7 +24,7 @@ export const accessOf = <TSchema extends DocumentSchema>(
   runtime: DocumentRuntime<TSchema>
 ): RuntimeAccessState<TSchema> => {
   const state = states.get(runtime as object);
-  if (!state) throw new Error('Unknown Doxa runtime.');
+  if (!state) throw new Error('Unknown Doxum runtime.');
   return state as RuntimeAccessState<TSchema>;
 };
 

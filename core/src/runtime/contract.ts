@@ -18,7 +18,7 @@ export class DocumentReentrancyError extends Error {
 
 export class DocumentDisposedError extends Error {
   constructor() {
-    super('Doxa runtime has been disposed.');
+    super('Doxum runtime has been disposed.');
     this.name = 'DocumentDisposedError';
   }
 }

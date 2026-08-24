@@ -1,8 +1,8 @@
-# Doxa Runtime 使用指南
+# Doxum Runtime 使用指南
 
-这是 Doxa 面向任务的公开使用指南。它说明如何借助 `@doxa/core` 建模、读取、修改、观察和派生一个内存文档，以及如何通过 `@doxa/react` 将这些读模型接入 React。
+这是 Doxum 面向任务的公开使用指南。它说明如何借助 `doxum` 建模、读取、修改、观察和派生一个内存文档，以及如何通过 `doxum/react` 将这些读模型接入 React。
 
-Doxa 有意保持本地化：它负责类型化文档状态、原子修改、历史记录、影响范围、订阅和派生视图。持久化、网络顺序、授权和冲突解决由应用负责。
+Doxum 有意保持本地化：它负责类型化文档状态、原子修改、历史记录、影响范围、订阅和派生视图。持久化、网络顺序、授权和冲突解决由应用负责。
 
 ## 先选择正确入口
 
@@ -27,7 +27,7 @@ Doxa 有意保持本地化：它负责类型化文档状态、原子修改、历
 schema 同时定义文档的 TypeScript 结构，以及 writer、operation、selector 和 subscription 共用的权威地址模型。只定义一次，并让它靠近所描述的领域。
 
 ```ts
-import { createDocument, field, object, schema, table } from '@doxa/core';
+import { createDocument, field, object, schema, table } from 'doxum';
 
 const task = object({
   title: field<string>(),
@@ -42,7 +42,7 @@ const taskSchema = schema({
 const runtime = createDocument({
   schema: taskSchema,
   initial: {
-    title: 'Launch Doxa',
+    title: 'Launch Doxum',
     tasks: {
       ids: ['write-guide'],
       byId: {
@@ -60,7 +60,7 @@ const runtime = createDocument({
 runtime 不会暴露可变的 canonical document，应通过回调读取：
 
 ```ts
-import { select } from '@doxa/core';
+import { select } from 'doxum';
 
 const openTitles = select(runtime, read =>
   read.tasks.ids().flatMap(id => {
@@ -108,7 +108,7 @@ if (result.status === 'committed') {
 
 一次 update 是同步且原子的：
 
-- writer 产生语义上无效的 operation 时，Doxa 回滚整个 session，并以 `MutationIssue` 返回 `status: 'rejected'`。
+- writer 产生语义上无效的 operation 时，Doxum 回滚整个 session，并以 `MutationIssue` 返回 `status: 'rejected'`。
 - `tx.reject(...)` 回滚并返回应用层的 `DocumentDiagnostic`。
 - 普通 `throw` 同样回滚，但错误会继续抛给调用方。
 - 净变化为零时，返回 `status: 'unchanged'`，且不会发布 commit。
@@ -121,12 +121,12 @@ if (result.status === 'committed') {
 
 ```ts
 runtime.update(tx => {
-  tx.write.title.set('Ship Doxa');
+  tx.write.title.set('Ship Doxum');
   tx.write.tasks.create(
     { id: 'release', value: { title: 'Publish the package', completed: false } },
     { after: 'write-guide' }
   );
-  tx.write.tasks.item('release').title.set('Publish @doxa/core');
+  tx.write.tasks.item('release').title.set('Publish doxum');
   tx.write.tasks.move('release', { at: 'start' });
   tx.write.tasks.remove('write-guide');
 });
@@ -136,7 +136,7 @@ table 支持 `create`、`item`、`remove` 和 `move`。map 与之相同，但没
 
 ## 在边界回放 operation
 
-来自持久化、网络适配器或其他外部边界的 operation batch 应通过 `apply` 回放。Doxa 会在 mutation code 看到数据前解码未知 operation payload，按 schema 解析每个地址，并原子地执行整个 batch。
+来自持久化、网络适配器或其他外部边界的 operation batch 应通过 `apply` 回放。Doxum 会在 mutation code 看到数据前解码未知 operation payload，按 schema 解析每个地址，并原子地执行整个 batch。
 
 ```ts
 const result = runtime.apply([{ type: 'field.set', at: ['title'], value: 'Restored title' }], {
@@ -150,7 +150,7 @@ if (result.status === 'rejected') {
 }
 ```
 
-外部 operation 输入即便在 TypeScript 中看似合法，也应视作不可信。不要在 Doxa 之外再写一套 path parser，也不要以局部回放方式自行校验 operation。远端 commit 与每次 `replace` 都会建立新的基线，因此会使本地 undo/redo history 失效。
+外部 operation 输入即便在 TypeScript 中看似合法，也应视作不可信。不要在 Doxum 之外再写一套 path parser，也不要以局部回放方式自行校验 operation。远端 commit 与每次 `replace` 都会建立新的基线，因此会使本地 undo/redo history 失效。
 
 ## 理解结果与 history
 
@@ -196,7 +196,7 @@ value selector 使用 `commit.impact.affects(target)`；table 或 map selector �
 `createCollectionView` 将一个 table 或 map 映射为稳定的 ids、缓存的 `item(id)` readable 和惰性 `all` 数组；在可能的情况下只更新受影响的条目。
 
 ```ts
-import { createCollectionView } from '@doxa/core';
+import { createCollectionView } from 'doxum';
 
 const taskTitles = createCollectionView({
   runtime,
@@ -212,10 +212,10 @@ taskTitles.all.current();
 
 ## React 集成
 
-`@doxa/react` 基于 `useSyncExternalStore` 与 Doxa 读取依赖。组件只会在 commit 可能影响其 selector 读取结果时重新渲染。
+`doxum/react` 基于 `useSyncExternalStore` 与 Doxum 读取依赖。组件只会在 commit 可能影响其 selector 读取结果时重新渲染。
 
 ```tsx
-import { useDocumentSelector } from '@doxa/react';
+import { useDocumentSelector } from 'doxum/react';
 
 function OpenTaskCount() {
   const count = useDocumentSelector(

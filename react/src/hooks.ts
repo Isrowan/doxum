@@ -7,9 +7,9 @@ import type {
   LocalHistory,
   OperationResult,
   Readable,
-} from '@doxa/core';
-import { target } from '@doxa/core';
-import { track } from '@doxa/core/integration';
+} from 'doxum';
+import { target } from 'doxum';
+import { track } from 'doxum/integration';
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 
 export type DocumentSelectorOptions<TResult> = {

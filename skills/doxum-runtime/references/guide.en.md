@@ -1,10 +1,10 @@
-# Doxa Runtime Guide
+# Doxum Runtime Guide
 
-This is the task-oriented public guide for Doxa. It describes how to model,
+This is the task-oriented public guide for Doxum. It describes how to model,
 read, mutate, observe, and project one in-memory document with
-`@doxa/core`, and how to bind those read models with `@doxa/react`.
+`doxum`, and how to bind those read models with `doxum/react`.
 
-Doxa is deliberately local. It owns typed document state, atomic mutation,
+Doxum is deliberately local. It owns typed document state, atomic mutation,
 history, impact, subscriptions, and derived views. Your application owns
 persistence, network ordering, authorization, and conflict resolution.
 
@@ -34,7 +34,7 @@ address model for writers, operations, selectors, and subscriptions. Define it
 once and keep it close to the domain it describes.
 
 ```ts
-import { createDocument, field, object, schema, table } from '@doxa/core';
+import { createDocument, field, object, schema, table } from 'doxum';
 
 const task = object({
   title: field<string>(),
@@ -49,7 +49,7 @@ const taskSchema = schema({
 const runtime = createDocument({
   schema: taskSchema,
   initial: {
-    title: 'Launch Doxa',
+    title: 'Launch Doxum',
     tasks: {
       ids: ['write-guide'],
       byId: {
@@ -72,7 +72,7 @@ guidance.
 The runtime does not expose its mutable document. Read through a callback:
 
 ```ts
-import { select } from '@doxa/core';
+import { select } from 'doxum';
 
 const openTitles = select(runtime, read =>
   read.tasks.ids().flatMap(id => {
@@ -124,7 +124,7 @@ if (result.status === 'committed') {
 
 An update is synchronous and atomic:
 
-- If a writer emits a semantically invalid operation, Doxa rolls back the
+- If a writer emits a semantically invalid operation, Doxum rolls back the
   entire session and returns `status: 'rejected'` with `MutationIssue` values.
 - `tx.reject(...)` rolls back and returns your application
   `DocumentDiagnostic` values.
@@ -142,12 +142,12 @@ schema domain:
 
 ```ts
 runtime.update(tx => {
-  tx.write.title.set('Ship Doxa');
+  tx.write.title.set('Ship Doxum');
   tx.write.tasks.create(
     { id: 'release', value: { title: 'Publish the package', completed: false } },
     { after: 'write-guide' }
   );
-  tx.write.tasks.item('release').title.set('Publish @doxa/core');
+  tx.write.tasks.item('release').title.set('Publish doxum');
   tx.write.tasks.move('release', { at: 'start' });
   tx.write.tasks.remove('write-guide');
 });
@@ -162,7 +162,7 @@ collection and tree examples.
 ## Replay operations at the boundary
 
 Use `apply` for operation batches that came from persistence, a network
-adapter, or another external boundary. Doxa decodes unknown operation payloads
+adapter, or another external boundary. Doxum decodes unknown operation payloads
 before mutation code observes them, resolves every address against the schema,
 and applies the batch atomically.
 
@@ -180,7 +180,7 @@ if (result.status === 'rejected') {
 
 Treat external operation input as untrusted, even if TypeScript types make it
 look valid. Do not write a second path parser or validate operations by
-partially replaying them outside Doxa. A remote commit and every `replace`
+partially replaying them outside Doxum. A remote commit and every `replace`
 establish a new baseline, so they invalidate local undo/redo history.
 
 ## Interpret results and history
@@ -237,7 +237,7 @@ comparison helpers in application modules.
 readables, and a lazy `all` array. It updates only affected entries where possible.
 
 ```ts
-import { createCollectionView } from '@doxa/core';
+import { createCollectionView } from 'doxum';
 
 const taskTitles = createCollectionView({
   runtime,
@@ -256,11 +256,11 @@ Dispose every view when its owning feature is disposed.
 
 ## React integration
 
-`@doxa/react` uses `useSyncExternalStore` and tracked Doxa dependencies. A
+`doxum/react` uses `useSyncExternalStore` and tracked Doxum dependencies. A
 component re-renders only for commits that can affect the selector it read.
 
 ```tsx
-import { useDocumentSelector } from '@doxa/react';
+import { useDocumentSelector } from 'doxum/react';
 
 function OpenTaskCount() {
   const count = useDocumentSelector(

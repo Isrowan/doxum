@@ -1,4 +1,0 @@
-interface:
-  display_name: 'Doxa Runtime'
-  short_description: 'Build, modify, and review Doxa runtime code safely.'
-  default_prompt: 'Use $doxa-runtime to implement this Doxa feature while preserving its runtime invariants.'

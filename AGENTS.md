@@ -1,10 +1,10 @@
-# Doxa Contribution Guide
+# Doxum Contribution Guide
 
 ## Repository Layout
 
-- `core` is the framework-neutral Doxa runtime and is the owner of schema,
+- `core` is the framework-neutral Doxum runtime and is the owner of schema,
   operations, canonical document state, history, impact, and projections.
-- `react` is a one-way adapter from `@doxa/core` to React. Do not import React
+- `react` is a one-way adapter from `doxum` to React. Do not import React
   or UI concepts into `core`.
 - `core/dist` and `react/dist` are build output. Change `src` and rebuild; do
   not edit generated files.
@@ -73,8 +73,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
 
 ## Public API And Packaging
 
-- `@doxa/core` and `@doxa/react` are the public package identities. Keep their
-  exports and internal imports aligned with `dist` output.
+- `doxum` is the public package identity. Keep its root, `integration`, and
+  `react` exports aligned with `dist` output.
 - Public behavior is exported deliberately from package entry points. Keep
   internal runtime plumbing unexported unless it forms a stable external
   contract.

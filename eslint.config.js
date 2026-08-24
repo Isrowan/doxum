@@ -14,17 +14,17 @@ export default tseslint.config(
           paths: [
             {
               name: 'react',
-              message: '@doxa/core must remain framework-neutral.',
+              message: 'Doxum core must remain framework-neutral.',
             },
             {
               name: 'react-dom',
-              message: '@doxa/core must remain framework-neutral.',
+              message: 'Doxum core must remain framework-neutral.',
             },
           ],
           patterns: [
             {
               group: ['react/*', 'react-dom/*'],
-              message: '@doxa/core must remain framework-neutral.',
+              message: 'Doxum core must remain framework-neutral.',
             },
           ],
         },
@@ -39,8 +39,8 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['@doxa/core/src/*', '../core/*', '../../core/*'],
-              message: '@doxa/react must depend on @doxa/core public exports.',
+              group: ['doxum/src/*', '../core/*', '../../core/*'],
+              message: 'doxum/react must depend on doxum public exports.',
             },
           ],
         },

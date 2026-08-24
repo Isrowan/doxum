@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Doxum Runtime'
+  short_description: 'Build, modify, and review Doxum runtime code safely.'
+  default_prompt: 'Use $doxum-runtime to implement this Doxum feature while preserving its runtime invariants.'

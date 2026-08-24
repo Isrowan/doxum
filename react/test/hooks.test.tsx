@@ -1,7 +1,7 @@
 import React, { StrictMode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import { createDocument, field, object, schema } from '@doxa/core';
+import { createDocument, field, object, schema } from 'doxum';
 import { useDocumentSelector } from '../src';
 
 const documentSchema = schema({
@@ -11,7 +11,7 @@ const documentSchema = schema({
 const text = (value: unknown) => React.createElement('span', null, String(value));
 const valueOf = (renderer: ReactTestRenderer) => renderer.root.findByType('span').children.join('');
 
-describe('@doxa/react', () => {
+describe('doxum/react', () => {
   it('tracks selector dependencies and ignores unrelated commits', () => {
     const runtime = createDocument({
       schema: documentSchema,

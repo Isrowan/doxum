@@ -1,4 +1,4 @@
-# Doxa Runtime 不变量
+# Doxum Runtime 不变量
 
 修改或审查 mutation、addressing、impact、notification、history、tree 或 projection 前应阅读本页。这些是设计边界，而不是可选的代码风格。
 
@@ -23,7 +23,7 @@ transaction callback 必须同步。reader 与 writer 只在 callback 执行期�
 
 | 问题                                      | 所有者           | 结果形状                                        | 正确处理方式                                 |
 | ----------------------------------------- | ---------------- | ----------------------------------------------- | -------------------------------------------- |
-| malformed、无法解析或语义无效的 operation | Doxa engine      | `source: 'mutation'` 的 `MutationIssue`         | 检查 rejected operation/transaction result。 |
+| malformed、无法解析或语义无效的 operation | Doxum engine     | `source: 'mutation'` 的 `MutationIssue`         | 检查 rejected operation/transaction result。 |
 | 应用业务规则或校验                        | Application      | `source: 'application'` 的 `DocumentDiagnostic` | 使用 `tx.report` 或 `tx.reject`。            |
 | callback 缺陷或意外失败                   | Application code | rollback 后抛出的 error                         | 在 transaction 外修复或处理异常。            |
 | processor、flush 或 listener 失败         | Observer         | committed result 上的 `observerErrors`          | 修复 observer；不要重放已提交的 write。      |
@@ -56,7 +56,7 @@ decode -> normalize -> resolve -> execute -> inverse + journal -> publish
 - 已发布的 diagnostic 与 selector address 会被复制并冻结。
 - tree replacement snapshot 会先校验并 clone。
 
-不要承诺 Doxa 有意进行 payload transfer 的地方存在深度不可变性。调用方若要保留可变所有权，应在提交前自行 clone。
+不要承诺 Doxum 有意进行 payload transfer 的地方存在深度不可变性。调用方若要保留可变所有权，应在提交前自行 clone。
 
 ## Tree 完整性是整个 document 的完整性
 
@@ -84,7 +84,7 @@ update 与 notification 窗口中禁止写入。processor、flush 和 listener e
 
 ## Framework 与产品边界
 
-`core` 必须保持 framework-neutral。`@doxa/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。Doxa 有意不决定 persistence format、网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
+`core` 必须保持 framework-neutral。`doxum/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。Doxum 有意不决定 persistence format、网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
 
 ## 改动检查清单
 

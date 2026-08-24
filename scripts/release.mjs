@@ -4,21 +4,21 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const packages = [
-  {
-    name: '@doxa/core',
-    directory: 'core',
-    requiredFiles: ['LICENSE', 'README.md', 'dist/index.cjs', 'dist/index.d.ts', 'dist/index.js'],
-  },
-  {
-    name: '@doxa/react',
-    directory: 'react',
-    requiredFiles: ['LICENSE', 'README.md', 'dist/index.cjs', 'dist/index.d.ts', 'dist/index.js'],
-  },
-];
-const releaseFiles = [
-  ...packages.map(entry => `${entry.directory}/package.json`),
-  'pnpm-lock.yaml',
+const packageName = 'doxum';
+const releaseFiles = ['package.json', 'pnpm-lock.yaml'];
+const requiredFiles = [
+  'LICENSE',
+  'README.md',
+  'dist/index.cjs',
+  'dist/index.d.ts',
+  'dist/index.js',
+  'dist/integration.cjs',
+  'dist/integration.d.ts',
+  'dist/integration.js',
+  'dist/react.cjs',
+  'dist/react.d.ts',
+  'dist/react.js',
+  'skills/doxum-runtime/SKILL.md',
 ];
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -59,28 +59,23 @@ const statusFiles = () => {
 const hasOnlyReleaseFiles = files =>
   files.length > 0 && files.every(file => releaseFiles.includes(file));
 
-const manifestPath = entry => resolve(root, entry.directory, 'package.json');
-const readManifest = entry => JSON.parse(readFileSync(manifestPath(entry), 'utf8'));
-const writeManifest = (entry, manifest) =>
-  writeFileSync(manifestPath(entry), `${JSON.stringify(manifest, null, 2)}\n`);
+const manifestPath = resolve(root, 'package.json');
+const readManifest = () => JSON.parse(readFileSync(manifestPath, 'utf8'));
+const writeManifest = manifest =>
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-const lockstepVersion = manifests => {
-  const versions = manifests.map(entry => entry.manifest.version);
-  if (!versions.every(version => typeof version === 'string' && stableVersion.test(version)))
-    fail('Published packages must start from the same stable semver version.');
-  if (!versions.every(version => version === versions[0]))
-    fail(`Published packages must use one lockstep version; found ${versions.join(', ')}.`);
-  return versions[0];
+const lockstepVersion = manifest => {
+  if (typeof manifest.version !== 'string' || !stableVersion.test(manifest.version))
+    fail('doxum must start from a stable semver version.');
+  return manifest.version;
 };
 
-const releaseVersion = manifests => {
-  const [major, minor, patch] = lockstepVersion(manifests).split('.').map(Number);
+const releaseVersion = manifest => {
+  const [major, minor, patch] = lockstepVersion(manifest).split('.').map(Number);
   return `${major}.${minor}.${patch + 1}`;
 };
 
 const assertRepository = ({ resume }) => {
-  const rootManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
-  if (rootManifest.private !== true) fail('The workspace root must remain private.');
   const branch = output('git', ['branch', '--show-current']);
   if (branch !== 'main')
     fail(`Releases must run from main; current branch is '${branch || 'detached'}'.`);
@@ -98,56 +93,45 @@ const assertRepository = ({ resume }) => {
   command('npm', ['whoami']);
 };
 
-const assertManifestContract = manifests => {
-  for (const { entry, manifest } of manifests) {
-    if (manifest.name !== entry.name)
-      fail(`${entry.directory}/package.json must name ${entry.name}.`);
-    if (manifest.private !== false) fail(`${entry.name} must be public.`);
-    if (manifest.license !== 'MIT') fail(`${entry.name} must declare the MIT license.`);
-    if (manifest.publishConfig?.access !== 'public')
-      fail(`${entry.name} must declare publishConfig.access as public.`);
-    if (!manifest.description || !manifest.repository || !manifest.homepage || !manifest.bugs)
-      fail(`${entry.name} is missing required npm metadata.`);
-  }
-  const react = manifests.find(({ entry }) => entry.name === '@doxa/react')?.manifest;
-  if (react?.dependencies?.['@doxa/core'] !== 'workspace:*')
-    fail('@doxa/react must depend on @doxa/core through workspace:*.');
+const assertManifestContract = manifest => {
+  if (manifest.name !== packageName) fail(`package.json must name ${packageName}.`);
+  if (manifest.private !== false) fail(`${packageName} must be public.`);
+  if (manifest.license !== 'MIT') fail(`${packageName} must declare the MIT license.`);
+  if (manifest.publishConfig?.access !== 'public')
+    fail(`${packageName} must declare publishConfig.access as public.`);
+  if (!manifest.description || !manifest.repository || !manifest.homepage || !manifest.bugs)
+    fail(`${packageName} is missing required npm metadata.`);
+  if (manifest.peerDependencies?.react !== '>=18')
+    fail(`${packageName} must declare React as a peer dependency.`);
+  if (manifest.peerDependenciesMeta?.react?.optional !== true)
+    fail(`${packageName} must mark its React peer dependency as optional.`);
+  if (!manifest.exports?.['./react']) fail(`${packageName} must export ./react.`);
 };
 
-const packedFiles = entry => {
-  const result = output('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
-    cwd: resolve(root, entry.directory),
-  });
+const assertTarball = () => {
+  const result = output('npm', ['pack', '--dry-run', '--json', '--ignore-scripts']);
   const [tarball] = JSON.parse(result);
   if (!tarball || !Array.isArray(tarball.files))
-    fail(`Could not inspect the ${entry.name} tarball.`);
-  return new Set(tarball.files.map(file => file.path));
+    fail(`Could not inspect the ${packageName} tarball.`);
+  const files = new Set(tarball.files.map(file => file.path));
+  for (const file of requiredFiles)
+    if (!files.has(file)) fail(`${packageName} tarball is missing '${file}'.`);
 };
 
-const assertTarballs = () => {
-  for (const entry of packages) {
-    const files = packedFiles(entry);
-    for (const file of entry.requiredFiles)
-      if (!files.has(file)) fail(`${entry.name} tarball is missing '${file}'.`);
-  }
-};
-
-const published = (name, version) => {
-  const result = spawnSync('npm', ['view', `${name}@${version}`, 'version', '--json'], {
+const published = version => {
+  const result = spawnSync('npm', ['view', `${packageName}@${version}`, 'version', '--json'], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (result.status === 0) return true;
   if (String(result.stderr).includes('E404')) return false;
-  fail(String(result.stderr).trim() || `Could not check ${name}@${version} on npm.`);
+  fail(String(result.stderr).trim() || `Could not check ${packageName}@${version} on npm.`);
 };
 
-const publish = (entry, version) => {
-  if (published(entry.name, version)) return;
+const publish = version => {
+  if (published(version)) return;
   command('pnpm', [
-    '--filter',
-    entry.name,
     'publish',
     '--access',
     'public',
@@ -172,15 +156,12 @@ const finishGitRelease = version => {
   const files = statusFiles();
   if (files.length > 0) {
     if (!hasOnlyReleaseFiles(files))
-      fail('Release commit may only contain package manifests and pnpm-lock.yaml.');
+      fail('Release commit may only contain package.json and pnpm-lock.yaml.');
     command('git', ['add', '--', ...releaseFiles]);
     command('git', ['commit', '-m', `release: v${version}`]);
   } else {
-    for (const entry of packages) {
-      const manifest = JSON.parse(output('git', ['show', `HEAD:${entry.directory}/package.json`]));
-      if (manifest.version !== version)
-        fail(`HEAD does not record ${entry.name} at the published version ${version}.`);
-    }
+    const manifest = JSON.parse(output('git', ['show', 'HEAD:package.json']));
+    if (manifest.version !== version) fail(`HEAD does not record ${packageName} at ${version}.`);
   }
   const tag = tagFor(version);
   if (!tagPointsAtHead(tag)) {
@@ -207,8 +188,8 @@ const run = () => {
     fail('Release accepts no arguments. Use pnpm release:resume only after a publish failure.');
 
   assertRepository({ resume });
-  const manifests = packages.map(entry => ({ entry, manifest: readManifest(entry) }));
-  assertManifestContract(manifests);
+  const manifest = readManifest();
+  assertManifestContract(manifest);
   let version;
   let values;
   let publishStarted = false;
@@ -217,26 +198,24 @@ const run = () => {
     if (resume) {
       const files = statusFiles();
       if (files.length > 0 && !hasOnlyReleaseFiles(files))
-        fail('Release resume only accepts the pending package manifests and pnpm-lock.yaml.');
-      version = lockstepVersion(manifests);
+        fail('Release resume only accepts the pending package.json and pnpm-lock.yaml.');
+      version = lockstepVersion(manifest);
     } else {
-      version = releaseVersion(manifests);
+      version = releaseVersion(manifest);
       values = snapshot();
-      for (const { entry, manifest } of manifests) {
-        manifest.version = version;
-        writeManifest(entry, manifest);
-      }
+      manifest.version = version;
+      writeManifest(manifest);
     }
 
     command('pnpm', ['install', '--lockfile-only']);
     command('pnpm', ['run', 'check']);
     command('pnpm', ['run', 'build']);
-    assertTarballs();
+    assertTarball();
 
     publishStarted = true;
-    for (const entry of packages) publish(entry, version);
+    publish(version);
     finishGitRelease(version);
-    process.stdout.write(`Published @doxa/core and @doxa/react at v${version}.\n`);
+    process.stdout.write(`Published ${packageName} at v${version}.\n`);
   } catch (error) {
     if (!publishStarted && values) restore(values);
     if (publishStarted)

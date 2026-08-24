@@ -32,7 +32,7 @@ type SelectorValue<T> = T extends ValueSelector<infer TValue> ? TValue : never;
 type CollectionTypes<T> =
   T extends CollectionSelector<infer TId, infer TEntry> ? { id: TId; entry: TEntry } : never;
 
-describe('mutable Doxa runtime', () => {
+describe('mutable Doxum runtime', () => {
   it('infers selector and collection types from schema paths', () => {
     const title = projectSchema.value(path => path.title);
     const name = projectSchema.value(path => path.projects.item('a').name);

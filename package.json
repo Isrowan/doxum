@@ -1,17 +1,68 @@
 {
-  "name": "doxa",
+  "name": "doxum",
   "version": "0.1.0",
-  "private": true,
-  "description": "Doxa is a typed runtime for complex mutable documents.",
+  "private": false,
+  "license": "MIT",
+  "description": "Doxum is a typed runtime for complex mutable documents.",
   "type": "module",
   "packageManager": "pnpm@9.15.5",
+  "keywords": [
+    "document",
+    "state",
+    "runtime",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Isrowan/doxum.git"
+  },
+  "homepage": "https://github.com/Isrowan/doxum#readme",
+  "bugs": {
+    "url": "https://github.com/Isrowan/doxum/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./integration": {
+      "types": "./dist/integration.d.ts",
+      "import": "./dist/integration.js",
+      "require": "./dist/integration.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    }
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "sideEffects": false,
   "scripts": {
-    "build": "pnpm -r run build",
-    "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "build": "tsdown --config tsdown.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
-    "bench": "pnpm --filter @doxa/core run bench",
-    "profile": "pnpm --filter @doxa/core run profile",
+    "bench": "vitest bench --config vitest.bench.config.ts",
+    "profile": "node --expose-gc --import tsx core/bench/profile.ts",
     "format": "prettier --write --ignore-unknown .",
     "format:check": "prettier --check --ignore-unknown .",
     "lint": "eslint .",
@@ -28,6 +79,12 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.43.0",
-    "vitest": "^4.0.16"
+    "vitest": "^4.0.16",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/react-test-renderer": "^19.1.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-test-renderer": "19.2.4"
   }
 }

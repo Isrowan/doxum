@@ -8,8 +8,9 @@
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,
     "paths": {
-      "@doxa/core": ["./core/src/index.ts"],
-      "@doxa/core/integration": ["./core/src/integration.ts"]
+      "doxum": ["./core/src/index.ts"],
+      "doxum/integration": ["./core/src/integration.ts"],
+      "doxum/react": ["./react/src/index.ts"]
     }
   }
 }

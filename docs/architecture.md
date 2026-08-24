@@ -1,8 +1,8 @@
-# Doxa Architecture
+# Doxum Architecture
 
 ## Purpose
 
-Doxa owns the in-memory lifecycle of one typed document. It turns mutations
+Doxum owns the in-memory lifecycle of one typed document. It turns mutations
 into reversible commits and makes their impact available to history,
 subscribers, projections, and framework integrations. It does not own
 persistence, synchronization, access control, or business authorization.
@@ -149,7 +149,7 @@ depend on earlier views from the same runtime.
 
 ## React Boundary
 
-`@doxa/react` uses `track` to calculate selector dependencies, installs a
+`doxum/react` uses `track` to calculate selector dependencies, installs a
 matching runtime subscription, and delegates subscription consistency to
 React's `useSyncExternalStore`. Its selector cache preserves a previous
 reference when the configured equality function says the semantic result is
@@ -166,4 +166,4 @@ Keep integrations outside core:
 - Business validation belongs inside a transaction through `report` and
   `reject`, or in an application layer that decides whether to start one.
 - UI-specific derived state should be a React state concern or a `Readable`,
-  not another mutable copy of the Doxa document.
+  not another mutable copy of the Doxum document.

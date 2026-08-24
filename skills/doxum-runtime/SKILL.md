@@ -1,15 +1,15 @@
 ---
-name: doxa-runtime
-description: 'Use @doxa/core and @doxa/react to design, build, or review Doxa document runtime code. Apply for schemas, mutations, operations, views, subscriptions, and React integration.'
+name: doxum-runtime
+description: 'Use doxum and doxum/react to design, build, or review Doxum document runtime code. Apply for schemas, mutations, operations, views, subscriptions, and React integration.'
 ---
 
-# Doxa Runtime
+# Doxum Runtime
 
-Use this skill when a task creates, modifies, reviews, or explains Doxa code.
-It applies to `@doxa/core`, `@doxa/react`, and application code that uses
-Doxa's schema, runtime, transaction, operation, impact, projection, or React
+Use this skill when a task creates, modifies, reviews, or explains Doxum code.
+It applies to `doxum`, `doxum/react`, and application code that uses
+Doxum's schema, runtime, transaction, operation, impact, projection, or React
 APIs. Do not apply it to unrelated TypeScript or React work merely because the
-application happens to contain a Doxa runtime.
+application happens to contain a Doxum runtime.
 
 ## Read the right reference
 
@@ -23,7 +23,7 @@ application happens to contain a Doxa runtime.
   [中文不变量](references/invariants.zh-CN.md) before changing mutation,
   addressing, impact, notification, history, tree, or derived-view behavior.
 
-## Required Doxa decisions
+## Required Doxum decisions
 
 - Treat `createDocument` as the only write authority for canonical document
   state. Application writes use `runtime.update`; replayed external operations
@@ -40,9 +40,9 @@ application happens to contain a Doxa runtime.
   rolls back and is rethrown.
 - A committed result with `observerErrors` is still committed. Do not retry its
   write as if canonical state had been rolled back.
-- Keep `core` framework-neutral. React code belongs behind `@doxa/react` and
+- Keep `core` framework-neutral. React code belongs behind `doxum/react` and
   must not make `core` import UI concepts.
-- Doxa does not define persistence, synchronization, authorization, or
+- Doxum does not define persistence, synchronization, authorization, or
   conflict resolution. Keep those policies in the application boundary before
   `apply` or `replace`.
 

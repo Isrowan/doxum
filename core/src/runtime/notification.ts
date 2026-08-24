@@ -58,7 +58,7 @@ const notificationOf = <TSchema extends DocumentSchema>(
   runtime: DocumentRuntime<TSchema>
 ): RuntimeNotification<TSchema> => {
   const value = notifications.get(runtime as object);
-  if (!value) throw new Error('Unknown Doxa runtime.');
+  if (!value) throw new Error('Unknown Doxum runtime.');
   return value as RuntimeNotification<TSchema>;
 };
 

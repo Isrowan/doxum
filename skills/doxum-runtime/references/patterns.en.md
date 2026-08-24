@@ -1,6 +1,6 @@
-# Doxa Patterns
+# Doxum Patterns
 
-Read this reference when implementing Doxa application code. It is organized by
+Read this reference when implementing Doxum application code. It is organized by
 the decisions that preserve the runtime model, rather than by an exhaustive
 list of exported symbols.
 
@@ -25,7 +25,7 @@ Use a list only when every item has a stable, unique application key; never use
 the current index as `keyOf`.
 
 ```ts
-import { field, list, map, object, schema, table, tree } from '@doxa/core';
+import { field, list, map, object, schema, table, tree } from 'doxum';
 
 type Tag = { id: string; name: string };
 
@@ -74,13 +74,13 @@ function completeTask(id: string) {
 audit-oriented feedback, or application messages that should accompany a valid
 commit. `tx.reject` stops the transaction by returning a rejected result to the
 outer caller. Neither is a substitute for malformed-operation handling:
-engine failures are `MutationIssue` values supplied by Doxa.
+engine failures are `MutationIssue` values supplied by Doxum.
 
 ## Apply external operations at one boundary
 
 Keep serialization, authorization, network ordering, and conflict policy in an
 application adapter. Once that adapter decides a batch may be applied, pass the
-whole batch to Doxa.
+whole batch to Doxum.
 
 ```ts
 async function receiveRemote(batch: unknown) {
@@ -100,7 +100,7 @@ async function receiveRemote(batch: unknown) {
 
 The cast above belongs only at a dynamic boundary whose runtime input is
 actually unknown. Keep it there; do not loosen operation types throughout the
-application. Doxa still validates malformed envelopes and semantic invalidity
+application. Doxum still validates malformed envelopes and semantic invalidity
 before publishing a commit.
 
 Use `replace` only for a new, trusted canonical snapshot. It produces reset
@@ -127,7 +127,7 @@ Tables and lists use one `DocumentAnchor` vocabulary:
 ```
 
 Use anchors instead of calculating indices in application code. They name the
-domain position, let Doxa validate missing references, and keep table, list,
+domain position, let Doxum validate missing references, and keep table, list,
 and operation replay semantics aligned.
 
 ```ts
@@ -140,7 +140,7 @@ runtime.update(tx => {
 
 ## Work with trees as one invariant
 
-A Doxa tree is either empty or a single connected root. Its `nodes` maintain
+A Doxum tree is either empty or a single connected root. Its `nodes` maintain
 reciprocal parent/child links, unique children, full reachability, and no
 cycles. Root replacement validates the whole snapshot; local writers preserve
 the invariant incrementally.
@@ -240,7 +240,7 @@ const noteCount = createMaterializedView(runtime, {
 ```
 
 Return `rebuild` if local incremental logic cannot safely handle a commit.
-Views created later can name earlier views in `sources`; Doxa processes that
+Views created later can name earlier views in `sources`; Doxum processes that
 graph in creation order and flushes it before external listeners observe the
 commit.
 
@@ -275,7 +275,7 @@ function UndoButton() {
 }
 ```
 
-Keep selectors pure. They should read Doxa state and calculate a value; do not
+Keep selectors pure. They should read Doxum state and calculate a value; do not
 write, subscribe manually, or cause I/O while a selector is running.
 
 ## Test the behavior that changes

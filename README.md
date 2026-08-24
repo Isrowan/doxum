@@ -1,6 +1,6 @@
-# Doxa
+# Doxum
 
-Doxa is a typed TypeScript runtime for complex mutable documents. It is built
+Doxum is a typed TypeScript runtime for complex mutable documents. It is built
 for editors and product surfaces that need structured state, atomic updates,
 undo/redo, precise change notifications, and incremental derived data.
 
@@ -11,46 +11,51 @@ and conflict resolution are intentionally application concerns.
 
 ## Packages
 
-- `@doxa/core` defines schemas, mutations, history, subscriptions, and views.
-- `@doxa/react` binds Doxa read models to React 18+ with fine-grained external
+- `doxum` defines schemas, mutations, history, subscriptions, and views.
+- `doxum/react` binds Doxum read models to React 18+ with fine-grained external
   store subscriptions.
 
 ## Install
 
 ```sh
-pnpm add @doxa/core
-pnpm add @doxa/react react
+pnpm add doxum
+```
+
+For React bindings, install React alongside Doxum and import from `doxum/react`:
+
+```sh
+pnpm add doxum react
 ```
 
 Use the package manager that owns your application if it is not pnpm.
 
 ## AI Development Guide
 
-Doxa ships a task-oriented guide for AI assistants and application developers.
-It is the recommended reference for using `@doxa/core` and `@doxa/react` in
-place of a generated, symbol-by-symbol API reference. The guide is included in
-the published `@doxa/core` package at `skills/doxa-runtime`.
+Doxum ships a task-oriented guide for AI assistants and application developers.
+It is the recommended reference for using `doxum` and `doxum/react` in place
+of a generated, symbol-by-symbol API reference. The guide is included in the
+published `doxum` package at `skills/doxum-runtime`.
 
-- [English guide](core/skills/doxa-runtime/references/guide.en.md)
-- [中文指南](core/skills/doxa-runtime/references/guide.zh-CN.md)
-- [English patterns](core/skills/doxa-runtime/references/patterns.en.md)
-- [中文模式参考](core/skills/doxa-runtime/references/patterns.zh-CN.md)
-- [English invariants](core/skills/doxa-runtime/references/invariants.en.md)
-- [中文不变量](core/skills/doxa-runtime/references/invariants.zh-CN.md)
-- [AI skill instructions](core/skills/doxa-runtime/SKILL.md)
+- [English guide](skills/doxum-runtime/references/guide.en.md)
+- [中文指南](skills/doxum-runtime/references/guide.zh-CN.md)
+- [English patterns](skills/doxum-runtime/references/patterns.en.md)
+- [中文模式参考](skills/doxum-runtime/references/patterns.zh-CN.md)
+- [English invariants](skills/doxum-runtime/references/invariants.en.md)
+- [中文不变量](skills/doxum-runtime/references/invariants.zh-CN.md)
+- [AI skill instructions](skills/doxum-runtime/SKILL.md)
 
 Tools that support `SKILL.md` can install or link the complete
-`doxa-runtime` directory as the `$doxa-runtime` skill. The files are also
+`doxum-runtime` directory as the `$doxum-runtime` skill. The files are also
 ordinary Markdown: read the guide matching your working language, then use the
 patterns and invariants references for the task at hand.
 
 ## Quick Start
 
-Define the document shape once. Doxa infers the immutable document value and
+Define the document shape once. Doxum infers the immutable document value and
 the reader and writer APIs from that schema.
 
 ```ts
-import { createDocument, field, object, schema, table } from '@doxa/core';
+import { createDocument, field, object, schema, table } from 'doxum';
 
 const task = object({
   title: field<string>(),
@@ -98,7 +103,7 @@ Use `select` for a one-off typed read. Use schema selectors and `subscribe`
 when a non-React consumer needs only relevant commits.
 
 ```ts
-import { select } from '@doxa/core';
+import { select } from 'doxum';
 
 const taskTitles = select(runtime, read =>
   read.tasks.ids().map(id => read.tasks.get(id)?.title.get())
@@ -119,7 +124,7 @@ removed, updated, and reordered entries.
 
 ## History And Operations
 
-Local history is enabled by default with a capacity of 100 commits. Doxa
+Local history is enabled by default with a capacity of 100 commits. Doxum
 records inverse operations, so undo and redo follow the same mutation path as
 ordinary updates.
 
@@ -127,11 +132,11 @@ ordinary updates.
 runtime.history.undo();
 runtime.history.redo();
 
-runtime.apply([{ type: 'field.set', at: ['title'], value: 'Ship Doxa' }]);
+runtime.apply([{ type: 'field.set', at: ['title'], value: 'Ship Doxum' }]);
 ```
 
 `apply` is the boundary for replaying operations from persistence or a network
-adapter. Doxa does not provide those adapters. A `replace` or a commit marked
+adapter. Doxum does not provide those adapters. A `replace` or a commit marked
 as `remote` invalidates local history because its prior inverse sequence is no
 longer authoritative.
 
@@ -146,7 +151,7 @@ already settled.
 when a matching commit changes the selected result.
 
 ```tsx
-import { useDocumentSelector } from '@doxa/react';
+import { useDocumentSelector } from 'doxum/react';
 
 function TaskCount() {
   const count = useDocumentSelector(runtime, read => read.tasks.ids().length);
@@ -154,7 +159,7 @@ function TaskCount() {
 }
 ```
 
-Use `useReadable` and `useHistory` with Doxa collection
+Use `useReadable` and `useHistory` with Doxum collection
 views, materialized views, and history state.
 
 ## Derived Views
@@ -162,17 +167,17 @@ views, materialized views, and history state.
 `createCollectionView` incrementally projects one table or map into `ids`,
 `all`, and cached `item(id)` readables. `createMaterializedView` is for
 indexes and aggregates that need custom incremental update logic. A materialized
-view may depend on earlier views from the same runtime; Doxa settles that graph
+view may depend on earlier views from the same runtime; Doxum settles that graph
 before notifying external listeners.
 
 ## Data Ownership
 
-Doxa clones the initial document. Structural values supplied through operations
+Doxum clones the initial document. Structural values supplied through operations
 are transferred to its mutable canonical document, while published commit and
 history payloads are immutable snapshots. Treat data passed to an update as
-owned by Doxa after the call unless the value is intentionally immutable.
+owned by Doxum after the call unless the value is intentionally immutable.
 
-Tree replacement snapshots are an exception: Doxa validates and clones the
+Tree replacement snapshots are an exception: Doxum validates and clones the
 tree structure so a caller cannot later corrupt its single-root, connected,
 acyclic representation. Tree insert and move operations preserve the same
 invariant.
@@ -192,9 +197,8 @@ See [the architecture guide](docs/architecture.md) for the runtime pipeline and
 
 ## Release
 
-`@doxa/core` and `@doxa/react` are released together at the same version. A
-normal release always increments the patch version and publishes Core before
-React:
+`doxum` is released as one package. A normal release always increments the
+patch version:
 
 ```sh
 pnpm release
@@ -202,7 +206,7 @@ pnpm release
 
 Run it only from a clean, synchronized `main` branch. The command verifies the
 logged-in npm account, updates both public package versions, runs the complete
-check and build, verifies the publish tarballs, publishes both packages, then
+check and build, verifies the publish tarball, publishes the package, then
 creates and pushes a `vX.Y.Z` release commit and tag.
 
 If npm accepts one package but the command cannot finish, it preserves the

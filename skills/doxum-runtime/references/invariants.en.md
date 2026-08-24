@@ -1,4 +1,4 @@
-# Doxa Runtime Invariants
+# Doxum Runtime Invariants
 
 Read this reference before changing or reviewing mutation, addressing, impact,
 notifications, history, trees, or projections. These are design boundaries,
@@ -34,7 +34,7 @@ is a returned result, not an exception protocol.
 
 | Problem                                                  | Owner            | Result shape                                      | Correct response                                        |
 | -------------------------------------------------------- | ---------------- | ------------------------------------------------- | ------------------------------------------------------- |
-| Malformed, unresolved, or semantically invalid operation | Doxa engine      | `MutationIssue` with `source: 'mutation'`         | Inspect a `rejected` operation/transaction result.      |
+| Malformed, unresolved, or semantically invalid operation | Doxum engine     | `MutationIssue` with `source: 'mutation'`         | Inspect a `rejected` operation/transaction result.      |
 | Application business rule or validation                  | Application      | `DocumentDiagnostic` with `source: 'application'` | Use `tx.report` or `tx.reject`.                         |
 | Callback defect or unexpected failure                    | Application code | thrown error after rollback                       | Fix or handle the exception outside the transaction.    |
 | Processor, flush, or listener failure                    | Observer         | `observerErrors` on a committed result            | Repair the observer; do not replay the committed write. |
@@ -81,7 +81,7 @@ fixtures, migrations, and intentional replay.
 - Published diagnostics and selector addresses are copied and frozen.
 - Tree replacement snapshots are validated and cloned.
 
-Do not promise deep immutability where Doxa intentionally transfers a payload.
+Do not promise deep immutability where Doxum intentionally transfers a payload.
 When a caller needs to retain mutable ownership, clone it before submission.
 
 ## Tree integrity is whole-document integrity
@@ -127,8 +127,8 @@ views and subscriptions with their owner.
 
 ## Framework and product boundaries
 
-`core` is framework-neutral. `@doxa/react` is a one-way adapter from core to
-React; core must not import React or UI concepts. Doxa intentionally does not
+`core` is framework-neutral. `doxum/react` is a one-way adapter from core to
+React; core must not import React or UI concepts. Doxum intentionally does not
 decide persistence formats, network synchronization, authorization, retry,
 acknowledgement, ordering, or conflict resolution. An application must make
 those decisions before applying operations or replacing a snapshot.
