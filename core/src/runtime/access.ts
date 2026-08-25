@@ -3,7 +3,7 @@ import type { DocumentReader } from '../access/reader';
 import { documentReader } from '../access/reader';
 import type { DependencyTracker } from '../access/dependency';
 import { DocumentDisposedError } from './contract';
-import type { DocumentRuntime } from './contract';
+import type { DocumentReadable } from './contract';
 
 export type RuntimeAccessState<TSchema extends DocumentSchema> = {
   readonly schema: TSchema;
@@ -14,14 +14,14 @@ export type RuntimeAccessState<TSchema extends DocumentSchema> = {
 const states = new WeakMap<object, RuntimeAccessState<DocumentSchema>>();
 
 export const bindRuntimeAccess = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   state: RuntimeAccessState<TSchema>
 ): void => {
   states.set(runtime as object, state as RuntimeAccessState<DocumentSchema>);
 };
 
 export const accessOf = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>
+  runtime: DocumentReadable<TSchema>
 ): RuntimeAccessState<TSchema> => {
   const state = states.get(runtime as object);
   if (!state) throw new Error('Unknown Doxum runtime.');
@@ -29,15 +29,15 @@ export const accessOf = <TSchema extends DocumentSchema>(
 };
 
 export const schemaOf = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>
+  runtime: DocumentReadable<TSchema>
 ): TSchema => accessOf(runtime).schema;
 
 export const documentOf = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>
+  runtime: DocumentReadable<TSchema>
 ): ReadonlyDocument<TSchema> => accessOf(runtime).document;
 
 export const readWith = <TSchema extends DocumentSchema, TResult>(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   run: (read: DocumentReader<TSchema>) => TResult,
   dependencies?: DependencyTracker
 ): TResult => {

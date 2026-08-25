@@ -37,6 +37,11 @@
       "import": "./dist/integration.js",
       "require": "./dist/integration.cjs"
     },
+    "./local-sync": {
+      "types": "./dist/local-sync.d.ts",
+      "import": "./dist/local-sync.js",
+      "require": "./dist/local-sync.cjs"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js",
@@ -72,19 +77,20 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/react-test-renderer": "^19.1.0",
     "eslint": "^9.35.0",
+    "fake-indexeddb": "^6.2.5",
     "prettier": "^3.6.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-test-renderer": "19.2.4",
     "rimraf": "^6.1.3",
     "tsdown": "^0.21.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.43.0",
-    "vitest": "^4.0.16",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@types/react-test-renderer": "^19.1.0",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-test-renderer": "19.2.4"
+    "vitest": "^4.0.16"
   }
 }

@@ -2,6 +2,7 @@ import type { DocumentSchema, ImpactTarget } from '../schema';
 import type {
   CommitListener,
   DocumentCommit,
+  DocumentReadable,
   DocumentRuntime,
   RuntimeProcessor,
   Unsubscribe,
@@ -39,7 +40,7 @@ const notifications = new WeakMap<object, RuntimeNotification<DocumentSchema>>()
 const key = (value: ImpactTarget<unknown>): BucketKey => target.bucket(value) ?? ROOT_BUCKET;
 
 export const createNotification = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>
+  runtime: DocumentReadable<TSchema>
 ): RuntimeNotification<TSchema> => {
   const notification: RuntimeNotification<TSchema> = {
     root: new Set(),
@@ -55,15 +56,25 @@ export const createNotification = <TSchema extends DocumentSchema>(
 };
 
 const notificationOf = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>
+  runtime: DocumentReadable<TSchema>
 ): RuntimeNotification<TSchema> => {
   const value = notifications.get(runtime as object);
   if (!value) throw new Error('Unknown Doxum runtime.');
   return value as RuntimeNotification<TSchema>;
 };
 
+export const shareNotification = <TSchema extends DocumentSchema>(
+  source: DocumentRuntime<TSchema>,
+  target: DocumentReadable<TSchema>
+): void => {
+  notifications.set(
+    target as object,
+    notificationOf(source) as RuntimeNotification<DocumentSchema>
+  );
+};
+
 export const registerProcessor = <TSchema extends DocumentSchema>(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   processor: RuntimeProcessor<TSchema>
 ): Unsubscribe => {
   const notification = notificationOf(runtime);

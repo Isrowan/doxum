@@ -4,7 +4,7 @@
 
 ## 唯一的 canonical 写入权威
 
-`createDocument` 拥有 canonical mutable document state。新的 mutation 行为只能通过 `runtime.update`、`runtime.apply` 或 `runtime.replace`。writer 只是向 mutation session 产生 operation，而不是绕过 runtime 修改对象的出口。
+`createDocument` 拥有 canonical mutable document state。canonical write 只能通过 `runtime.update`、`runtime.apply` 或 `runtime.replace`。`runtime.prepare` 可以复用同一 mutation session 产生随后会回滚的未提交 operation batch，供 durable adapter 使用；它不是第二条写入路径。writer 只是向 mutation session 产生 operation，而不是绕过 runtime 修改对象的出口。
 
 绝不能新增：
 
@@ -84,7 +84,7 @@ update 与 notification 窗口中禁止写入。processor、flush 和 listener e
 
 ## Framework 与产品边界
 
-`core` 必须保持 framework-neutral。`doxum/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。Doxum 有意不决定 persistence format、网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
+`core` 必须保持 framework-neutral。`doxum/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。`doxum/local-sync` 是可选浏览器 owner，负责 IndexedDB durability、Web Lock serialization 与 BroadcastChannel catch-up；应用代码不能绕过其 async session 写入内部 runtime。Doxum 有意不决定网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
 
 ## 改动检查清单
 

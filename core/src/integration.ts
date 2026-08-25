@@ -1,6 +1,6 @@
 import type { DocumentSchema, ImpactTarget } from './schema';
 import type { DocumentReader } from './access/reader';
-import type { DocumentRuntime } from './runtime/contract';
+import type { DocumentReadable } from './runtime/contract';
 import { createDependencyTracker } from './access/dependency';
 import { readWith } from './runtime/access';
 
@@ -12,7 +12,7 @@ export type TrackedSelection<TValue> = {
 // Framework adapters receive one immutable result instead of coordinating a
 // mutable collector with the reader's scoped lifetime themselves.
 export const track = <TSchema extends DocumentSchema, TValue>(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   selector: (read: DocumentReader<TSchema>) => TValue
 ): TrackedSelection<TValue> => {
   const dependencies = createDependencyTracker();

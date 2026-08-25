@@ -5,6 +5,7 @@ import type { DocumentImpact } from '../impact';
 import type { DocumentReader } from '../access/reader';
 import type { DocumentWriter } from '../access/writer';
 import type { MutationIssue } from '../mutation/issue';
+import type { CommandFootprint } from '../mutation/footprint';
 
 export type Unsubscribe = () => void;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';
@@ -60,6 +61,25 @@ export type TransactionResult<TValue, TCommit> =
       readonly issues: readonly DocumentProblem[];
       readonly revision: number;
     };
+export type PreparedUpdateResult<TValue, TSchema extends DocumentSchema> =
+  | {
+      readonly status: 'prepared';
+      readonly value: TValue;
+      readonly operations: readonly DocumentOperationUnion<TSchema>[];
+      readonly inverse: readonly DocumentOperationUnion<TSchema>[];
+      readonly impact: DocumentImpact<TSchema>;
+      readonly footprint: CommandFootprint;
+      readonly reports: readonly DocumentDiagnostic[];
+    }
+  | {
+      readonly status: 'unchanged';
+      readonly value: TValue;
+      readonly reports: readonly DocumentDiagnostic[];
+    }
+  | {
+      readonly status: 'rejected';
+      readonly issues: readonly DocumentProblem[];
+    };
 export type OperationResult<TCommit> =
   | {
       readonly status: 'committed';
@@ -99,7 +119,7 @@ export type RuntimeProcessor<TSchema extends DocumentSchema> = {
   readonly flush: () => void;
 };
 
-export type DocumentRuntime<TSchema extends DocumentSchema> = {
+export type DocumentReadable<TSchema extends DocumentSchema> = {
   readonly address: {
     readonly resolve: (address: DocumentAddress) => AddressRef | undefined;
     readonly read: (address: DocumentAddress) => unknown;
@@ -108,6 +128,14 @@ export type DocumentRuntime<TSchema extends DocumentSchema> = {
     readonly debugKey: (address: DocumentAddress) => string;
   };
   revision(): number;
+  subscribe(listener: CommitListener<TSchema>): Unsubscribe;
+  subscribe(
+    target: ImpactTarget<unknown> | readonly [ImpactTarget<unknown>, ...ImpactTarget<unknown>[]],
+    listener: CommitListener<TSchema>
+  ): Unsubscribe;
+};
+
+export type DocumentRuntime<TSchema extends DocumentSchema> = DocumentReadable<TSchema> & {
   update<TResult>(
     run: (transaction: DocumentTransaction<TSchema>) => TResult,
     options?: {
@@ -115,6 +143,9 @@ export type DocumentRuntime<TSchema extends DocumentSchema> = {
       readonly history?: boolean;
     }
   ): TransactionResult<TResult, DocumentCommit<TSchema>>;
+  prepare<TResult>(
+    run: (transaction: DocumentTransaction<TSchema>) => TResult
+  ): PreparedUpdateResult<TResult, TSchema>;
   apply(
     operations: unknown,
     options?: {
@@ -126,11 +157,7 @@ export type DocumentRuntime<TSchema extends DocumentSchema> = {
     document: ReadonlyDocument<TSchema>,
     options?: { readonly source?: Extract<CommitSource, 'system' | 'remote'> }
   ): OperationResult<DocumentCommit<TSchema>>;
-  subscribe(listener: CommitListener<TSchema>): Unsubscribe;
-  subscribe(
-    target: ImpactTarget<unknown> | readonly [ImpactTarget<unknown>, ...ImpactTarget<unknown>[]],
-    listener: CommitListener<TSchema>
-  ): Unsubscribe;
+  snapshot(): ReadonlyDocument<TSchema>;
   readonly history: LocalHistory<DocumentCommit<TSchema>>;
   dispose(): void;
 };

@@ -1,7 +1,7 @@
 import type { CollectionSelector, DocumentSchema } from '../schema';
 import type { EntityReader } from '../access/reader';
 import { readerFor } from '../access/reader';
-import type { DocumentRuntime } from '../runtime/contract';
+import type { DocumentReadable } from '../runtime/contract';
 import { documentOf, schemaOf } from '../runtime/access';
 import { nodeAt, read } from '../address';
 import { profile } from '../profile';
@@ -28,7 +28,7 @@ export const createCollectionView = <
   TEntry,
   TValue,
 >(input: {
-  readonly runtime: DocumentRuntime<TSchema>;
+  readonly runtime: DocumentReadable<TSchema>;
   readonly source: CollectionSelector<TId, TEntry>;
   readonly map: (id: TId, entry: EntityReader<TEntry>) => TValue;
   readonly isEqual?: (previous: TValue, next: TValue) => boolean;

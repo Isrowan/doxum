@@ -1,12 +1,7 @@
 import type { DocumentAddress, DocumentSchema } from '../schema';
 import type { DocumentAnchor, DocumentOperationUnion } from '../operations';
 import { profile } from '../profile';
-import {
-  isRecord,
-  isStablePayload,
-  operationOwnsStructuralPayload,
-  snapshotPayload,
-} from '../value/ownership';
+import { isRecord, isPlainObject, isStablePayload, snapshotPayload } from '../value/ownership';
 import type { MutationIssue } from './issue';
 import * as issue from './issue';
 
@@ -148,6 +143,8 @@ const ownAddress = (value: DocumentAddress): DocumentAddress => {
   return Object.freeze(value.slice());
 };
 
+const structuralPayload = (value: unknown): boolean => Array.isArray(value) || isPlainObject(value);
+
 export const normalize = <TSchema extends DocumentSchema>(
   operation: DocumentOperationUnion<TSchema>
 ): DocumentOperationUnion<TSchema> => {
@@ -161,6 +158,7 @@ export const normalize = <TSchema extends DocumentSchema>(
     entries?: readonly { readonly id: string; readonly value: unknown }[];
     ids?: readonly string[];
     positions?: readonly number[];
+    value?: unknown;
   };
   if (copy.anchor) copy.anchor = Object.freeze({ ...copy.anchor });
   if (copy.keys) copy.keys = Object.freeze([...copy.keys]);
@@ -174,10 +172,16 @@ export const normalize = <TSchema extends DocumentSchema>(
 export const publish = <TSchema extends DocumentSchema>(
   operation: DocumentOperationUnion<TSchema>
 ): DocumentOperationUnion<TSchema> => {
-  if (!operationOwnsStructuralPayload(operation)) return operation;
   if (
     operation.type === 'entity.create' &&
-    operation.entries.every(entry => isStablePayload(entry.value))
+    operation.entries.every(
+      entry => !structuralPayload(entry.value) || isStablePayload(entry.value)
+    )
+  )
+    return operation;
+  if (
+    'value' in operation &&
+    (!structuralPayload(operation.value) || isStablePayload(operation.value))
   )
     return operation;
   const copy = { ...operation } as DocumentOperationUnion<TSchema> & {
@@ -189,15 +193,26 @@ export const publish = <TSchema extends DocumentSchema>(
       copy.entries.map(entry =>
         Object.freeze({
           id: entry.id,
-          value: isStablePayload(entry.value)
-            ? entry.value
-            : snapshotPayload(entry.value, 'commit'),
+          value: structuralPayload(entry.value)
+            ? isStablePayload(entry.value)
+              ? entry.value
+              : snapshotPayload(entry.value, 'commit')
+            : entry.value,
         })
       )
     );
-  else if ('value' in copy)
+  else if ('value' in copy && structuralPayload(copy.value))
     copy.value = isStablePayload(copy.value) ? copy.value : snapshotPayload(copy.value, 'commit');
   return Object.freeze(copy);
+};
+
+// Published operation snapshots are frozen so they can be safely retained by
+// commits, history, or a persistence adapter. Replaying one must clone its
+// structural payload before it becomes canonical mutable document state.
+export const requiresPayloadCopy = (operation: DocumentOperationUnion): boolean => {
+  if (operation.type === 'entity.create')
+    return operation.entries.some(entry => isStablePayload(entry.value));
+  return 'value' in operation && isStablePayload(operation.value);
 };
 
 export const inverse = <TSchema extends DocumentSchema>(
@@ -213,8 +228,25 @@ export const inverse = <TSchema extends DocumentSchema>(
   if (copy.anchor) copy.anchor = Object.freeze({ ...copy.anchor });
   if (copy.keys) copy.keys = Object.freeze([...copy.keys]);
   if (copy.entries)
-    copy.entries = Object.freeze(copy.entries.map(entry => Object.freeze({ ...entry })));
+    copy.entries = Object.freeze(
+      copy.entries.map(entry =>
+        Object.freeze({
+          id: entry.id,
+          value: structuralPayload(entry.value)
+            ? isStablePayload(entry.value)
+              ? entry.value
+              : snapshotPayload(entry.value, 'inverse')
+            : entry.value,
+        })
+      )
+    );
   if (copy.ids) copy.ids = Object.freeze([...copy.ids]);
   if (copy.positions) copy.positions = Object.freeze([...copy.positions]);
+  if ('value' in copy && structuralPayload(copy.value)) {
+    const payload = copy as { value?: unknown };
+    payload.value = isStablePayload(payload.value)
+      ? payload.value
+      : snapshotPayload(payload.value, 'inverse');
+  }
   return Object.freeze(copy);
 };

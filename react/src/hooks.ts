@@ -1,5 +1,5 @@
 import type {
-  DocumentRuntime,
+  DocumentReadable,
   DocumentSchema,
   DocumentSelector,
   HistoryState,
@@ -18,7 +18,7 @@ export type DocumentSelectorOptions<TResult> = {
 };
 
 type SelectorCache<TSchema extends DocumentSchema, TResult> = {
-  readonly runtime: DocumentRuntime<TSchema>;
+  readonly runtime: DocumentReadable<TSchema>;
   readonly value: TResult;
   readonly targets: readonly ImpactTarget<unknown>[];
 };
@@ -35,7 +35,7 @@ const sameTargets = (
 };
 
 export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   selector: DocumentSelector<TSchema, TResult>,
   options?: DocumentSelectorOptions<TResult>
 ): TResult {

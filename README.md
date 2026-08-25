@@ -6,12 +6,17 @@ undo/redo, precise change notifications, and incremental derived data.
 
 Licensed under the [MIT License](LICENSE).
 
-It is a local in-memory runtime. Persistence, synchronization, authorization,
-and conflict resolution are intentionally application concerns.
+The `doxum` core entry is a local in-memory runtime. The optional
+`doxum/local-sync` browser adapter adds durable local editing and same-origin
+cross-tab synchronization; network collaboration, authorization, and conflict
+resolution remain separate application concerns.
 
 ## Packages
 
 - `doxum` defines schemas, mutations, history, subscriptions, and views.
+- `doxum/local-sync` provides IndexedDB persistence, Web Lock write
+  serialization, BroadcastChannel catch-up notifications, and durable local
+  undo/redo for one browser origin.
 - `doxum/react` binds Doxum read models to React 18+ with fine-grained external
   store subscriptions.
 
@@ -144,6 +149,44 @@ The returned result distinguishes `committed`, `unchanged`, and `rejected`.
 Observer failures do not turn a completed write into a rejection: committed
 results expose them in `observerErrors`, after history and canonical state have
 already settled.
+
+## Local Persistence And Cross-Tab Sync
+
+`doxum/local-sync` is an optional browser adapter for a document that only
+needs offline persistence and same-origin, cross-tab consistency. It uses
+IndexedDB as the durable checkpoint and ordered commit log, Web Locks to give a
+document one writer, and BroadcastChannel only to notify other tabs to catch up
+from IndexedDB. It does not need a server or Yjs.
+
+```ts
+import { select } from 'doxum';
+import { openLocalDocument } from 'doxum/local-sync';
+
+const local = await openLocalDocument({
+  database: 'my-app',
+  documentId: 'project-1',
+  schema: taskSchema,
+  initial: {
+    title: 'Launch',
+    tasks: { ids: [], byId: {} },
+  },
+});
+
+await local.update(tx => {
+  tx.write.title.set('Ship Doxum');
+});
+
+select(local.document, read => read.title.get());
+await local.undo();
+await local.dispose();
+```
+
+`local.document` is a read-only runtime capability, so selectors, views, and
+`doxum/react` can observe it but application code cannot bypass the durable
+write session. `local.update`, `undo`, and `redo` are asynchronous because they
+first acquire the cross-tab lock and commit to IndexedDB. Local-sync data must
+be JSON: non-JSON initial values or operation payloads are rejected before a
+document change becomes visible.
 
 ## React
 

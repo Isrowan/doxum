@@ -6,10 +6,12 @@ not optional style preferences.
 
 ## One canonical write authority
 
-`createDocument` owns canonical mutable document state. New mutation behavior
-must pass through `runtime.update`, `runtime.apply`, or `runtime.replace`.
-Writers emit operations into a mutation session; they are not a public escape
-hatch to mutate an object.
+`createDocument` owns canonical mutable document state. Canonical writes must
+pass through `runtime.update`, `runtime.apply`, or `runtime.replace`.
+`runtime.prepare` may use the same mutation session to produce a rolled-back,
+uncommitted operation batch for a durable adapter; it is not a second write
+path. Writers emit operations into a mutation session; they are not a public
+escape hatch to mutate an object.
 
 Never add:
 
@@ -128,10 +130,13 @@ views and subscriptions with their owner.
 ## Framework and product boundaries
 
 `core` is framework-neutral. `doxum/react` is a one-way adapter from core to
-React; core must not import React or UI concepts. Doxum intentionally does not
-decide persistence formats, network synchronization, authorization, retry,
-acknowledgement, ordering, or conflict resolution. An application must make
-those decisions before applying operations or replacing a snapshot.
+React; core must not import React or UI concepts. `doxum/local-sync` is the
+optional browser owner of IndexedDB durability, Web Lock serialization, and
+BroadcastChannel catch-up; application code must not bypass its async session
+by writing its internal runtime. Doxum intentionally does not decide network
+synchronization, authorization, retry, acknowledgement, ordering, or conflict
+resolution. An application must make those decisions before applying operations
+or replacing a snapshot.
 
 ## Change checklist
 

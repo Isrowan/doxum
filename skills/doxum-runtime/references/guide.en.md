@@ -1,12 +1,15 @@
 # Doxum Runtime Guide
 
 This is the task-oriented public guide for Doxum. It describes how to model,
-read, mutate, observe, and project one in-memory document with
-`doxum`, and how to bind those read models with `doxum/react`.
+read, mutate, observe, and project one in-memory document with `doxum`, persist
+one browser-origin document with `doxum/local-sync`, and bind read models with
+`doxum/react`.
 
-Doxum is deliberately local. It owns typed document state, atomic mutation,
-history, impact, subscriptions, and derived views. Your application owns
-persistence, network ordering, authorization, and conflict resolution.
+The `doxum` core entry owns typed document state, atomic mutation, history,
+impact, subscriptions, and derived views. `doxum/local-sync` is the optional
+browser adapter for IndexedDB-backed offline editing and same-origin cross-tab
+sync. Your application still owns network ordering, authorization, and conflict
+resolution.
 
 ## Choose the right entry point
 
@@ -14,6 +17,7 @@ persistence, network ordering, authorization, and conflict resolution.
 | ------------------------------------- | -------------------------------------------------------- |
 | Define document shape                 | `schema`, `field`, `object`, and collection constructors |
 | Create the canonical runtime          | `createDocument`                                         |
+| Persist and sync one browser document | `openLocalDocument` from `doxum/local-sync`              |
 | Read once                             | `select(runtime, read => ...)`                           |
 | Make local business changes           | `runtime.update(tx => ...)`                              |
 | Replay persisted or remote operations | `runtime.apply(operations, options)`                     |

@@ -1,8 +1,7 @@
-import type { DocumentOperationUnion } from '../operations';
 import { profile } from '../profile';
 
 export type CloneReason =
-  'initial' | 'canonical' | 'commit' | 'inverse' | 'reader' | 'replace' | 'journal';
+  'initial' | 'canonical' | 'commit' | 'inverse' | 'reader' | 'replace' | 'journal' | 'snapshot';
 
 const stablePayloads = new WeakSet<object>();
 
@@ -33,7 +32,7 @@ export const cloneValue = <T>(value: T, reason?: CloneReason): T => {
     for (let index = 0; index < value.length; index += 1)
       result[index] = cloneValue(value[index], reason);
     return (
-      reason === 'commit' || reason === 'inverse'
+      reason === 'commit' || reason === 'inverse' || reason === 'snapshot'
         ? markStablePayload(Object.freeze(result))
         : result
     ) as T;
@@ -49,7 +48,7 @@ export const cloneValue = <T>(value: T, reason?: CloneReason): T => {
         result[key] = cloneValue(value[key], reason);
     }
     return (
-      reason === 'commit' || reason === 'inverse'
+      reason === 'commit' || reason === 'inverse' || reason === 'snapshot'
         ? markStablePayload(Object.freeze(result))
         : result
     ) as T;
@@ -72,14 +71,6 @@ export const snapshotPayload = <T>(value: T, reason: CloneReason = 'commit'): T 
   profile.batch.payloadSnapshot(),
   ownPayload(value, reason)
 );
-
-export const operationOwnsStructuralPayload = (operation: DocumentOperationUnion): boolean =>
-  operation.type === 'variant.replace' ||
-  operation.type === 'dict.replace' ||
-  operation.type === 'entity.create' ||
-  operation.type === 'list.insert' ||
-  operation.type === 'list.replace' ||
-  operation.type === 'tree.replace';
 
 export const deepEqual = (left: unknown, right: unknown): boolean => {
   profile.clone.deepEqual();

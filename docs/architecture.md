@@ -2,10 +2,13 @@
 
 ## Purpose
 
-Doxum owns the in-memory lifecycle of one typed document. It turns mutations
-into reversible commits and makes their impact available to history,
-subscribers, projections, and framework integrations. It does not own
-persistence, synchronization, access control, or business authorization.
+The `doxum` core entry owns the in-memory lifecycle of one typed document. It
+turns mutations into reversible commits and makes their impact available to
+history, subscribers, projections, and framework integrations.
+`doxum/local-sync` is a browser adapter that owns one origin's IndexedDB
+timeline, Web Lock write serialization, and BroadcastChannel catch-up
+notifications. Core does not own network synchronization, access control, or
+business authorization.
 
 ## Module Boundaries
 
@@ -18,6 +21,7 @@ persistence, synchronization, access control, or business authorization.
 | `core/src/mutation/tree.ts`        | Tree validation, traversal, and single-root structural operations.                       |
 | `core/src/mutation/anchor.ts`      | Ordered-key and Anchor position semantics shared by table, list, and journal code.       |
 | `core/src/runtime.ts`              | Canonical document owner, transaction boundary, revision, history policy, and lifecycle. |
+| `core/src/local-sync`              | Browser durable local timeline, one-writer session, cross-tab catch-up, and actor undo.  |
 | `core/src/impact.ts`               | Commit-local path and collection impact queries.                                         |
 | `core/src/impact-target.ts`        | One address, identity, equality, and notification-bucket interpretation for targets.     |
 | `core/src/runtime/notification.ts` | Ordered processors and root/targeted commit delivery.                                    |
@@ -90,7 +94,12 @@ local invariants.
 
 `runtime.update` creates a short-lived reader and writer. Writers emit typed
 operations into one mutation session; they do not write canonical state
-directly. `runtime.apply` accepts boundary input as `unknown`; the operation
+directly. `runtime.prepare` runs the same typed mutation pipeline but always
+rolls it back: a `prepared` result has immutable forward operations, inverses,
+impact, reports, and no revision or notification. It is the boundary for a
+durable adapter that must write before making a change visible. `runtime.snapshot`
+returns an immutable, detached document value for checkpoint creation.
+`runtime.apply` accepts boundary input as `unknown`; the operation
 owner decodes it before journal, resolver, or executor code observes it. The
 session then normalizes one canonical shape, resolves it, invokes the correct
 executor, and saves inverse operations. Engine failures are closed
@@ -159,8 +168,12 @@ unchanged. Server rendering can provide an explicit `server` snapshot.
 
 Keep integrations outside core:
 
-- Persistence should store and replay `DocumentOperation` batches, or use an
-  application-defined snapshot strategy with `replace`.
+- `doxum/local-sync` stores JSON checkpoints and ordered operation batches in
+  IndexedDB. Its session performs `prepare → durable transaction → apply`,
+  serializes writers through `navigator.locks`, and treats BroadcastChannel as
+  a notification to reload the durable tail rather than as a data source.
+- Other persistence should store and replay `DocumentOperation` batches, or use
+  an application-defined snapshot strategy with `replace`.
 - Network synchronization should assign ordering, acknowledgements, retry, and
   conflict semantics before calling `apply` or `replace`.
 - Business validation belongs inside a transaction through `report` and

@@ -26,10 +26,10 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
 ): MutationSession<TSchema> => {
   const steps: AppliedStep<TSchema>[] = [];
   const journal = createChangeJournal(root);
-  let closed = false;
+  let state: 'active' | 'finished' | 'rolled-back' = 'active';
 
   const rollback = (): void => {
-    if (closed) return;
+    if (state === 'rolled-back') return;
     for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1) {
       for (const inverse of steps[stepIndex].inverse) {
         const target = resolveLocated(schema, root, inverse.at);
@@ -38,12 +38,12 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
           throw new Error(`Document rollback failed: ${result.issue.message}`);
       }
     }
-    closed = true;
+    state = 'rolled-back';
   };
 
   return {
     apply: input => {
-      if (closed) throw new Error('Mutation session is closed.');
+      if (state !== 'active') throw new Error('Mutation session is closed.');
       profile.batch.operation();
       const decoded = operation.decode(input);
       if (decoded.status === 'rejected') {
@@ -61,7 +61,12 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
       const resolved = resolveLocated(schema, root, normalized.at);
       if (resolved?.collection) profile.batch.collectionResolved();
       profile.mutation.executed();
-      const result = execute(root, normalized, resolved, options.copyPayload === true);
+      const result = execute(
+        root,
+        normalized,
+        resolved,
+        options.copyPayload === true || operation.requiresPayloadCopy(normalized)
+      );
       if (result.status === 'rejected') {
         profile.batch.rejected();
         return result.issue;
@@ -87,9 +92,9 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
       return undefined;
     },
     finish: () => {
-      if (closed) throw new Error('Mutation session is closed.');
-      closed = true;
+      if (state !== 'active') throw new Error('Mutation session is closed.');
       const changes = journal.finish();
+      state = 'finished';
       if (changes.status === 'unchanged') return { status: 'unchanged' };
 
       let inverseCount = 0;

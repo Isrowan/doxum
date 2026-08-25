@@ -4,3 +4,4 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 *.log
+COLLABORATION_DESIGN.md

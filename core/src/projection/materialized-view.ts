@@ -3,7 +3,7 @@ import type { DocumentReader } from '../access/reader';
 import { documentReader } from '../access/reader';
 import { createDependencyTracker } from '../access/dependency';
 import type { DocumentImpact } from '../impact';
-import type { CommitSource, DocumentCommit, DocumentRuntime } from '../runtime/contract';
+import type { CommitSource, DocumentCommit, DocumentReadable } from '../runtime/contract';
 import { documentOf, schemaOf } from '../runtime/access';
 import { registerProcessor } from '../runtime/notification';
 import { profile } from '../profile';
@@ -77,7 +77,7 @@ export const createMaterializedView = <
   TChange = void,
   TSources extends MaterializedSources = {},
 >(
-  runtime: DocumentRuntime<TSchema>,
+  runtime: DocumentReadable<TSchema>,
   spec: MaterializedViewSpec<TSchema, TValue, TChange, TSources>
 ): MaterializedView<TValue, TChange> => {
   const listeners = new Set<() => void>();

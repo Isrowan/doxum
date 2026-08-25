@@ -10,6 +10,7 @@
     "paths": {
       "doxum": ["./core/src/index.ts"],
       "doxum/integration": ["./core/src/integration.ts"],
+      "doxum/local-sync": ["./core/src/local-sync/index.ts"],
       "doxum/react": ["./react/src/index.ts"]
     }
   }

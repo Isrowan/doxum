@@ -4,10 +4,11 @@ import { createImpact } from './impact';
 import { createHistory } from './history';
 import { documentReader } from './access/reader';
 import { documentWriter } from './access/writer';
-import { createMutationSession, mutateOperations } from './mutation/session';
+import { createMutationSession, mutateOperations, type MutationSession } from './mutation/session';
 import type { MutationBatch } from './mutation/contract';
 import * as issue from './mutation/issue';
 import * as tree from './mutation/tree';
+import { commandFootprint } from './mutation/footprint';
 import { cloneValue, deepEqual } from './value/ownership';
 import { profile } from './profile';
 import { DocumentDisposedError, DocumentReentrancyError } from './runtime/contract';
@@ -20,6 +21,7 @@ import type {
   DocumentRuntime,
   DocumentTransaction,
   OperationResult,
+  PreparedUpdateResult,
   TransactionResult,
 } from './runtime/contract';
 import { bindRuntimeAccess } from './runtime/access';
@@ -75,6 +77,64 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     if (busy) throw new DocumentReentrancyError();
   };
 
+  const runTransaction = <TResult>(
+    session: MutationSession<TSchema>,
+    run: (transaction: DocumentTransaction<TSchema>) => TResult
+  ): { readonly value: TResult; readonly reports: readonly DocumentDiagnostic[] } => {
+    let reports: DocumentDiagnostic[] | undefined;
+    let active = true;
+    const transaction: DocumentTransaction<TSchema> = {
+      read: documentReader(
+        input.schema,
+        () => state.document,
+        () => active
+      ),
+      write: documentWriter(input.schema, operation => {
+        if (!active) throw new Error('Document writer is no longer active.');
+        const rejected = session.apply(operation);
+        if (rejected) throw new RejectedUpdate([rejected]);
+      }),
+      reject: diagnostic => {
+        throw new RejectedUpdate(
+          (Array.isArray(diagnostic) ? diagnostic : [diagnostic]).map(entry =>
+            publishDiagnostic(entry)
+          )
+        );
+      },
+      report: diagnostic => {
+        if (!active) throw new Error('Document transaction is no longer active.');
+        (reports ??= []).push(publishDiagnostic(diagnostic));
+      },
+    };
+    try {
+      const value = run(transaction);
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        typeof (value as { then?: unknown }).then === 'function'
+      )
+        throw new TypeError('Document update callback must be synchronous.');
+      return {
+        value,
+        reports: Object.freeze(reports ? reports.slice() : EMPTY),
+      };
+    } finally {
+      active = false;
+    }
+  };
+
+  const impactFor = (
+    batch: Extract<MutationBatch<TSchema>, { readonly status: 'changed' }>,
+    kind: 'operations' | 'replace'
+  ) =>
+    createImpact({
+      schema: input.schema,
+      operations: batch.operations,
+      paths: batch.paths,
+      collections: batch.collections,
+      reset: kind === 'replace',
+    });
+
   const history = createHistory<DocumentCommit<TSchema>>({
     capacity: input.history === false ? 0 : Math.max(0, input.history?.capacity ?? 100),
     revision: () => revision,
@@ -94,13 +154,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
       source,
       operations: batch.operations,
       inverse: batch.inverse,
-      impact: createImpact({
-        schema: input.schema,
-        operations: batch.operations,
-        paths: batch.paths,
-        collections: batch.collections,
-        reset: kind === 'replace',
-      }),
+      impact: impactFor(batch, kind),
     });
     if (kind === 'replace' || source === 'remote') history.invalidate();
     else if (recordHistory && (source === 'local' || source === 'system'))
@@ -148,48 +202,16 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
       assertWritable();
       busy = true;
       const session = createMutationSession(state.document, input.schema);
-      let reports: DocumentDiagnostic[] | undefined;
-      let active = true;
-      const transaction: DocumentTransaction<TSchema> = {
-        read: documentReader(
-          input.schema,
-          () => state.document,
-          () => active
-        ),
-        write: documentWriter(input.schema, operation => {
-          if (!active) throw new Error('Document writer is no longer active.');
-          const rejected = session.apply(operation);
-          if (rejected) throw new RejectedUpdate([rejected]);
-        }),
-        reject: diagnostic => {
-          throw new RejectedUpdate(
-            (Array.isArray(diagnostic) ? diagnostic : [diagnostic]).map(entry =>
-              publishDiagnostic(entry)
-            )
-          );
-        },
-        report: diagnostic => {
-          if (!active) throw new Error('Document transaction is no longer active.');
-          (reports ??= []).push(publishDiagnostic(diagnostic));
-        },
-      };
+      let committed = false;
       try {
-        const value = run(transaction);
-        if (
-          value !== null &&
-          typeof value === 'object' &&
-          typeof (value as { then?: unknown }).then === 'function'
-        )
-          throw new TypeError('Document update callback must be synchronous.');
-        active = false;
-        busy = false;
+        const { value, reports } = runTransaction(session, run);
         const batch = session.finish();
         if (batch.status === 'unchanged')
           return {
             status: 'unchanged',
             value,
             revision,
-            reports: Object.freeze(reports ?? EMPTY),
+            reports,
           };
         if (batch.status === 'rejected')
           return { status: 'rejected', issues: batch.issues, revision };
@@ -199,17 +221,17 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
           'operations',
           options?.history ?? true
         );
+        committed = true;
         return {
           status: 'committed',
           value,
           commit: result.commit,
-          reports: Object.freeze(reports ?? EMPTY),
+          reports,
           observerErrors: result.observerErrors,
         };
       } catch (error) {
-        active = false;
         try {
-          session.rollback();
+          if (!committed) session.rollback();
         } finally {
           busy = false;
         }
@@ -217,7 +239,46 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
           return { status: 'rejected', issues: error.issues, revision };
         throw error;
       } finally {
-        active = false;
+        busy = false;
+      }
+    },
+    prepare: <TResult>(
+      run: (transaction: DocumentTransaction<TSchema>) => TResult
+    ): PreparedUpdateResult<TResult, TSchema> => {
+      assertWritable();
+      busy = true;
+      const session = createMutationSession(state.document, input.schema);
+      try {
+        const { value, reports } = runTransaction(session, run);
+        const batch = session.finish();
+        if (batch.status === 'unchanged') {
+          session.rollback();
+          return { status: 'unchanged', value, reports };
+        }
+        if (batch.status === 'rejected') {
+          session.rollback();
+          return { status: 'rejected', issues: batch.issues };
+        }
+        const impact = impactFor(batch, 'operations');
+        session.rollback();
+        return {
+          status: 'prepared',
+          value,
+          operations: batch.operations,
+          inverse: batch.inverse,
+          impact,
+          footprint: commandFootprint(batch.operations),
+          reports,
+        };
+      } catch (error) {
+        try {
+          session.rollback();
+        } finally {
+          busy = false;
+        }
+        if (error instanceof RejectedUpdate) return { status: 'rejected', issues: error.issues };
+        throw error;
+      } finally {
         busy = false;
       }
     },
@@ -244,6 +305,10 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
         collections: EMPTY,
       };
       return publish(batch, options?.source ?? 'system', 'replace', false);
+    },
+    snapshot: () => {
+      if (state.disposed) throw new DocumentDisposedError();
+      return cloneValue(state.document, 'snapshot');
     },
     subscribe: ((
       targetOrListener:

@@ -1,8 +1,8 @@
 # Doxum Runtime 使用指南
 
-这是 Doxum 面向任务的公开使用指南。它说明如何借助 `doxum` 建模、读取、修改、观察和派生一个内存文档，以及如何通过 `doxum/react` 将这些读模型接入 React。
+这是 Doxum 面向任务的公开使用指南。它说明如何借助 `doxum` 建模、读取、修改、观察和派生一个内存文档，如何通过 `doxum/local-sync` 持久化并同步同一浏览器 origin 的文档，以及如何通过 `doxum/react` 将读模型接入 React。
 
-Doxum 有意保持本地化：它负责类型化文档状态、原子修改、历史记录、影响范围、订阅和派生视图。持久化、网络顺序、授权和冲突解决由应用负责。
+`doxum` core 负责类型化文档状态、原子修改、历史记录、影响范围、订阅和派生视图。`doxum/local-sync` 是可选的浏览器适配器，提供 IndexedDB 离线持久化和同一 origin 的跨标签页同步。网络顺序、授权和冲突解决仍由应用负责。
 
 ## 先选择正确入口
 
@@ -10,6 +10,7 @@ Doxum 有意保持本地化：它负责类型化文档状态、原子修改、�
 | -------------------------- | ----------------------------------------------------- |
 | 定义文档结构               | `schema`、`field`、`object` 和集合构造器              |
 | 创建 canonical runtime     | `createDocument`                                      |
+| 持久化并同步一个浏览器文档 | 从 `doxum/local-sync` 导入 `openLocalDocument`        |
 | 一次性读取                 | `select(runtime, read => ...)`                        |
 | 执行本地业务修改           | `runtime.update(tx => ...)`                           |
 | 回放持久化或远端 operation | `runtime.apply(operations, options)`                  |

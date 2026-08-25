@@ -3,6 +3,8 @@ import {
   createCollectionView,
   createDocument,
   createMaterializedView,
+  asReadable,
+  commandFootprint,
   field,
   list,
   map,
@@ -10,6 +12,7 @@ import {
   optional,
   schema,
   select,
+  footprintsOverlap,
   table,
   target,
   tree,
@@ -103,6 +106,95 @@ describe('mutable Doxum runtime', () => {
       })
     ).toThrow('stop');
     expect(select(runtime, read => read.title.get())).toBe('two');
+  });
+  it('prepares a typed update without publishing or mutating the runtime', () => {
+    const runtime = createDocument({ schema: projectSchema, initial });
+    const listener = vi.fn();
+    runtime.subscribe(listener);
+    const prepared = runtime.prepare(tx => {
+      tx.write.title.set('two');
+      tx.write.projects.create({
+        id: 'b',
+        value: { name: 'B', archived: false },
+      });
+      return tx.read.title.get();
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    expect(prepared.value).toBe('two');
+    expect(prepared.operations).toHaveLength(2);
+    expect(prepared.inverse).toHaveLength(2);
+    expect(runtime.revision()).toBe(0);
+    expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
+    expect(listener).not.toHaveBeenCalled();
+    expect(select(runtime, read => read.title.get())).toBe('one');
+    expect(select(runtime, read => read.projects.has('b'))).toBe(false);
+
+    expect(runtime.apply(prepared.operations).status).toBe('committed');
+    expect(select(runtime, read => read.title.get())).toBe('two');
+    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('B');
+    expect(runtime.update(tx => tx.write.projects.item('b').name.set('BB')).status).toBe(
+      'committed'
+    );
+    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('BB');
+  });
+  it('returns typed unchanged and rejected prepare outcomes without a revision', () => {
+    const runtime = createDocument({ schema: projectSchema, initial });
+    const unchanged = runtime.prepare(tx => {
+      tx.write.title.set('one');
+      return tx.read.title.get();
+    });
+    expect(unchanged).toEqual({ status: 'unchanged', value: 'one', reports: [] });
+    const rejected = runtime.prepare(tx =>
+      tx.reject({ source: 'application', code: 'invalid', message: 'No.' })
+    );
+    expect(rejected).toEqual({
+      status: 'rejected',
+      issues: [{ source: 'application', code: 'invalid', message: 'No.' }],
+    });
+    expect(runtime.revision()).toBe(0);
+  });
+  it('publishes immutable prepared payloads that can safely cross an async durable boundary', () => {
+    const runtime = createDocument({ schema: projectSchema, initial });
+    const payload = { name: 'B', archived: false };
+    const prepared = runtime.prepare(tx => {
+      tx.write.projects.create({ id: 'b', value: payload });
+    });
+    expect(prepared.status).toBe('prepared');
+    if (prepared.status !== 'prepared') return;
+    payload.name = 'mutated';
+    expect(runtime.apply(prepared.operations).status).toBe('committed');
+    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('B');
+    const operation = prepared.operations[0] as unknown as {
+      readonly entries: readonly [{ readonly value: object }];
+    };
+    expect(Object.isFrozen(operation.entries[0].value)).toBe(true);
+  });
+  it('exports a frozen document snapshot and a read-only runtime capability', () => {
+    const runtime = createDocument({ schema: projectSchema, initial });
+    const snapshot = runtime.snapshot();
+    expect(snapshot).toEqual(initial);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.projects)).toBe(true);
+    expect(Object.isFrozen(snapshot.projects.byId.a)).toBe(true);
+    const readable = asReadable(runtime);
+    expect(select(readable, read => read.title.get())).toBe('one');
+    expect('update' in readable).toBe(false);
+    runtime.update(tx => tx.write.title.set('two'));
+    expect(select(readable, read => read.title.get())).toBe('two');
+  });
+  it('derives stable operation footprints for persisted command conflict checks', () => {
+    const update = commandFootprint([
+      { type: 'field.set', at: ['projects', 'a', 'name'], value: 'AA' },
+    ]);
+    const remove = commandFootprint([{ type: 'entity.remove', at: ['projects'], ids: ['a'] }]);
+    const other = commandFootprint([
+      { type: 'field.set', at: ['projects', 'b', 'name'], value: 'BB' },
+    ]);
+    expect(Object.isFrozen(update)).toBe(true);
+    expect(Object.isFrozen(update[0])).toBe(true);
+    expect(footprintsOverlap(update, remove)).toBe(true);
+    expect(footprintsOverlap(update, other)).toBe(false);
   });
   it('rejects malformed operation envelopes before touching document state', () => {
     const cases = [

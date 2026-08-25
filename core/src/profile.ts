@@ -1,5 +1,5 @@
 export type CloneReason =
-  'initial' | 'canonical' | 'commit' | 'inverse' | 'reader' | 'replace' | 'journal';
+  'initial' | 'canonical' | 'commit' | 'inverse' | 'reader' | 'replace' | 'journal' | 'snapshot';
 
 type CloneCounters = {
   calls: number;
@@ -86,6 +86,7 @@ const cloneReasons = (): Record<CloneReason, number> => ({
   reader: 0,
   replace: 0,
   journal: 0,
+  snapshot: 0,
 });
 
 const counters = (): ProfileCounters => ({

@@ -88,12 +88,15 @@ export type { CollectionImpact, DocumentImpact } from './impact';
 export type { AddressRef } from './address';
 export { contains, debugKey, overlaps, read as readAddress, resolveAddress } from './address';
 export { createDocument } from './runtime';
+export { asReadable } from './runtime/readable';
 export { DocumentReentrancyError, DocumentDisposedError } from './runtime/contract';
 export type {
   Unsubscribe,
   CommitSource,
   DocumentCommit,
+  DocumentReadable,
   TransactionResult,
+  PreparedUpdateResult,
   OperationResult,
   DocumentTransaction,
   DocumentRuntime,
@@ -104,6 +107,8 @@ export type {
   ObserverError,
 } from './runtime/contract';
 export type { MutationIssue, MutationIssueCode } from './mutation/issue';
+export { commandFootprint, decodeCommandFootprint, footprintsOverlap } from './mutation/footprint';
+export type { CommandFootprint, CommandFootprintTarget } from './mutation/footprint';
 export * as target from './impact-target';
 export type { Readable } from './projection/readable';
 export { select } from './projection/select';
