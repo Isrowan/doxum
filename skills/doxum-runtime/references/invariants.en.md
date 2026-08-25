@@ -130,10 +130,20 @@ views and subscriptions with their owner.
 ## Framework and product boundaries
 
 `core` is framework-neutral. `doxum/react` is a one-way adapter from core to
-React; core must not import React or UI concepts. `doxum/local-sync` is the
-optional browser owner of IndexedDB durability, Web Lock serialization, and
-BroadcastChannel catch-up; application code must not bypass its async session
-by writing its internal runtime. Doxum intentionally does not decide network
+React; core must not import React or UI concepts. `doxum/local-sync` is an
+optional attachment to an application-owned runtime. It hydrates an IndexedDB
+checkpoint/tail, holds a document Web Lock for exactly one leader, and uses a
+small internal synchronous write policy to reject follower mutations without
+changing the runtime API. The leader observes completed local, system, and
+history commits, appends JSON operation batches asynchronously, and broadcasts
+only a head hint. Followers read and apply the durable tail as `remote`; this
+invalidates their history. There is no pending queue, rebase, actor history, or
+attachment-specific undo API. While attached, external `replace` and external
+`apply` marked `remote` are rejected because only operation commands are
+appendable; the attachment's hydration and replay lease is the one trusted
+exception. Local-sync does not promise strict durability;
+application code uses `state()`, `onError`, and `flush()` when it needs to
+observe persistence or catch-up. Doxum intentionally does not decide network
 synchronization, authorization, retry, acknowledgement, ordering, or conflict
 resolution. An application must make those decisions before applying operations
 or replacing a snapshot.

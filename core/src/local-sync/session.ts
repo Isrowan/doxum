@@ -1,37 +1,34 @@
-import { createDocument } from '../runtime';
-import { asReadable } from '../runtime/readable';
-import { commandFootprint, type CommandFootprint } from '../mutation/footprint';
+import {
+  installRuntimeWriteDriver,
+  type RuntimeWriteDriverLease,
+  type RuntimeWriteIntent,
+} from '../runtime/driver';
+import type { DocumentCommit, DocumentRuntime, OperationResult } from '../runtime/contract';
 import type { DocumentSchema, ReadonlyDocument } from '../schema';
-import type {
-  DocumentCommit,
-  DocumentTransaction,
-  OperationResult,
-  TransactionResult,
-} from '../runtime/contract';
 import {
   LocalSyncConsistencyError,
   LocalSyncDisposedError,
+  LocalSyncReadOnlyError,
+  LocalSyncUnsupportedOperationError,
   LocalSyncUnavailableError,
-  type LocalSyncCommit,
-  type LocalSyncDocument,
+  type AttachLocalSyncOptions,
+  type LocalSync,
   type LocalSyncState,
-  type OpenLocalDocumentOptions,
 } from './contract';
 import { json, jsonArray, type JsonValue } from './json';
-import {
-  openIndexedDbTimeline,
-  type ActorHistoryChange,
-  type LocalCommitKind,
-  type StoredActorHistory,
-  type StoredCommit,
-} from './timeline';
+import { openIndexedDbTimeline, type StoredCommit } from './timeline';
+
+type LockOptions = {
+  readonly mode: 'exclusive';
+  readonly ifAvailable?: boolean;
+};
 
 type LockManager = {
-  readonly request: <T>(
+  readonly request: <TResult>(
     name: string,
-    options: { readonly mode: 'exclusive' },
-    callback: () => T | PromiseLike<T>
-  ) => Promise<T>;
+    options: LockOptions,
+    callback: (lock: unknown | null) => TResult | PromiseLike<TResult>
+  ) => Promise<TResult>;
 };
 
 type Channel = {
@@ -46,7 +43,6 @@ type CommitNotification = {
   readonly kind: 'commit';
   readonly documentId: string;
   readonly headSeq: number;
-  readonly senderId: string;
 };
 
 const locks = (): LockManager => {
@@ -72,19 +68,10 @@ const requiredString = (value: string, label: string): string => {
   throw new TypeError(`${label} must not be empty.`);
 };
 
-const nonNegativeInteger = (value: number, label: string): number => {
-  if (Number.isSafeInteger(value) && value >= 0) return value;
-  throw new TypeError(`${label} must be a non-negative safe integer.`);
-};
-
 const positiveInteger = (value: number, label: string): number => {
   if (Number.isSafeInteger(value) && value > 0) return value;
   throw new TypeError(`${label} must be a positive safe integer.`);
 };
-
-const identifier = (): string =>
-  globalThis.crypto?.randomUUID?.() ??
-  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 const notification = (value: unknown): CommitNotification | undefined => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
@@ -92,7 +79,6 @@ const notification = (value: unknown): CommitNotification | undefined => {
   if (
     record.kind !== 'commit' ||
     typeof record.documentId !== 'string' ||
-    typeof record.senderId !== 'string' ||
     typeof record.headSeq !== 'number' ||
     !Number.isSafeInteger(record.headSeq) ||
     record.headSeq < 0
@@ -101,70 +87,43 @@ const notification = (value: unknown): CommitNotification | undefined => {
   return record as CommitNotification;
 };
 
-const localCommit = <TSchema extends DocumentSchema>(
-  commit: DocumentCommit<TSchema>,
-  stored: StoredCommit
-): LocalSyncCommit<TSchema> =>
-  Object.freeze({
-    ...commit,
-    seq: stored.seq,
-    commandId: stored.commandId,
-    actorId: stored.actorId,
-  });
-
-const operationResult = <TSchema extends DocumentSchema>(
-  result: OperationResult<DocumentCommit<TSchema>>,
-  stored: StoredCommit
-): OperationResult<LocalSyncCommit<TSchema>> => {
-  if (result.status !== 'committed')
-    throw new LocalSyncConsistencyError('A durable local command could not be applied.');
-  return {
-    status: 'committed',
-    commit: localCommit(result.commit, stored),
-    observerErrors: result.observerErrors,
-  };
-};
-
-export const openLocalDocument = async <TSchema extends DocumentSchema>(
-  input: OpenLocalDocumentOptions<TSchema>
-): Promise<LocalSyncDocument<TSchema>> => {
+export const attachLocalSync = async <TSchema extends DocumentSchema>(
+  input: AttachLocalSyncOptions<TSchema>
+): Promise<LocalSync> => {
+  const runtime = input.runtime;
   const databaseName = requiredString(input.database, 'database');
   const documentId = requiredString(input.documentId, 'documentId');
-  const actorId = requiredString(input.actorId ?? 'local', 'actorId');
   const schemaVersion = positiveInteger(input.schemaVersion ?? 1, 'schemaVersion');
-  const historyCapacity = nonNegativeInteger(input.historyCapacity ?? 100, 'historyCapacity');
-  const checkpointEvery = nonNegativeInteger(input.checkpointEvery ?? 500, 'checkpointEvery');
-  const commandLimits = input.commandLimits;
-  const initial = json(input.initial, 'initial document');
   const lockManager = locks();
   const BroadcastChannel = channelConstructor();
   const timeline = await openIndexedDbTimeline(databaseName);
 
   let channel: Channel | undefined;
-  let runtime: ReturnType<typeof createDocument<TSchema>> | undefined;
+  let unsubscribe: (() => void) | undefined;
+  let driver: RuntimeWriteDriverLease | undefined;
   try {
-    const stored = await timeline.initialize(documentId, schemaVersion, initial);
-    const documentRuntime = createDocument({
-      schema: input.schema,
-      initial: stored.checkpoint as ReadonlyDocument<TSchema>,
-      history: false,
-    });
-    runtime = documentRuntime;
+    const stored = await timeline.initialize(
+      documentId,
+      schemaVersion,
+      json(runtime.snapshot(), 'runtime snapshot')
+    );
     let headSeq = stored.checkpointSeq;
     let checkpointSeq = stored.checkpointSeq;
-    let queued: Promise<void> = Promise.resolve();
+    let role: 'leader' | 'follower' = 'follower';
     let fault: unknown;
     let closing = false;
     let disposed = false;
-    const senderId = identifier();
+    let releaseLeadership: (() => void) | undefined;
+    let leadershipLease: Promise<void> | undefined;
+    let queued: Promise<void> = Promise.resolve();
 
     const fail = (error: unknown): void => {
-      if (closing || disposed || fault) return;
+      if (fault || disposed) return;
       fault = error;
       try {
         input.onError?.(error);
       } catch {
-        // Error reporting cannot repair or replace the original session failure.
+        // Error reporting cannot repair or replace the original synchronization failure.
       }
     };
 
@@ -173,31 +132,41 @@ export const openLocalDocument = async <TSchema extends DocumentSchema>(
       if (fault) throw fault;
     };
 
-    const applyStored = (commit: StoredCommit): LocalSyncCommit<TSchema> => {
-      if (commit.seq !== headSeq + 1)
-        throw new LocalSyncConsistencyError('Local commit log contains a sequence gap.');
-      const result = documentRuntime.apply(commit.operations, { source: 'local', history: false });
-      const local = operationResult(result, commit);
-      if (local.status !== 'committed')
-        throw new LocalSyncConsistencyError('A durable local command was not committed.');
-      headSeq = commit.seq;
-      return local.commit;
+    const assertLeader = (intent: RuntimeWriteIntent): void => {
+      assertOpen();
+      if (role !== 'leader') throw new LocalSyncReadOnlyError();
+      if (intent.kind === 'replace' || (intent.kind === 'apply' && intent.source === 'remote'))
+        throw new LocalSyncUnsupportedOperationError();
     };
 
-    const catchUp = async (): Promise<void> => {
+    const runRuntime = <TResult>(run: () => TResult): TResult => driver?.run(run) ?? run();
+
+    const applyStored = (commit: StoredCommit): void => {
+      if (commit.seq !== headSeq + 1)
+        throw new LocalSyncConsistencyError('Local commit log contains a sequence gap.');
+      const result = runRuntime(() =>
+        runtime.apply(commit.operations, { source: 'remote', history: false })
+      );
+      if (result.status !== 'committed')
+        throw new LocalSyncConsistencyError('A stored local command could not be applied.');
+      headSeq = commit.seq;
+    };
+
+    const restore = async (reset = false): Promise<void> => {
       const current = await timeline.read(documentId);
       if (current.schemaVersion !== schemaVersion)
         throw new LocalSyncConsistencyError(
-          'Local document schema changed while this session was open.'
+          'Local document schema changed while this attachment was open.'
         );
-      if (headSeq < current.checkpointSeq) {
-        const replaced = documentRuntime.replace(current.checkpoint as ReadonlyDocument<TSchema>, {
-          source: 'system',
-        });
-        if (replaced.status !== 'committed' && replaced.status !== 'unchanged')
-          throw new LocalSyncConsistencyError('Local checkpoint could not be restored.');
+      if (headSeq > current.headSeq)
+        throw new LocalSyncConsistencyError('The local timeline moved behind this attachment.');
+      if (reset || headSeq < current.checkpointSeq) {
+        const result = runRuntime(() =>
+          runtime.replace(current.checkpoint as ReadonlyDocument<TSchema>, { source: 'remote' })
+        );
+        if (result.status === 'rejected')
+          throw new LocalSyncConsistencyError('The local checkpoint could not be restored.');
         headSeq = current.checkpointSeq;
-        checkpointSeq = current.checkpointSeq;
       }
       const tail = await timeline.tail(documentId, headSeq);
       for (const commit of tail) applyStored(commit);
@@ -208,223 +177,172 @@ export const openLocalDocument = async <TSchema extends DocumentSchema>(
       checkpointSeq = current.checkpointSeq;
     };
 
-    const execute = <T>(run: () => Promise<T>): Promise<T> => {
+    const enqueue = (run: () => Promise<void>): Promise<void> => {
       const next = queued.then(run, run);
       queued = next.then(
         () => undefined,
-        () => undefined
+        error => {
+          fail(error);
+        }
       );
       return next;
     };
 
-    const withWriter = <T>(run: () => Promise<T>): Promise<T> =>
-      lockManager.request(`doxum:${documentId}`, { mode: 'exclusive' }, async () => {
-        assertOpen();
-        try {
-          await catchUp();
-        } catch (error) {
-          fail(error);
-          throw error;
-        }
-        return run();
+    const persist = async (operations: readonly JsonValue[]): Promise<void> => {
+      const storedCommit = await timeline.append({
+        documentId,
+        expectedHeadSeq: headSeq,
+        operations,
       });
+      if (storedCommit.seq !== headSeq + 1)
+        throw new LocalSyncConsistencyError('A local command was assigned an unexpected sequence.');
+      headSeq = storedCommit.seq;
+      channel?.postMessage({
+        kind: 'commit',
+        documentId,
+        headSeq,
+      } satisfies CommitNotification);
+    };
 
-    const persistAndApply = async (input: {
-      readonly commandId: string;
-      readonly kind: LocalCommitKind;
-      readonly operations: readonly JsonValue[];
-      readonly inverse: readonly JsonValue[];
-      readonly footprint: CommandFootprint;
-      readonly history: ActorHistoryChange;
-    }): Promise<OperationResult<LocalSyncCommit<TSchema>>> => {
+    const record = (commit: DocumentCommit<TSchema>): void => {
       try {
-        const storedCommit = await timeline.append({
-          documentId,
-          expectedHeadSeq: headSeq,
-          commandId: input.commandId,
-          actorId,
-          kind: input.kind,
-          operations: input.operations,
-          inverse: input.inverse,
-          footprint: input.footprint,
-          history: input.history,
-        });
-        const result = operationResult(
-          documentRuntime.apply(storedCommit.operations, { source: 'local', history: false }),
-          storedCommit
+        const operations = jsonArray(
+          commit.operations,
+          'local command operations',
+          input.commandLimits
         );
-        headSeq = storedCommit.seq;
-        if (checkpointEvery > 0 && headSeq - checkpointSeq >= checkpointEvery) {
-          const checkpoint = json(documentRuntime.snapshot(), 'local checkpoint');
-          const compacted = await timeline.compact(documentId, headSeq, checkpoint);
-          checkpointSeq = compacted.checkpointSeq;
-        }
-        channel?.postMessage({
-          kind: 'commit',
-          documentId,
-          headSeq,
-          senderId,
-        } satisfies CommitNotification);
-        return result;
+        void enqueue(() => persist(operations)).catch(() => undefined);
       } catch (error) {
         fail(error);
-        throw error;
       }
     };
 
-    const replay = (operations: readonly JsonValue[]): OperationResult<DocumentCommit<TSchema>> => {
-      const candidate = createDocument({
-        schema: input.schema,
-        initial: documentRuntime.snapshot(),
-        history: false,
+    const holdLeadership = (): Promise<void> =>
+      new Promise(resolve => {
+        releaseLeadership = resolve;
       });
+
+    const lead = async (activated?: () => void): Promise<void> => {
+      if (closing || disposed || fault) return;
+      await restore();
+      if (closing || disposed || fault) return;
+      role = 'leader';
+      activated?.();
       try {
-        return candidate.apply(operations, { source: 'local', history: false });
+        await holdLeadership();
       } finally {
-        candidate.dispose();
+        releaseLeadership = undefined;
+        if (!closing && !disposed && !fault) role = 'follower';
       }
     };
 
-    const applyHistory = async (
-      history: StoredActorHistory,
-      kind: 'undo' | 'redo'
-    ): Promise<OperationResult<LocalSyncCommit<TSchema>>> => {
-      const source = kind === 'undo' ? history.undo : history.redo;
-      const entry = source[source.length - 1];
-      if (!entry) return { status: 'unchanged', revision: documentRuntime.revision() };
-      const preview = replay(kind === 'undo' ? entry.inverse : entry.operations);
-      if (preview.status !== 'committed') return preview;
-      const operations = jsonArray(preview.commit.operations, `${kind} operations`, commandLimits);
-      const inverse = jsonArray(preview.commit.inverse, `${kind} inverse`, commandLimits);
-      return persistAndApply({
-        commandId: identifier(),
-        kind,
-        operations,
-        inverse,
-        footprint: commandFootprint(preview.commit.operations),
-        history:
-          kind === 'undo'
-            ? { kind: 'undo', expectedCommandId: entry.commandId, entry }
-            : { kind: 'redo', expectedCommandId: entry.commandId, entry },
-      });
+    const watchLeadership = (): void => {
+      leadershipLease = lockManager
+        .request(`doxum:${documentId}`, { mode: 'exclusive' }, async () => {
+          try {
+            await lead();
+          } catch (error) {
+            fail(error);
+          }
+        })
+        .catch(error => {
+          if (!closing && !disposed) fail(error);
+        });
     };
 
-    const initialTail = await timeline.tail(documentId, headSeq);
-    for (const commit of initialTail) applyStored(commit);
-    if (headSeq !== stored.headSeq)
-      throw new LocalSyncConsistencyError(
-        'Local commit log does not reach its recorded head sequence.'
-      );
+    const claimInitialLeadership = async (): Promise<void> => {
+      let resolve!: (value: boolean) => void;
+      const claimed = new Promise<boolean>(done => {
+        resolve = done;
+      });
+      leadershipLease = lockManager
+        .request(`doxum:${documentId}`, { mode: 'exclusive', ifAvailable: true }, async lock => {
+          if (lock === null) {
+            resolve(false);
+            return;
+          }
+          try {
+            await lead(() => resolve(true));
+          } catch (error) {
+            fail(error);
+            resolve(false);
+          }
+        })
+        .catch(error => {
+          if (!closing && !disposed) fail(error);
+          resolve(false);
+        });
+      if (!(await claimed) && !fault && !closing && !disposed) watchLeadership();
+    };
 
+    await restore(true);
+    // The timeline, not a runtime constructed before attachment, is the baseline
+    // for local undo. Even an identical restored snapshot must discard prior history.
+    runtime.history.clear();
+    driver = installRuntimeWriteDriver(runtime, { assertWritable: assertLeader });
     channel = new BroadcastChannel(`doxum:${databaseName}:${documentId}`);
+    unsubscribe = runtime.subscribe(commit => {
+      if (
+        (commit.source === 'local' || commit.source === 'system' || commit.source === 'history') &&
+        !closing &&
+        !disposed
+      )
+        record(commit);
+    });
     channel.onmessage = event => {
       const message = notification(event.data);
       if (
         !message ||
         message.documentId !== documentId ||
-        message.senderId === senderId ||
         message.headSeq <= headSeq ||
         closing ||
-        disposed
+        disposed ||
+        fault
       )
         return;
-      void execute(() => withWriter(async () => undefined)).catch(() => undefined);
+      void enqueue(restore).catch(() => undefined);
     };
+    await claimInitialLeadership();
+    if (fault) throw fault;
 
-    const localDocument: LocalSyncDocument<TSchema> = {
-      document: asReadable(documentRuntime),
+    const localSync: LocalSync = {
       state: (): LocalSyncState => {
         if (disposed) return { status: 'disposed' };
-        if (fault) return { status: 'failed', error: fault };
-        return { status: 'ready', headSeq, checkpointSeq };
+        if (fault) return { status: 'error', headSeq, checkpointSeq, error: fault };
+        return { status: role, headSeq, checkpointSeq };
       },
-      sync: () => execute(() => withWriter(async () => undefined)),
-      update: <TResult>(
-        run: (transaction: DocumentTransaction<TSchema>) => TResult
-      ): Promise<TransactionResult<TResult, LocalSyncCommit<TSchema>>> => {
+      flush: async (): Promise<void> => {
         assertOpen();
-        return execute(() =>
-          withWriter(async () => {
-            const prepared = documentRuntime.prepare(run);
-            if (prepared.status === 'unchanged')
-              return {
-                status: 'unchanged',
-                value: prepared.value,
-                revision: documentRuntime.revision(),
-                reports: prepared.reports,
-              };
-            if (prepared.status === 'rejected')
-              return {
-                status: 'rejected',
-                issues: prepared.issues,
-                revision: documentRuntime.revision(),
-              };
-            const operations = jsonArray(
-              prepared.operations,
-              'local command operations',
-              commandLimits
-            );
-            const inverse = jsonArray(prepared.inverse, 'local command inverse', commandLimits);
-            const commandId = identifier();
-            const result = await persistAndApply({
-              commandId,
-              kind: 'update',
-              operations,
-              inverse,
-              footprint: prepared.footprint,
-              history: {
-                kind: 'record',
-                entry: Object.freeze({
-                  commandId,
-                  operations,
-                  inverse,
-                  footprint: prepared.footprint,
-                }),
-                capacity: historyCapacity,
-              },
-            });
-            if (result.status !== 'committed')
-              throw new LocalSyncConsistencyError('Prepared local command was not committed.');
-            return {
-              status: 'committed',
-              value: prepared.value,
-              commit: result.commit,
-              reports: prepared.reports,
-              observerErrors: result.observerErrors,
-            };
-          })
-        );
-      },
-      undo: () => {
+        try {
+          await enqueue(restore);
+        } catch (error) {
+          fail(error);
+          throw error;
+        }
         assertOpen();
-        return execute(() =>
-          withWriter(async () => applyHistory(await timeline.history(documentId, actorId), 'undo'))
-        );
       },
-      redo: () => {
-        assertOpen();
-        return execute(() =>
-          withWriter(async () => applyHistory(await timeline.history(documentId, actorId), 'redo'))
-        );
-      },
-      dispose: async () => {
+      dispose: async (): Promise<void> => {
         if (disposed) return;
         if (closing) {
           await queued;
           return;
         }
         closing = true;
+        unsubscribe?.();
         await queued;
+        releaseLeadership?.();
+        if (role === 'leader') await leadershipLease;
         disposed = true;
+        driver?.dispose();
         channel?.close();
         timeline.close();
-        documentRuntime.dispose();
       },
     };
-    return Object.freeze(localDocument);
+    return Object.freeze(localSync);
   } catch (error) {
+    unsubscribe?.();
+    driver?.dispose();
     channel?.close();
-    runtime?.dispose();
     timeline.close();
     throw error;
   }

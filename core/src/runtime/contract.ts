@@ -136,6 +136,8 @@ export type DocumentReadable<TSchema extends DocumentSchema> = {
 };
 
 export type DocumentRuntime<TSchema extends DocumentSchema> = DocumentReadable<TSchema> & {
+  /** Schema configuration captured when this runtime was created. */
+  readonly schema: TSchema;
   update<TResult>(
     run: (transaction: DocumentTransaction<TSchema>) => TResult,
     options?: {

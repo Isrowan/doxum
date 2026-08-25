@@ -84,7 +84,7 @@ update 与 notification 窗口中禁止写入。processor、flush 和 listener e
 
 ## Framework 与产品边界
 
-`core` 必须保持 framework-neutral。`doxum/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。`doxum/local-sync` 是可选浏览器 owner，负责 IndexedDB durability、Web Lock serialization 与 BroadcastChannel catch-up；应用代码不能绕过其 async session 写入内部 runtime。Doxum 有意不决定网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
+`core` 必须保持 framework-neutral。`doxum/react` 是从 core 到 React 的单向 adapter；core 不能 import React 或 UI 概念。`doxum/local-sync` 是附着到应用自有 runtime 的可选浏览器 attachment：它会恢复 IndexedDB checkpoint/tail，以 document Web Lock 选出唯一 leader，并通过一个很小的内部同步写入 policy 拒绝 follower mutation，而不改变 runtime API。leader 监听已完成的 local、system 与 history commit，将 JSON operation batch 异步追加到日志，并且只广播 head 提示。follower 从 durable tail 顺序读取并按 `remote` apply，因此 history 会失效。没有 pending queue、rebase、actor history 或 attachment 专属的 undo API。附着期间，外部 `replace` 与标记为 `remote` 的外部 `apply` 都会被拒绝，因为只有 operation command 能 append；attachment 的 hydration 与 replay lease 是唯一受信任例外。它不会承诺严格 durability；应用在需要观察持久化或追赶时使用 `state()`、`onError` 与 `flush()`。Doxum 有意不决定网络同步、authorization、retry、acknowledgement、ordering 或 conflict resolution。应用必须在 apply operation 或 replace snapshot 前做出这些决策。
 
 ## 改动检查清单
 

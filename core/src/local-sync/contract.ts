@@ -1,11 +1,5 @@
-import type { DocumentSchema, ReadonlyDocument } from '../schema';
-import type {
-  DocumentCommit,
-  DocumentReadable,
-  DocumentTransaction,
-  OperationResult,
-  TransactionResult,
-} from '../runtime/contract';
+import type { DocumentSchema } from '../schema';
+import type { DocumentRuntime } from '../runtime/contract';
 import type { JsonCommandLimits } from './json';
 
 export class LocalSyncUnavailableError extends Error {
@@ -31,45 +25,54 @@ export class LocalSyncConsistencyError extends Error {
   }
 }
 
+export class LocalSyncReadOnlyError extends Error {
+  constructor() {
+    super('This tab is following the local document and cannot write until it becomes the leader.');
+    this.name = 'LocalSyncReadOnlyError';
+  }
+}
+
+export class LocalSyncUnsupportedOperationError extends Error {
+  constructor() {
+    super(
+      'Local sync persists operation commands. runtime.replace() and externally supplied remote operations are unavailable while it is attached.'
+    );
+    this.name = 'LocalSyncUnsupportedOperationError';
+  }
+}
+
 export class LocalSyncDisposedError extends Error {
   constructor() {
-    super('Local sync document has been disposed.');
+    super('Local sync has been disposed.');
     this.name = 'LocalSyncDisposedError';
   }
 }
 
-export type LocalSyncCommit<TSchema extends DocumentSchema> = DocumentCommit<TSchema> & {
-  readonly seq: number;
-  readonly commandId: string;
-  readonly actorId: string;
-};
-
 export type LocalSyncState =
-  | { readonly status: 'ready'; readonly headSeq: number; readonly checkpointSeq: number }
-  | { readonly status: 'failed'; readonly error: unknown }
+  | {
+      readonly status: 'leader' | 'follower';
+      readonly headSeq: number;
+      readonly checkpointSeq: number;
+    }
+  | {
+      readonly status: 'error';
+      readonly headSeq: number;
+      readonly checkpointSeq: number;
+      readonly error: unknown;
+    }
   | { readonly status: 'disposed' };
 
-export type LocalSyncDocument<TSchema extends DocumentSchema> = {
-  readonly document: DocumentReadable<TSchema>;
+export type LocalSync = {
   state(): LocalSyncState;
-  sync(): Promise<void>;
-  update<TResult>(
-    run: (transaction: DocumentTransaction<TSchema>) => TResult
-  ): Promise<TransactionResult<TResult, LocalSyncCommit<TSchema>>>;
-  undo(): Promise<OperationResult<LocalSyncCommit<TSchema>>>;
-  redo(): Promise<OperationResult<LocalSyncCommit<TSchema>>>;
+  flush(): Promise<void>;
   dispose(): Promise<void>;
 };
 
-export type OpenLocalDocumentOptions<TSchema extends DocumentSchema> = {
+export type AttachLocalSyncOptions<TSchema extends DocumentSchema> = {
+  readonly runtime: DocumentRuntime<TSchema>;
   readonly database: string;
   readonly documentId: string;
-  readonly schema: TSchema;
-  readonly initial: ReadonlyDocument<TSchema>;
   readonly schemaVersion?: number;
-  readonly actorId?: string;
-  readonly historyCapacity?: number;
-  readonly checkpointEvery?: number;
   readonly commandLimits?: JsonCommandLimits;
   readonly onError?: (error: unknown) => void;
 };

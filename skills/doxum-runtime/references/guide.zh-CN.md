@@ -10,7 +10,7 @@
 | -------------------------- | ----------------------------------------------------- |
 | 定义文档结构               | `schema`、`field`、`object` 和集合构造器              |
 | 创建 canonical runtime     | `createDocument`                                      |
-| 持久化并同步一个浏览器文档 | 从 `doxum/local-sync` 导入 `openLocalDocument`        |
+| 持久化并同步一个浏览器文档 | 从 `doxum/local-sync` 导入 `attachLocalSync`          |
 | 一次性读取                 | `select(runtime, read => ...)`                        |
 | 执行本地业务修改           | `runtime.update(tx => ...)`                           |
 | 回放持久化或远端 operation | `runtime.apply(operations, options)`                  |
@@ -166,6 +166,51 @@ if (result.status === 'rejected') {
 已提交的 operation 包含 forward operation、inverse operation、revision 和 `DocumentImpact`。本地与 system commit 默认会记录到 local history。使用 `runtime.history.undo()` 与 `runtime.history.redo()`；它们仍通过同一 mutation pipeline 回放 inverse 或 forward batch。
 
 committed 结果中的 `observerErrors` 是 canonical state 和 history 已稳定后，processor、flush 或 listener 发生的失败。它们不是 mutation 失败，调用方不能因此重复写入。
+
+## 附着浏览器本地同步
+
+`attachLocalSync` 是可选的浏览器 attachment。runtime 仍由应用创建并持有；在使用
+文档前必须等待 attach 完成。它会从 IndexedDB 的 checkpoint 与 append-only command
+tail 恢复传入 runtime，随后以 Web Lock 为一个 document 选出唯一可写标签页。`leader`
+可继续使用同步的 runtime 写入 API；其他已附着标签页都是只读的 `follower` mirror。
+follower 直接调用 `update`、`prepare`、`apply` 或 `replace` 会抛出
+`LocalSyncReadOnlyError`。
+
+leader 已完成的 local、system 与 history commit 会被监听，并按顺序异步写入
+IndexedDB。BroadcastChannel 只传递新的 head 提示；follower 从 IndexedDB 补读 durable
+tail，并以 `remote` source 顺序 apply，因此其内存 history 会失效。leader dispose
+之后，已经 catch-up 的 follower 会接管锁并成为新的 leader。
+
+local-sync 只持久化 operation command，不接受任意的新基线。附着期间，
+`runtime.replace()` 与由应用提供的 `runtime.apply(..., { source: 'remote' })` 会抛出
+`LocalSyncUnsupportedOperationError`；内部 hydration 与 tail replay 使用受信任的
+attachment path。
+
+```ts
+import { attachLocalSync } from 'doxum/local-sync';
+
+const runtime = createDocument({ schema: taskSchema, initial });
+const localSync = await attachLocalSync({
+  runtime,
+  database: 'my-app',
+  documentId: 'project-1',
+});
+
+if (localSync.state().status === 'leader') {
+  runtime.update(tx => tx.write.title.set('Ship Doxum'));
+  runtime.history.undo();
+}
+
+await localSync.flush(); // 持久化已观察到的 leader command，或让 follower 追赶
+await localSync.dispose();
+```
+
+开始使用前必须等待 attachment，因为它会用 IndexedDB 恢复传入 runtime。这是“同步可见、
+异步持久化”而不是严格 durable：崩溃、存储失败或非 JSON payload，都可能让已经可见的
+leader commit 未持久化。用 `localSync.state()` 与 `onError` 显示该状态，`flush()` 是显式
+的持久化/追赶边界。attachment 不拥有也不会 dispose runtime，且不提供另一套 undo API：
+leader 使用 `runtime.history.undo()` 与 `runtime.history.redo()`。history 有意只在内存中
+存在；attachment 恢复及 remote tail apply 都会使它失效，因此不会跨重开或 leader 交接保留。
 
 ## 通过 schema 所有的 target 订阅
 

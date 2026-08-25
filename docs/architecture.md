@@ -5,28 +5,30 @@
 The `doxum` core entry owns the in-memory lifecycle of one typed document. It
 turns mutations into reversible commits and makes their impact available to
 history, subscribers, projections, and framework integrations.
-`doxum/local-sync` is a browser adapter that owns one origin's IndexedDB
-timeline, Web Lock write serialization, and BroadcastChannel catch-up
-notifications. Core does not own network synchronization, access control, or
-business authorization.
+`doxum/local-sync` is a browser attachment that gives one tab the synchronous
+write lease for an IndexedDB-backed timeline and makes other tabs ordered
+read-only mirrors. It persists completed commands in the background and uses
+BroadcastChannel only for catch-up notifications. Core does not own network
+synchronization, access control, or business authorization.
 
 ## Module Boundaries
 
-| Module                             | Responsibility                                                                           |
-| ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `core/src/schema.ts`               | Schema nodes, document value inference, and schema-owned selector construction.          |
-| `core/src/access`                  | Typed readers/writers and dependency tracking.                                           |
-| `core/src/mutation/operation.ts`   | Decode, normalize, publish, inverse metadata, and list-node metadata for operations.     |
-| `core/src/mutation/issue.ts`       | Closed mutation failure vocabulary and `MutationIssue` construction.                     |
-| `core/src/mutation/tree.ts`        | Tree validation, traversal, and single-root structural operations.                       |
-| `core/src/mutation/anchor.ts`      | Ordered-key and Anchor position semantics shared by table, list, and journal code.       |
-| `core/src/runtime.ts`              | Canonical document owner, transaction boundary, revision, history policy, and lifecycle. |
-| `core/src/local-sync`              | Browser durable local timeline, one-writer session, cross-tab catch-up, and actor undo.  |
-| `core/src/impact.ts`               | Commit-local path and collection impact queries.                                         |
-| `core/src/impact-target.ts`        | One address, identity, equality, and notification-bucket interpretation for targets.     |
-| `core/src/runtime/notification.ts` | Ordered processors and root/targeted commit delivery.                                    |
-| `core/src/projection`              | Read-only derived views with explicit invalidation.                                      |
-| `react/src`                        | React adapter; it depends on core but core never depends on React.                       |
+| Module                             | Responsibility                                                                                  |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `core/src/schema.ts`               | Schema nodes, document value inference, and schema-owned selector construction.                 |
+| `core/src/access`                  | Typed readers/writers and dependency tracking.                                                  |
+| `core/src/mutation/operation.ts`   | Decode, normalize, publish, inverse metadata, and list-node metadata for operations.            |
+| `core/src/mutation/issue.ts`       | Closed mutation failure vocabulary and `MutationIssue` construction.                            |
+| `core/src/mutation/tree.ts`        | Tree validation, traversal, and single-root structural operations.                              |
+| `core/src/mutation/anchor.ts`      | Ordered-key and Anchor position semantics shared by table, list, and journal code.              |
+| `core/src/runtime.ts`              | Canonical document owner, transaction boundary, revision, history policy, and lifecycle.        |
+| `core/src/runtime/driver.ts`       | Internal synchronous write-policy seam used by an owning adapter without changing runtime APIs. |
+| `core/src/local-sync`              | Browser leader/follower attachment, append-only IndexedDB command log, and ordered tail replay. |
+| `core/src/impact.ts`               | Commit-local path and collection impact queries.                                                |
+| `core/src/impact-target.ts`        | One address, identity, equality, and notification-bucket interpretation for targets.            |
+| `core/src/runtime/notification.ts` | Ordered processors and root/targeted commit delivery.                                           |
+| `core/src/projection`              | Read-only derived views with explicit invalidation.                                             |
+| `react/src`                        | React adapter; it depends on core but core never depends on React.                              |
 
 ## Canonical Data Flow
 
@@ -96,8 +98,8 @@ local invariants.
 operations into one mutation session; they do not write canonical state
 directly. `runtime.prepare` runs the same typed mutation pipeline but always
 rolls it back: a `prepared` result has immutable forward operations, inverses,
-impact, reports, and no revision or notification. It is the boundary for a
-durable adapter that must write before making a change visible. `runtime.snapshot`
+impact, reports, and no revision or notification. It is available to an adapter
+that explicitly needs a strict prepare-before-commit protocol. `runtime.snapshot`
 returns an immutable, detached document value for checkpoint creation.
 `runtime.apply` accepts boundary input as `unknown`; the operation
 owner decodes it before journal, resolver, or executor code observes it. The
@@ -168,10 +170,20 @@ unchanged. Server rendering can provide an explicit `server` snapshot.
 
 Keep integrations outside core:
 
-- `doxum/local-sync` stores JSON checkpoints and ordered operation batches in
-  IndexedDB. Its session performs `prepare → durable transaction → apply`,
-  serializes writers through `navigator.locks`, and treats BroadcastChannel as
-  a notification to reload the durable tail rather than as a data source.
+- `doxum/local-sync` attaches to an existing runtime, hydrates it from an
+  IndexedDB checkpoint and append-only tail, and uses a document Web Lock to
+  select one leader. Its internal runtime write policy lets the leader retain
+  the ordinary synchronous operation APIs while followers reject direct writes.
+  The leader observes local, system, and history commits and appends their JSON
+  operation batches asynchronously. `replace`, and external `apply` calls
+  marked `remote`, are rejected while attached because they cannot be appended
+  as local operation commands; hydration and tail replay use the driver's
+  trusted lease instead. BroadcastChannel carries only a new-head hint;
+  followers reload and apply the durable tail as `remote`, which invalidates
+  their local history. There is no pending queue, rebase, actor history, or
+  attachment-specific undo API. `flush()` waits for observed leader commands to
+  persist or for a follower to catch up; it does not make a visible write
+  retroactively durable.
 - Other persistence should store and replay `DocumentOperation` batches, or use
   an application-defined snapshot strategy with `replace`.
 - Network synchronization should assign ordering, acknowledgements, retry, and

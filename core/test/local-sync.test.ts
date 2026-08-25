@@ -1,22 +1,42 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-import { field, object, schema, select, table } from '../src';
-import { LocalSyncDataError, openLocalDocument } from '../src/local-sync';
+import { createDocument, field, object, schema, select, table } from '../src';
+import {
+  attachLocalSync,
+  LocalSyncDataError,
+  LocalSyncReadOnlyError,
+  LocalSyncUnsupportedOperationError,
+} from '../src/local-sync';
 
 class TestLockManager {
-  #tail = Promise.resolve();
+  readonly #tails = new Map<string, Promise<void>>();
+  readonly #requests = new Map<string, number>();
 
-  request<T>(
-    _name: string,
-    _options: { readonly mode: 'exclusive' },
-    callback: () => T | PromiseLike<T>
-  ): Promise<T> {
-    const previous = this.#tail;
+  request<TResult>(
+    name: string,
+    options: { readonly mode: 'exclusive'; readonly ifAvailable?: boolean },
+    callback: (lock: unknown | null) => TResult | PromiseLike<TResult>
+  ): Promise<TResult> {
+    if (options.ifAvailable && (this.#requests.get(name) ?? 0) > 0)
+      return Promise.resolve(callback(null));
+    this.#requests.set(name, (this.#requests.get(name) ?? 0) + 1);
+    const previous = this.#tails.get(name) ?? Promise.resolve();
     let release!: () => void;
-    this.#tail = new Promise(resolve => {
+    const next = new Promise<void>(resolve => {
       release = resolve;
     });
-    return previous.then(callback, callback).finally(release);
+    this.#tails.set(name, next);
+    return previous
+      .then(
+        () => callback({}),
+        () => callback({})
+      )
+      .finally(() => {
+        const remaining = (this.#requests.get(name) ?? 1) - 1;
+        if (remaining === 0) this.#requests.delete(name);
+        else this.#requests.set(name, remaining);
+        release();
+      });
   }
 }
 
@@ -101,8 +121,10 @@ afterAll(() => {
 let sequence = 0;
 const database = (): string => `doxum-local-sync-${sequence++}`;
 
+const runtime = () => createDocument({ schema: documentSchema, initial });
+
 const waitFor = async (condition: () => boolean): Promise<void> => {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     if (condition()) return;
     await new Promise(resolve => setTimeout(resolve, 0));
   }
@@ -110,132 +132,172 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
 };
 
 describe('local sync', () => {
-  it('persists prepared commands before exposing the committed document', async () => {
+  it('keeps leader runtime writes synchronous and persists their commands in order', async () => {
     const name = database();
-    const first = await openLocalDocument({
+    const firstRuntime = runtime();
+    const first = await attachLocalSync({
+      runtime: firstRuntime,
       database: name,
       documentId: 'document',
-      schema: documentSchema,
-      initial,
     });
-    const update = await first.update(tx => {
+
+    expect(first.state()).toEqual({ status: 'leader', headSeq: 0, checkpointSeq: 0 });
+    expect(() => firstRuntime.replace(initial)).toThrow(LocalSyncUnsupportedOperationError);
+    expect(() => firstRuntime.apply([], { source: 'remote' })).toThrow(
+      LocalSyncUnsupportedOperationError
+    );
+    const update = firstRuntime.update(tx => {
       tx.write.title.set('two');
       return tx.read.title.get();
     });
     expect(update.status).toBe('committed');
-    if (update.status === 'committed') {
-      expect(update.value).toBe('two');
-      expect(update.commit.seq).toBe(1);
-    }
-    expect(select(first.document, read => read.title.get())).toBe('two');
+    if (update.status === 'committed') expect(update.value).toBe('two');
+    expect(select(firstRuntime, read => read.title.get())).toBe('two');
+    await first.flush();
+    expect(first.state()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
     await first.dispose();
+    expect(firstRuntime.update(tx => tx.write.title.set('detached')).status).toBe('committed');
 
-    const restored = await openLocalDocument({
+    const restoredRuntime = runtime();
+    const restored = await attachLocalSync({
+      runtime: restoredRuntime,
       database: name,
       documentId: 'document',
-      schema: documentSchema,
-      initial,
     });
-    expect(select(restored.document, read => read.title.get())).toBe('two');
-    expect(restored.state()).toEqual({ status: 'ready', headSeq: 1, checkpointSeq: 0 });
+    expect(restored.state()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
+    expect(select(restoredRuntime, read => read.title.get())).toBe('two');
     await restored.dispose();
   });
 
-  it('serializes cross-tab writes and recovers a tab from a compacted checkpoint', async () => {
+  it('allows one leader, applies ordered commands in followers, and transfers leadership', async () => {
     const name = database();
-    const first = await openLocalDocument({
+    const leaderRuntime = runtime();
+    const followerRuntime = runtime();
+    const leader = await attachLocalSync({
+      runtime: leaderRuntime,
       database: name,
       documentId: 'document',
-      schema: documentSchema,
-      initial,
-      checkpointEvery: 1,
     });
-    const second = await openLocalDocument({
+    const follower = await attachLocalSync({
+      runtime: followerRuntime,
       database: name,
       documentId: 'document',
-      schema: documentSchema,
-      initial,
-      checkpointEvery: 1,
     });
-    await first.update(tx => tx.write.title.set('two'));
-    await waitFor(() => select(second.document, read => read.title.get()) === 'two');
-    expect(select(second.document, read => read.title.get())).toBe('two');
-    expect(second.state()).toEqual({ status: 'ready', headSeq: 1, checkpointSeq: 1 });
 
-    await Promise.all([
-      first.update(tx => tx.write.tasks.item('a').title.set('AA')),
-      second.update(tx => tx.write.title.set('three')),
-    ]);
-    await first.sync();
-    await second.sync();
-    const firstSnapshot = select(first.document, read => ({
-      title: read.title.get(),
-      task: read.tasks.get('a')?.title.get(),
-    }));
-    const secondSnapshot = select(second.document, read => ({
-      title: read.title.get(),
-      task: read.tasks.get('a')?.title.get(),
-    }));
-    expect(secondSnapshot).toEqual(firstSnapshot);
-    expect(first.state().status).toBe('ready');
-    const firstState = first.state();
-    if (firstState.status === 'ready') expect(firstState.headSeq).toBe(3);
-    await first.dispose();
-    await second.dispose();
+    expect(leader.state().status).toBe('leader');
+    expect(follower.state()).toEqual({ status: 'follower', headSeq: 0, checkpointSeq: 0 });
+    expect(() => followerRuntime.update(tx => tx.write.title.set('forbidden'))).toThrow(
+      LocalSyncReadOnlyError
+    );
+    expect(() => followerRuntime.prepare(tx => tx.write.title.set('forbidden'))).toThrow(
+      LocalSyncReadOnlyError
+    );
+    expect(() => followerRuntime.apply([])).toThrow(LocalSyncReadOnlyError);
+    expect(() => followerRuntime.replace(initial)).toThrow(LocalSyncReadOnlyError);
+
+    leaderRuntime.update(tx => tx.write.title.set('two'));
+    await leader.flush();
+    await waitFor(() => select(followerRuntime, read => read.title.get()) === 'two');
+    expect(follower.state()).toEqual({ status: 'follower', headSeq: 1, checkpointSeq: 0 });
+    expect(followerRuntime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
+
+    await leader.dispose();
+    await waitFor(() => follower.state().status === 'leader');
+    followerRuntime.update(tx => tx.write.tasks.item('a').title.set('AA'));
+    await follower.flush();
+    expect(follower.state()).toEqual({ status: 'leader', headSeq: 2, checkpointSeq: 0 });
+    expect(select(followerRuntime, read => read.tasks.get('a')?.title.get())).toBe('AA');
+    await follower.dispose();
   });
 
-  it('records durable local undo and redo as new timeline commits', async () => {
-    const local = await openLocalDocument({
+  it('uses runtime history directly and persists undo and redo as commands', async () => {
+    const documentRuntime = runtime();
+    const localSync = await attachLocalSync({
+      runtime: documentRuntime,
       database: database(),
       documentId: 'document',
-      schema: documentSchema,
-      initial,
     });
-    await local.update(tx => tx.write.title.set('two'));
-    await local.update(tx => tx.write.title.set('three'));
-    const undone = await local.undo();
-    expect(undone.status).toBe('committed');
-    if (undone.status === 'committed') expect(undone.commit.seq).toBe(3);
-    expect(select(local.document, read => read.title.get())).toBe('two');
-    const redone = await local.redo();
-    expect(redone.status).toBe('committed');
-    if (redone.status === 'committed') expect(redone.commit.seq).toBe(4);
-    expect(select(local.document, read => read.title.get())).toBe('three');
-    await local.dispose();
+
+    documentRuntime.update(tx => tx.write.title.set('two'));
+    documentRuntime.update(tx => tx.write.title.set('three'));
+    expect(documentRuntime.history.undo().status).toBe('committed');
+    expect(select(documentRuntime, read => read.title.get())).toBe('two');
+    expect(documentRuntime.history.redo().status).toBe('committed');
+    expect(select(documentRuntime, read => read.title.get())).toBe('three');
+    await localSync.flush();
+    expect(localSync.state()).toEqual({ status: 'leader', headSeq: 4, checkpointSeq: 0 });
+    expect(documentRuntime.history.current()).toEqual({ undoDepth: 2, redoDepth: 0 });
+    await localSync.dispose();
   });
 
-  it('rejects non-JSON local payloads before durable state or the document changes', async () => {
-    const local = await openLocalDocument({
+  it('clears history that predates attachment', async () => {
+    const documentRuntime = runtime();
+    documentRuntime.update(tx => tx.write.title.set('two'));
+    expect(documentRuntime.history.current()).toEqual({ undoDepth: 1, redoDepth: 0 });
+
+    const localSync = await attachLocalSync({
+      runtime: documentRuntime,
       database: database(),
       documentId: 'document',
-      schema: documentSchema,
-      initial,
     });
-    await expect(
-      local.update(tx => tx.write.title.set(new Date() as never))
-    ).rejects.toBeInstanceOf(LocalSyncDataError);
-    expect(select(local.document, read => read.title.get())).toBe('one');
-    expect(local.state().status).toBe('ready');
-    await local.dispose();
+
+    expect(documentRuntime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
+    await localSync.dispose();
   });
 
-  it('rejects local commands that exceed the configured operation limit', async () => {
-    const local = await openLocalDocument({
+  it('persists system commits because they are runtime commits too', async () => {
+    const documentRuntime = runtime();
+    const localSync = await attachLocalSync({
+      runtime: documentRuntime,
       database: database(),
       documentId: 'document',
-      schema: documentSchema,
-      initial,
+    });
+
+    expect(
+      documentRuntime.update(tx => tx.write.title.set('two'), { source: 'system' }).status
+    ).toBe('committed');
+    await localSync.flush();
+    expect(localSync.state()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
+    await localSync.dispose();
+  });
+
+  it('reports non-JSON local commands after their synchronous runtime commit', async () => {
+    const documentRuntime = runtime();
+    const localSync = await attachLocalSync({
+      runtime: documentRuntime,
+      database: database(),
+      documentId: 'document',
+    });
+
+    expect(documentRuntime.update(tx => tx.write.title.set(new Date() as never)).status).toBe(
+      'committed'
+    );
+    expect(select(documentRuntime, read => read.title.get())).toBeInstanceOf(Date);
+    await waitFor(() => localSync.state().status === 'error');
+    expect(localSync.state()).toMatchObject({ status: 'error', headSeq: 0, checkpointSeq: 0 });
+    await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
+    await localSync.dispose();
+  });
+
+  it('reports command-limit failures after the document has committed synchronously', async () => {
+    const documentRuntime = runtime();
+    const localSync = await attachLocalSync({
+      runtime: documentRuntime,
+      database: database(),
+      documentId: 'document',
       commandLimits: { maxOperations: 1 },
     });
-    await expect(
-      local.update(tx => {
+
+    expect(
+      documentRuntime.update(tx => {
         tx.write.title.set('two');
         tx.write.tasks.item('a').title.set('AA');
-      })
-    ).rejects.toBeInstanceOf(LocalSyncDataError);
-    expect(select(local.document, read => read.title.get())).toBe('one');
-    expect(select(local.document, read => read.tasks.get('a')?.title.get())).toBe('A');
-    expect(local.state()).toEqual({ status: 'ready', headSeq: 0, checkpointSeq: 0 });
-    await local.dispose();
+      }).status
+    ).toBe('committed');
+    expect(select(documentRuntime, read => read.title.get())).toBe('two');
+    expect(select(documentRuntime, read => read.tasks.get('a')?.title.get())).toBe('AA');
+    await waitFor(() => localSync.state().status === 'error');
+    await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
+    await localSync.dispose();
   });
 });

@@ -7,16 +7,17 @@ undo/redo, precise change notifications, and incremental derived data.
 Licensed under the [MIT License](LICENSE).
 
 The `doxum` core entry is a local in-memory runtime. The optional
-`doxum/local-sync` browser adapter adds durable local editing and same-origin
-cross-tab synchronization; network collaboration, authorization, and conflict
-resolution remain separate application concerns.
+`doxum/local-sync` browser attachment adds IndexedDB persistence and
+same-origin cross-tab synchronization with one writable tab at a time; network
+collaboration, authorization, and conflict resolution remain separate
+application concerns.
 
 ## Packages
 
 - `doxum` defines schemas, mutations, history, subscriptions, and views.
-- `doxum/local-sync` provides IndexedDB persistence, Web Lock write
-  serialization, BroadcastChannel catch-up notifications, and durable local
-  undo/redo for one browser origin.
+- `doxum/local-sync` lets one Web-Lock leader write a runtime synchronously,
+  persists its commands asynchronously to IndexedDB, and makes other tabs
+  ordered read-only mirrors.
 - `doxum/react` binds Doxum read models to React 18+ with fine-grained external
   store subscriptions.
 
@@ -152,19 +153,37 @@ already settled.
 
 ## Local Persistence And Cross-Tab Sync
 
-`doxum/local-sync` is an optional browser adapter for a document that only
-needs offline persistence and same-origin, cross-tab consistency. It uses
-IndexedDB as the durable checkpoint and ordered commit log, Web Locks to give a
-document one writer, and BroadcastChannel only to notify other tabs to catch up
-from IndexedDB. It does not need a server or Yjs.
+`doxum/local-sync` is an optional browser attachment for a document that needs
+offline persistence and same-origin, cross-tab convergence. It uses IndexedDB
+as the ordered checkpoint and commit log, Web Locks to serialize background
+confirmation, and BroadcastChannel only to notify other tabs to catch up from
+IndexedDB. It does not need a server or Yjs.
+
+The attachment deliberately uses a simple single-writer model. It hydrates the
+runtime from the IndexedDB checkpoint and ordered command log, then attempts to
+hold a Web Lock for that document. The lock holder is the `leader` and may use
+the normal synchronous runtime APIs. All other attached tabs are `follower`
+mirrors: they read the durable tail in order after a BroadcastChannel hint, and
+their direct writes throw `LocalSyncReadOnlyError`. When the leader disposes,
+a follower catches up and becomes the next leader.
+
+The leader's `runtime.update`, normal `runtime.apply`, and
+`runtime.history.undo()` / `redo()` stay synchronous and immediately visible.
+Local-sync observes the resulting local, system, and history commits and writes
+their JSON operation batches to IndexedDB in the background. It deliberately
+rejects `runtime.replace()` and an externally supplied `apply(..., {
+source: 'remote' })` while attached: neither is a local operation command that
+the log can faithfully append. `flush()` is the explicit point that waits for
+commits observed before the call to persist (or, in a follower, waits to catch
+up to the durable head). A browser crash, quota failure, or malformed JSON
+payload can therefore leave an already visible leader commit unpersisted;
+inspect `state()` or use `onError` to surface that condition.
 
 ```ts
-import { select } from 'doxum';
-import { openLocalDocument } from 'doxum/local-sync';
+import { createDocument, select } from 'doxum';
+import { attachLocalSync } from 'doxum/local-sync';
 
-const local = await openLocalDocument({
-  database: 'my-app',
-  documentId: 'project-1',
+const runtime = createDocument({
   schema: taskSchema,
   initial: {
     title: 'Launch',
@@ -172,21 +191,34 @@ const local = await openLocalDocument({
   },
 });
 
-await local.update(tx => {
-  tx.write.title.set('Ship Doxum');
+const localSync = await attachLocalSync({
+  runtime,
+  database: 'my-app',
+  documentId: 'project-1',
 });
 
-select(local.document, read => read.title.get());
-await local.undo();
-await local.dispose();
+if (localSync.state().status === 'leader') {
+  runtime.update(tx => {
+    tx.write.title.set('Ship Doxum');
+  });
+
+  runtime.history.undo();
+}
+
+select(runtime, read => read.title.get()); // leader write or follower replay
+await localSync.flush(); // persist observed leader commands / catch up a follower
+
+await localSync.dispose();
 ```
 
-`local.document` is a read-only runtime capability, so selectors, views, and
-`doxum/react` can observe it but application code cannot bypass the durable
-write session. `local.update`, `undo`, and `redo` are asynchronous because they
-first acquire the cross-tab lock and commit to IndexedDB. Local-sync data must
-be JSON: non-JSON initial values or operation payloads are rejected before a
-document change becomes visible.
+`attachLocalSync` first hydrates the passed runtime from IndexedDB; await it
+before allowing reads or edits. It does not make runtime mutation asynchronous,
+does not own `runtime.dispose()`, and does not expose a second undo API. Runtime
+history is in-memory only: hydration and remote tail application invalidate it,
+so an undo stack never transfers to a new leader or survives reopening a tab.
+Local-sync data must be JSON. Because command validation happens after the
+runtime commit, a non-JSON payload is reported as a post-commit attachment error
+rather than rolling back an already observed document change.
 
 ## React
 

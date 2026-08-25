@@ -25,6 +25,7 @@ import type {
   TransactionResult,
 } from './runtime/contract';
 import { bindRuntimeAccess } from './runtime/access';
+import { assertRuntimeWritable, bindRuntimeDriver, disposeRuntimeDriver } from './runtime/driver';
 import {
   createNotification,
   disposeNotification,
@@ -72,9 +73,10 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
   let runtime!: DocumentRuntime<TSchema>;
   let notification!: RuntimeNotification<TSchema>;
 
-  const assertWritable = (): void => {
+  const assertWritable = (intent: Parameters<typeof assertRuntimeWritable>[1]): void => {
     if (state.disposed) throw new DocumentDisposedError();
     if (busy) throw new DocumentReentrancyError();
+    assertRuntimeWritable(runtime, intent);
   };
 
   const runTransaction = <TResult>(
@@ -174,7 +176,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     source: CommitSource,
     recordHistory: boolean
   ): OperationResult<DocumentCommit<TSchema>> {
-    assertWritable();
+    assertWritable({ kind: 'apply', source });
     const batch = mutateOperations(state.document, input.schema, operations, {
       copyPayload: source === 'history',
     });
@@ -184,6 +186,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
   }
 
   runtime = {
+    schema: input.schema,
     address: {
       resolve: address => resolveAddress(input.schema, address, state.document),
       read: address => readAddress(state.document, address),
@@ -199,7 +202,8 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
         readonly history?: boolean;
       }
     ): TransactionResult<TResult, DocumentCommit<TSchema>> => {
-      assertWritable();
+      const source = options?.source ?? 'local';
+      assertWritable({ kind: 'update', source });
       busy = true;
       const session = createMutationSession(state.document, input.schema);
       let committed = false;
@@ -215,12 +219,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
           };
         if (batch.status === 'rejected')
           return { status: 'rejected', issues: batch.issues, revision };
-        const result = publish(
-          batch,
-          options?.source ?? 'local',
-          'operations',
-          options?.history ?? true
-        );
+        const result = publish(batch, source, 'operations', options?.history ?? true);
         committed = true;
         return {
           status: 'committed',
@@ -245,7 +244,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     prepare: <TResult>(
       run: (transaction: DocumentTransaction<TSchema>) => TResult
     ): PreparedUpdateResult<TResult, TSchema> => {
-      assertWritable();
+      assertWritable({ kind: 'prepare' });
       busy = true;
       const session = createMutationSession(state.document, input.schema);
       try {
@@ -285,7 +284,8 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     apply: (operations, options) =>
       applyBatch(operations, options?.source ?? 'local', options?.history ?? true),
     replace: (document, options) => {
-      assertWritable();
+      const source = options?.source ?? 'system';
+      assertWritable({ kind: 'replace', source });
       const invalidTree = tree.invalidDocument(input.schema, document);
       if (invalidTree)
         return {
@@ -304,7 +304,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
         paths: EMPTY,
         collections: EMPTY,
       };
-      return publish(batch, options?.source ?? 'system', 'replace', false);
+      return publish(batch, source, 'replace', false);
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();
@@ -331,10 +331,12 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
       state.disposed = true;
       disposeNotification(notification);
       history.api.clear();
+      disposeRuntimeDriver(runtime);
     },
   };
 
   bindRuntimeAccess(runtime, state);
+  bindRuntimeDriver(runtime);
   notification = createNotification(runtime);
   return runtime;
 };

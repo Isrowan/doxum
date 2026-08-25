@@ -17,7 +17,7 @@ resolution.
 | ------------------------------------- | -------------------------------------------------------- |
 | Define document shape                 | `schema`, `field`, `object`, and collection constructors |
 | Create the canonical runtime          | `createDocument`                                         |
-| Persist and sync one browser document | `openLocalDocument` from `doxum/local-sync`              |
+| Persist and sync one browser document | `attachLocalSync` from `doxum/local-sync`                |
 | Read once                             | `select(runtime, read => ...)`                           |
 | Make local business changes           | `runtime.update(tx => ...)`                              |
 | Replay persisted or remote operations | `runtime.apply(operations, options)`                     |
@@ -205,6 +205,57 @@ the inverse or forward operation batch through the same mutation pipeline.
 `observerErrors` on a committed result are failures from processors, flushes,
 or listeners after canonical state and history settled. They are not mutation
 failures and must not cause the caller to repeat the write.
+
+## Attach local browser sync
+
+`attachLocalSync` is an optional browser attachment. Create and keep the
+runtime yourself, then await attachment before allowing the document to be used.
+It hydrates that runtime from an IndexedDB checkpoint and append-only command
+tail, then uses a Web Lock to choose exactly one writable tab. The `leader`
+uses normal synchronous runtime writes; every other attached tab is a
+`follower` read-only mirror. A direct follower write through `update`,
+`prepare`, `apply`, or `replace` throws `LocalSyncReadOnlyError`.
+
+The leader's local, system, and history commits are observed after they have
+settled and persisted to IndexedDB in order. BroadcastChannel carries only a
+new-head hint. Followers reload the durable tail and apply it as `remote`; this
+keeps their document ordered and invalidates their in-memory history. When the
+leader disposes, a caught-up follower takes the lock and becomes leader.
+
+Local-sync persists operation commands, not arbitrary new baselines. While it
+is attached, `runtime.replace()` and an externally supplied
+`runtime.apply(..., { source: 'remote' })` throw
+`LocalSyncUnsupportedOperationError`; internal hydration and tail replay use a
+trusted attachment path instead.
+
+```ts
+import { attachLocalSync } from 'doxum/local-sync';
+
+const runtime = createDocument({ schema: taskSchema, initial });
+const localSync = await attachLocalSync({
+  runtime,
+  database: 'my-app',
+  documentId: 'project-1',
+});
+
+if (localSync.state().status === 'leader') {
+  runtime.update(tx => tx.write.title.set('Ship Doxum'));
+  runtime.history.undo();
+}
+
+await localSync.flush(); // persist observed leader commands or catch up a follower
+await localSync.dispose();
+```
+
+This is synchronous visibility with asynchronous persistence, not strict
+durability: a crash, storage failure, or invalid JSON payload can leave a
+visible leader commit unpersisted. Use `localSync.state()` and `onError` to show
+that condition. `flush()` is the explicit persistence/catch-up boundary. The
+attachment does not own or dispose the runtime and it does not expose an undo
+API: use `runtime.history.undo()` and `runtime.history.redo()` while the tab is
+leader. Runtime history is intentionally in-memory only; attachment hydration
+and remote tail replay invalidate it, so it is not transferred across reopening
+or leader handoff.
 
 ## Subscribe through schema-owned targets
 
