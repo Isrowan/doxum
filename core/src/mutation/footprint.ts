@@ -53,6 +53,7 @@ export const commandFootprint = (
     switch (operation.type) {
       case 'field.set':
       case 'field.clear':
+      case 'value.clear':
       case 'variant.replace':
         add(targets, { kind: 'value', at: operation.at });
         break;

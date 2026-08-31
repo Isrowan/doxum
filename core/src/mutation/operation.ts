@@ -61,6 +61,7 @@ export const decode = (input: unknown): OperationDecode => {
         ? decoded(input as DocumentOperationUnion)
         : rejected('invalid-operation', 'Operation value is required.');
     case 'field.clear':
+    case 'value.clear':
       return decoded(input as DocumentOperationUnion);
     case 'dict.set':
       return typeof input.key === 'string' && has(input, 'value')

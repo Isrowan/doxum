@@ -163,6 +163,11 @@ the same API except `move`, because it is unordered. Lists offer `insert`,
 specified in the schema. See [patterns.en.md](patterns.en.md) for complete
 collection and tree examples.
 
+Optional field, variant, dict, list, and tree writers expose `clear()`. Optional
+structured leaves can also be initialized from an absent state with `replace()`.
+Optional objects, tables, and maps have no whole-value clear; modify them through
+their child writers or collection operations.
+
 ## Replay operations at the boundary
 
 Use `apply` for operation batches that came from persistence, a network

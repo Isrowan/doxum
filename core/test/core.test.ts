@@ -5,6 +5,7 @@ import {
   createMaterializedView,
   asReadable,
   commandFootprint,
+  dict,
   field,
   list,
   map,
@@ -18,6 +19,17 @@ import {
   tree,
   variant,
   type CollectionSelector,
+  type CollectionReader,
+  type DictionaryWriter,
+  type DocumentReader,
+  type DocumentWriter,
+  type FieldReader,
+  type FieldWriter,
+  type ListReader,
+  type ListWriter,
+  type TreeReader,
+  type TreeWriter,
+  type ReaderOfNode,
   type ValueSelector,
 } from '../src';
 
@@ -33,9 +45,46 @@ const initial = {
 
 type SelectorValue<T> = T extends ValueSelector<infer TValue> ? TValue : never;
 type CollectionTypes<T> =
-  T extends CollectionSelector<infer TId, infer TEntry> ? { id: TId; entry: TEntry } : never;
+  T extends CollectionSelector<infer TId, infer TNode>
+    ? { id: TId; entry: import('../src').DocumentValueOfNode<TNode> }
+    : never;
 
 describe('mutable Doxum runtime', () => {
+  it('derives collection entry access from schema nodes', () => {
+    const entry = object({
+      title: field<string>(),
+      note: optional(field<string>()),
+      outline: optional(tree<string>()),
+      tags: optional(list<string>({ keyOf: value => value })),
+      attrs: optional(dict<string, number>()),
+    });
+    const documentSchema = schema({ items: table(entry) });
+    type Writer = DocumentWriter<typeof documentSchema>;
+    type ItemWriter = ReturnType<Writer['items']['item']>;
+    expectTypeOf<ItemWriter['title']>().toEqualTypeOf<FieldWriter<string>>();
+    expectTypeOf<ItemWriter['note']>().toEqualTypeOf<FieldWriter<string | undefined, true>>();
+    expectTypeOf<ItemWriter['outline']>().toMatchTypeOf<TreeWriter<string>>();
+    expectTypeOf<ItemWriter['outline']['clear']>().toEqualTypeOf<() => void>();
+    expectTypeOf<ItemWriter['tags']>().toMatchTypeOf<ListWriter<string>>();
+    expectTypeOf<ItemWriter['tags']['clear']>().toEqualTypeOf<() => void>();
+    expectTypeOf<ItemWriter['attrs']>().toMatchTypeOf<DictionaryWriter<string, number>>();
+    expectTypeOf<ItemWriter['attrs']['clear']>().toEqualTypeOf<() => void>();
+
+    type Reader = DocumentReader<typeof documentSchema>;
+    expectTypeOf<Reader['items']>().toEqualTypeOf<CollectionReader<string, typeof entry>>();
+    expectTypeOf<Reader['items']['get']>().toEqualTypeOf<
+      (id: string) => ReaderOfNode<typeof entry> | undefined
+    >();
+    type EntryReader = ReaderOfNode<typeof entry>;
+    expectTypeOf<EntryReader['title']>().toEqualTypeOf<FieldReader<string>>();
+    expectTypeOf<EntryReader['note']>().toEqualTypeOf<FieldReader<string | undefined>>();
+    expectTypeOf<EntryReader['outline']>().toEqualTypeOf<TreeReader<string>>();
+    expectTypeOf<EntryReader['tags']>().toEqualTypeOf<ListReader<string>>();
+    expectTypeOf<EntryReader['attrs']>().toEqualTypeOf<
+      FieldReader<Readonly<Partial<Record<string, number>>>>
+    >();
+  });
+
   it('infers selector and collection types from schema paths', () => {
     const title = projectSchema.value(path => path.title);
     const name = projectSchema.value(path => path.projects.item('a').name);
@@ -585,6 +634,43 @@ describe('mutable Doxum runtime', () => {
         },
       })
     ).toThrow('invalid tree');
+  });
+  it('initializes, clears, and undoes optional structured leaves', () => {
+    const optionalSchema = schema({
+      outline: optional(tree<string>()),
+      tags: optional(list<string>({ keyOf: value => value })),
+      attrs: optional(dict<string, number>()),
+    });
+    const runtime = createDocument({ schema: optionalSchema, initial: {} });
+    const outline = {
+      rootId: 'root',
+      nodes: { root: { children: [], value: 'root' } },
+    };
+    expect(
+      runtime.update(tx => {
+        tx.write.outline.replace(outline);
+        tx.write.tags.replace(['one', 'two']);
+        tx.write.attrs.replace({ count: 2 });
+      }).status
+    ).toBe('committed');
+    expect(select(runtime, read => read.outline.rootId())).toBe('root');
+    expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
+    expect(select(runtime, read => read.attrs.get())).toEqual({ count: 2 });
+
+    expect(
+      runtime.update(tx => {
+        tx.write.outline.clear();
+        tx.write.tags.clear();
+        tx.write.attrs.clear();
+      }).status
+    ).toBe('committed');
+    expect(select(runtime, read => read.outline.rootId())).toBeUndefined();
+    expect(select(runtime, read => read.tags.values())).toEqual([]);
+    expect(select(runtime, read => read.attrs.get())).toBeUndefined();
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(select(runtime, read => read.outline.rootId())).toBe('root');
+    expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
+    expect(select(runtime, read => read.attrs.get())).toEqual({ count: 2 });
   });
   it('reports observer errors on committed results without rolling back', () => {
     const runtime = createDocument({ schema: projectSchema, initial });

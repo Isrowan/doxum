@@ -24,6 +24,13 @@ array of ids: that creates two mutation protocols and two sources of order.
 Use a list only when every item has a stable, unique application key; never use
 the current index as `keyOf`.
 
+Entry readers and writers for tables and maps are derived directly from the entry
+schema node. Structured entries retain their specialized tree, list, dict, or
+variant access instead of being reconstructed from runtime values into a broad
+object union. Optional fields and optional variant, dict, list, and tree leaves
+also expose `clear()` and can be initialized from an absent state with
+`replace()`; objects, tables, and maps keep their child or collection operations.
+
 ```ts
 import { field, list, map, object, schema, table, tree } from 'doxum';
 

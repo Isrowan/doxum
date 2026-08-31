@@ -19,6 +19,12 @@
 
 当顺序对产品可见时使用 table。不要用 map 加另一份 ids array 表示顺序：这会产生两套 mutation protocol 和两个顺序来源。list 只适合每个条目都有稳定、唯一应用 key 的情形；不能把当前 index 当作 `keyOf`。
 
+table/map 的 entry reader 与 writer 直接由 entry schema node 推导。结构化 entry 会保留
+自己的 tree、list、dict、variant 等专用 access，而不会从运行时 value 反推成普通对象或
+产生 value union。optional field 以及 optional 的 variant、dict、list、tree 结构叶子额外
+提供 `clear()`，并可在缺失状态通过 `replace()` 初始化；object、table、map 仍使用各自的
+子 writer 或集合操作。
+
 ```ts
 import { field, list, map, object, schema, table, tree } from 'doxum';
 

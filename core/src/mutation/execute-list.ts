@@ -25,9 +25,19 @@ export const executeList = (
   operation: ListOperation,
   copyPayload: boolean
 ): MutationOutcome => {
-  if (!Array.isArray(target.value) || target.node.kind !== 'list')
+  if (target.node.kind !== 'list')
     return rejected(operation, 'invalid-address', 'List target is invalid.');
-  const list = target.value;
+  const absent =
+    target.value === undefined && 'optional' in target.node && target.node.optional === true;
+  if (!Array.isArray(target.value) && !absent)
+    return rejected(operation, 'invalid-address', 'List target is invalid.');
+  if (absent && operation.type !== 'list.replace')
+    return rejected(
+      operation,
+      'invalid-address',
+      'Only list replacement can initialize an optional list.'
+    );
+  const list = (Array.isArray(target.value) ? target.value : []) as unknown[];
   const orderedKeys = anchor.keys(list, target.node.keyOf);
   const own = <T>(value: T): T => (copyPayload ? ownPayload(value) : value);
 
@@ -41,19 +51,22 @@ export const executeList = (
         return rejected(operation, 'invalid-list-keys', 'List replacement keys are invalid.');
       seen.add(key);
     }
-    if (sameStructuralValue(list, operation.value)) return { status: 'unchanged' };
-    const keys = new Array<string>(list.length);
-    for (let index = 0; index < list.length; index += 1)
-      keys[index] = target.node.keyOf(list[index]);
-    const inverse: DocumentOperationUnion = {
-      type: 'list.replace',
-      at: operation.at,
-      value: cloneValue(list, 'inverse'),
-      keys,
-    };
+    if (!absent && sameStructuralValue(list, operation.value)) return { status: 'unchanged' };
+    const keys = list.map(target.node.keyOf);
+    const inverse: DocumentOperationUnion = absent
+      ? { type: 'value.clear', at: operation.at }
+      : {
+          type: 'list.replace',
+          at: operation.at,
+          value: cloneValue(list, 'inverse'),
+          keys,
+        };
     const owned = own(operation.value) as unknown[];
-    list.length = owned.length;
-    for (let index = 0; index < owned.length; index += 1) list[index] = owned[index];
+    if (absent) (target.parent as Record<string | number, unknown>)[target.key] = owned;
+    else {
+      list.length = owned.length;
+      for (let index = 0; index < owned.length; index += 1) list[index] = owned[index];
+    }
     return { status: 'changed', inverse: [inverse] };
   }
 

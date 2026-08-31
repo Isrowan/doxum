@@ -13,14 +13,18 @@ export type DocumentTreeValue<TValue> = {
   readonly nodes: Readonly<Record<string, DocumentTreeNode<TValue>>>;
 };
 
-type BaseNode<K extends string> = { readonly kind: K };
+type BaseNode<K extends string> = {
+  readonly kind: K;
+  readonly optional?: boolean;
+};
 export type FieldNode<T, Optional extends boolean = false> = BaseNode<'field'> & {
   readonly __value?: T;
-  readonly optional?: Optional;
-};
-export type OptionalNode<TNode extends DocumentNode> = TNode & {
-  readonly optional: true;
-};
+} & (Optional extends true ? { readonly optional: true } : { readonly optional?: false });
+/** A node with optional presence. The marker replaces, rather than intersects, a field marker. */
+export type OptionalNode<TNode extends DocumentNode> =
+  TNode extends FieldNode<infer TValue, boolean>
+    ? FieldNode<TValue, true>
+    : TNode & { readonly optional: true };
 export interface ObjectShape {
   readonly [key: string]: DocumentNode;
 }
@@ -66,7 +70,8 @@ export type TreeNode<TValue> = BaseNode<'tree'> & {
 };
 
 export type DocumentNode =
-  | FieldNode<unknown, boolean>
+  | FieldNode<unknown, false>
+  | FieldNode<unknown, true>
   | ObjectNode<ObjectShape>
   | VariantNode<string, VariantShape>
   | SingleNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
@@ -125,12 +130,18 @@ export type DocumentValueOfShape<S extends ObjectShape> = {
 } & { readonly [K in OptionalKeys<S>]?: DocumentValueOfNode<S[K]> };
 export type ReadonlyDocument<S extends DocumentSchema> = DocumentValueOfShape<S['shape']>;
 
-export type CollectionSelector<TId extends string = string, TEntry = unknown> = {
+export type EntitySchemaNode = ObjectNode<ObjectShape> | VariantNode<string, VariantShape>;
+
+export type CollectionSelector<
+  TId extends string = string,
+  TNode extends EntitySchemaNode = EntitySchemaNode,
+> = {
   readonly kind: 'collection';
   readonly schema: DocumentSchema;
   readonly address: DocumentAddress;
   readonly __id?: TId;
-  readonly __entry?: TEntry;
+  /** Compile-time entry schema carried by schema selectors. */
+  readonly __node?: TNode;
 };
 export type ValueSelector<TResult = unknown> = {
   readonly kind: 'value';
@@ -146,7 +157,7 @@ export type ImpactTarget<T = unknown> =
       readonly at: DocumentAddress;
       readonly id?: string;
     }
-  | CollectionSelector<string, T>;
+  | CollectionSelector<string>;
 type PathMarker<TValue> = { readonly __value?: TValue };
 
 type SchemaPathFor<S extends ObjectShape = ObjectShape, TValue = unknown> = {
@@ -160,7 +171,7 @@ export type DocumentSchema<TShape extends ObjectShape = {}> = {
   readonly shape: TShape;
   collection<TPath extends PathMarker<unknown>>(
     pick: (path: SchemaPath<TShape>) => TPath
-  ): CollectionSelector<CollectionId<TPath>, CollectionEntry<TPath>>;
+  ): CollectionSelector<CollectionId<TPath>, CollectionNode<TPath>>;
   value<TPath extends PathMarker<unknown>>(
     pick: (path: SchemaPath<TShape>) => TPath
   ): ValueSelector<PathValueResult<TPath>>;
@@ -200,7 +211,7 @@ type CollectionPath<N extends ObjectNode<ObjectShape> | VariantNode<string, Vari
   readonly item: (id: string) => EntityPath<N>;
   readonly __collection?: {
     readonly id: string;
-    readonly entry: DocumentValueOfNode<N>;
+    readonly node: N;
   };
 };
 
@@ -217,15 +228,17 @@ type PathValue<N extends DocumentNode> =
 type CollectionInfo<T> = T extends {
   readonly __collection?: {
     readonly id: infer TId;
-    readonly entry: infer TEntry;
+    readonly node: infer TNode extends EntitySchemaNode;
   };
 }
-  ? { readonly id: TId; readonly entry: TEntry }
+  ? { readonly id: TId; readonly node: TNode }
   : never;
 type CollectionId<T> =
   CollectionInfo<T> extends { readonly id: infer TId extends string } ? TId : string;
-type CollectionEntry<T> =
-  CollectionInfo<T> extends { readonly entry: infer TEntry } ? TEntry : never;
+export type CollectionNode<T> =
+  CollectionInfo<T> extends { readonly node: infer TNode extends EntitySchemaNode }
+    ? TNode
+    : EntitySchemaNode;
 type PathValueResult<T> = T extends PathMarker<infer TValue> ? TValue : unknown;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
@@ -286,7 +299,7 @@ export const schema = <S extends ObjectShape>(shape: S): DocumentSchema<S> => {
     collection: <TPath extends PathMarker<unknown>>(pick: (path: SchemaPath<S>) => TPath) =>
       select(result, 'collection', pick) as CollectionSelector<
         CollectionId<TPath>,
-        CollectionEntry<TPath>
+        CollectionNode<TPath>
       >,
     value: <TPath extends PathMarker<unknown>>(pick: (path: SchemaPath<S>) => TPath) =>
       select(result, 'value', pick) as ValueSelector<PathValueResult<TPath>>,

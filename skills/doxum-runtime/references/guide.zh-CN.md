@@ -135,6 +135,10 @@ runtime.update(tx => {
 
 table 支持 `create`、`item`、`remove` 和 `move`。map 与之相同，但没有 `move`，因为它无顺序。list 支持 `insert`、`move`、`remove` 与 `replace`；其身份来自 schema 中的 `keyOf`。完整的集合与 tree 模式见 [patterns.zh-CN.md](patterns.zh-CN.md)。
 
+optional 的 field、variant、dict、list 和 tree writer 提供 `clear()`；其中结构化叶子也可
+在当前缺失时直接调用 `replace()` 建立值。optional object、table 和 map 没有整体 clear，
+应通过子 writer 或集合操作修改。
+
 ## 在边界回放 operation
 
 来自持久化、网络适配器或其他外部边界的 operation batch 应通过 `apply` 回放。Doxum 会在 mutation code 看到数据前解码未知 operation payload，按 schema 解析每个地址，并原子地执行整个 batch。

@@ -5,6 +5,7 @@ import type {
   DocumentNode,
   DocumentSchema,
   DocumentValueOfNode,
+  EntitySchemaNode,
   ImpactTarget,
   ListNode,
   MapNode,
@@ -21,10 +22,10 @@ import { profile } from '../profile';
 import type { DependencyTracker } from './dependency';
 
 export type FieldReader<T> = { readonly get: () => T };
-export type CollectionReader<TId, TEntry> = {
+export type CollectionReader<TId, TNode extends EntitySchemaNode> = {
   readonly ids: () => readonly TId[];
   readonly has: (id: TId) => boolean;
-  readonly get: (id: TId) => EntityReader<TEntry> | undefined;
+  readonly get: (id: TId) => ReaderOfNode<TNode> | undefined;
 };
 export type ListReader<T> = {
   readonly values: () => readonly T[];
@@ -39,14 +40,6 @@ export type TreeReader<T> = {
   readonly children: (id: string) => readonly string[];
 };
 
-export type EntityReader<T> = T extends object
-  ? { readonly [K in keyof T]: ReaderValue<T[K]> }
-  : FieldReader<T>;
-export type ReaderValue<T> = T extends readonly (infer TItem)[]
-  ? ListReader<TItem>
-  : T extends object
-    ? EntityReader<T>
-    : FieldReader<T>;
 export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
   kind: 'field';
 }
@@ -58,9 +51,9 @@ export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
       : TNode extends SingleNode<infer TValue>
         ? ReaderOfNode<TValue>
         : TNode extends TableNode<infer TValue>
-          ? CollectionReader<string, DocumentValueOfNode<TValue>>
+          ? CollectionReader<string, TValue>
           : TNode extends MapNode<infer TValue>
-            ? CollectionReader<string, DocumentValueOfNode<TValue>>
+            ? CollectionReader<string, TValue>
             : TNode extends DictNode<infer TKey, infer TValue>
               ? FieldReader<Readonly<Partial<Record<TKey, TValue>>>>
               : TNode extends ListNode<infer TItem>
@@ -212,7 +205,7 @@ export const readerFor = (
           node.kind === 'table' && isRecord(value) && isRecord(value.byId) ? value.byId : value;
         if (!isRecord(byId) || !Object.prototype.hasOwnProperty.call(byId, id)) return undefined;
         const cached = items?.get(id);
-        if (cached) return cached as EntityReader<unknown>;
+        if (cached) return cached as ReaderOfNode<typeof node.value>;
         const reader = readerFor(node.value, context, [...address, id]);
         (items ??= new Map()).set(id, reader);
         return reader;

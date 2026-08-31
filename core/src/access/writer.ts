@@ -5,6 +5,8 @@ import type {
   DocumentNode,
   DocumentSchema,
   DocumentValueOfNode,
+  DocumentTreeValue,
+  EntitySchemaNode,
   ListNode,
   MapNode,
   ObjectNode,
@@ -15,33 +17,32 @@ import type {
 } from '../schema';
 import type { DocumentAnchor, DocumentOperationUnion } from '../operations';
 
-export type FieldWriter<T> = {
+export type FieldWriter<T, Optional extends boolean = false> = {
   readonly set: (value: T) => void;
-  readonly clear?: () => void;
-};
+} & (Optional extends true ? { readonly clear: () => void } : {});
 export type DictionaryWriter<TKey extends string, TValue> = {
   readonly set: (key: TKey, value: TValue) => void;
   readonly delete: (key: TKey) => void;
   readonly replace: (value: Readonly<Partial<Record<TKey, TValue>>>) => void;
 };
-export type CollectionWriter<TId, TEntry> = {
+export type CollectionWriter<TId, TNode extends EntitySchemaNode> = {
   readonly create: (
     entry:
-      | { readonly id: TId; readonly value: TEntry }
-      | readonly { readonly id: TId; readonly value: TEntry }[],
+      | { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }
+      | readonly { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }[],
     anchor?: DocumentAnchor
   ) => void;
-  readonly item: (id: TId) => EntityWriter<TEntry>;
+  readonly item: (id: TId) => WriterOfNode<TNode>;
   readonly remove: (id: TId | readonly TId[]) => void;
   readonly move: (id: TId, anchor?: DocumentAnchor) => void;
 };
-export type MapWriter<TId, TEntry> = {
+export type MapWriter<TId, TNode extends EntitySchemaNode> = {
   readonly create: (
     entry:
-      | { readonly id: TId; readonly value: TEntry }
-      | readonly { readonly id: TId; readonly value: TEntry }[]
+      | { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }
+      | readonly { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }[]
   ) => void;
-  readonly item: (id: TId) => EntityWriter<TEntry>;
+  readonly item: (id: TId) => WriterOfNode<TNode>;
   readonly remove: (id: TId | readonly TId[]) => void;
 };
 export type ListWriter<T> = {
@@ -55,36 +56,33 @@ export type TreeWriter<T> = {
   readonly move: (id: string, parentId?: string, index?: number) => void;
   readonly remove: (id: string) => void;
   readonly set: (id: string, value: T) => void;
-  readonly replace: (value: unknown) => void;
+  readonly replace: (value: DocumentTreeValue<T>) => void;
 };
-export type EntityWriter<T> = T extends object
-  ? { readonly [K in keyof T]: WriterValue<T[K]> }
-  : FieldWriter<T>;
-export type WriterValue<T> = T extends readonly (infer TItem)[]
-  ? ListWriter<TItem>
-  : T extends object
-    ? EntityWriter<T>
-    : FieldWriter<T>;
+type OptionalClear<TNode extends DocumentNode, TWriter> = TNode extends { readonly optional: true }
+  ? TWriter & { readonly clear: () => void }
+  : TWriter;
 export type WriterOfNode<TNode extends DocumentNode> = TNode extends {
   kind: 'field';
 }
-  ? FieldWriter<DocumentValueOfNode<TNode>>
+  ? TNode extends { readonly optional: true }
+    ? FieldWriter<DocumentValueOfNode<TNode>, true>
+    : FieldWriter<DocumentValueOfNode<TNode>>
   : TNode extends ObjectNode<infer TShape>
     ? { readonly [K in keyof TShape]: WriterOfNode<TShape[K]> }
     : TNode extends VariantNode<string, infer _TVariants>
-      ? { readonly replace: (value: DocumentValueOfNode<TNode>) => void }
+      ? OptionalClear<TNode, { readonly replace: (value: DocumentValueOfNode<TNode>) => void }>
       : TNode extends SingleNode<infer TValue>
         ? WriterOfNode<TValue>
         : TNode extends TableNode<infer TValue>
-          ? CollectionWriter<string, DocumentValueOfNode<TValue>>
+          ? CollectionWriter<string, TValue>
           : TNode extends MapNode<infer TValue>
-            ? MapWriter<string, DocumentValueOfNode<TValue>>
+            ? MapWriter<string, TValue>
             : TNode extends DictNode<infer TKey, infer TValue>
-              ? DictionaryWriter<TKey, TValue>
+              ? OptionalClear<TNode, DictionaryWriter<TKey, TValue>>
               : TNode extends ListNode<infer TItem>
-                ? ListWriter<TItem>
+                ? OptionalClear<TNode, ListWriter<TItem>>
                 : TNode extends TreeNode<infer TValue>
-                  ? TreeWriter<TValue>
+                  ? OptionalClear<TNode, TreeWriter<TValue>>
                   : FieldWriter<DocumentValueOfNode<TNode>>;
 export type DocumentWriter<TSchema extends DocumentSchema> = WriterOfNode<
   ObjectNode<TSchema['shape']>
@@ -114,6 +112,7 @@ export const writerFor = (
       delete: (key: string) => emit(sink, { type: 'dict.delete', at: address, key }),
       replace: (value: Readonly<Record<string, unknown>>) =>
         emit(sink, { type: 'dict.replace', at: address, value }),
+      ...(node.optional ? { clear: () => emit(sink, { type: 'value.clear', at: address }) } : {}),
     };
   if (node.kind === 'list')
     return {
@@ -135,6 +134,7 @@ export const writerFor = (
           value,
           keys: value.map(node.keyOf),
         }),
+      ...(node.optional ? { clear: () => emit(sink, { type: 'value.clear', at: address }) } : {}),
     };
   if (node.kind === 'tree')
     return {
@@ -164,6 +164,7 @@ export const writerFor = (
           value,
         }),
       replace: (value: unknown) => emit(sink, { type: 'tree.replace', at: address, value }),
+      ...(node.optional ? { clear: () => emit(sink, { type: 'value.clear', at: address }) } : {}),
     };
   if (node.kind === 'table') {
     let items: Map<string, unknown> | undefined;
@@ -233,6 +234,7 @@ export const writerFor = (
   if (node.kind === 'variant')
     return {
       replace: (value: unknown) => emit(sink, { type: 'variant.replace', at: address, value }),
+      ...(node.optional ? { clear: () => emit(sink, { type: 'value.clear', at: address }) } : {}),
     };
 
   let children: Map<string, unknown> | undefined;

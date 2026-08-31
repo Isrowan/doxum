@@ -61,6 +61,13 @@ export const executeValue = (
     return { status: 'changed', inverse: [inverse] };
   }
 
+  if (operation.type === 'dict.replace' && target.value === undefined) {
+    if (!('optional' in target.node) || !target.node.optional)
+      return rejected(operation, 'invalid-address', 'Dictionary target is invalid.');
+    const inverse: DocumentOperationUnion = { type: 'value.clear', at: operation.at };
+    (target.parent as Record<string | number, unknown>)[target.key] = own(operation.value);
+    return { status: 'changed', inverse: [inverse] };
+  }
   if (!isRecord(target.value))
     return rejected(operation, 'invalid-address', 'Dictionary target is invalid.');
   if (operation.type === 'dict.replace') {

@@ -35,6 +35,8 @@ export type {
   DocumentValueOfShape,
   ReadonlyDocument,
   CollectionSelector,
+  CollectionNode,
+  EntitySchemaNode,
   ValueSelector,
   ImpactTarget,
   DocumentSchema,
@@ -46,6 +48,7 @@ export type {
   DocumentOperationUnion,
   FieldSetOperation,
   FieldClearOperation,
+  ValueClearOperation,
   VariantReplaceOperation,
   DictSetOperation,
   DictDeleteOperation,
@@ -69,7 +72,6 @@ export type {
   CollectionReader,
   ListReader,
   TreeReader,
-  EntityReader,
   ReaderOfNode,
   DocumentReader,
 } from './access/reader';
@@ -80,7 +82,6 @@ export type {
   MapWriter,
   ListWriter,
   TreeWriter,
-  EntityWriter,
   WriterOfNode,
   DocumentWriter,
 } from './access/writer';

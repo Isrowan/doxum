@@ -11,6 +11,9 @@ export type FieldSetOperation<TSchema extends DocumentSchema = DocumentSchema> =
 export type FieldClearOperation<TSchema extends DocumentSchema = DocumentSchema> = OperationBase & {
   readonly type: 'field.clear';
 };
+export type ValueClearOperation<TSchema extends DocumentSchema = DocumentSchema> = OperationBase & {
+  readonly type: 'value.clear';
+};
 export type VariantReplaceOperation<TSchema extends DocumentSchema = DocumentSchema> =
   OperationBase & {
     readonly type: 'variant.replace';
@@ -101,6 +104,7 @@ export type TreeReplaceOperation<TSchema extends DocumentSchema = DocumentSchema
 export type DocumentOperationUnion<TSchema extends DocumentSchema = DocumentSchema> =
   | FieldSetOperation<TSchema>
   | FieldClearOperation<TSchema>
+  | ValueClearOperation<TSchema>
   | VariantReplaceOperation<TSchema>
   | DictSetOperation<TSchema>
   | DictDeleteOperation<TSchema>

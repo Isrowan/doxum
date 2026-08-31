@@ -1,6 +1,5 @@
-import type { CollectionSelector, DocumentSchema } from '../schema';
-import type { EntityReader } from '../access/reader';
-import { readerFor } from '../access/reader';
+import type { CollectionSelector, DocumentSchema, EntitySchemaNode } from '../schema';
+import { readerFor, type ReaderOfNode } from '../access/reader';
 import type { DocumentReadable } from '../runtime/contract';
 import { documentOf, schemaOf } from '../runtime/access';
 import { nodeAt, read } from '../address';
@@ -25,12 +24,12 @@ export type CollectionView<TId extends string, TValue> = {
 export const createCollectionView = <
   TSchema extends DocumentSchema,
   TId extends string,
-  TEntry,
+  TNode extends EntitySchemaNode,
   TValue,
 >(input: {
   readonly runtime: DocumentReadable<TSchema>;
-  readonly source: CollectionSelector<TId, TEntry>;
-  readonly map: (id: TId, entry: EntityReader<TEntry>) => TValue;
+  readonly source: CollectionSelector<TId, TNode>;
+  readonly map: (id: TId, entry: ReaderOfNode<TNode>) => TValue;
   readonly isEqual?: (previous: TValue, next: TValue) => boolean;
 }): CollectionView<TId, TValue> => {
   if (schemaOf(input.runtime) !== input.source.schema)
@@ -57,7 +56,7 @@ export const createCollectionView = <
           entryNode,
           { root: () => document, active: () => active },
           address
-        ) as EntityReader<TEntry>
+        ) as unknown as ReaderOfNode<TNode>
       );
     } finally {
       active = false;
@@ -220,7 +219,7 @@ export const createCollectionView = <
         return () => allListeners.delete(listener);
       },
     },
-    item: id => {
+    item: (id: TId) => {
       const cached = itemReadables.get(id);
       if (cached) return cached;
       const readable: Readable<TValue | undefined> = {

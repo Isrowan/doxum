@@ -72,7 +72,7 @@ type ListState =
       readonly items: Map<string, Presence>;
       readonly order: readonly string[];
     }
-  | { readonly mode: 'whole'; readonly value: readonly unknown[] };
+  | { readonly mode: 'whole'; readonly value: unknown };
 
 type ListSubject = SubjectBase & {
   readonly kind: 'list';
@@ -206,7 +206,7 @@ const restoreDict = (value: Record<string, unknown>, state: DictState): void => 
 
 const restoreList = (value: unknown[], subject: ListSubject): void => {
   if (subject.state.mode === 'whole') {
-    replaceArray(value, subject.state.value);
+    replaceArray(value, subject.state.value as readonly unknown[]);
     return;
   }
   const entries = new Map<string, unknown>();
@@ -596,17 +596,31 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
 
   const recordValue = (
     resolved: ResolvedAddress,
-    operation: Extract<DocumentOperationUnion, { readonly type: 'field.set' | 'field.clear' }>,
+    operation: Extract<
+      DocumentOperationUnion,
+      { readonly type: 'field.set' | 'field.clear' | 'value.clear' | 'dict.replace' }
+    >,
     inverse: readonly DocumentOperationUnion[]
   ): void => {
     if (find('value', operation.at, resolved.addressHash)) return;
     const first = inverse[0];
-    if (first?.type !== 'field.set' && first?.type !== 'field.clear')
+    if (
+      first?.type !== 'field.set' &&
+      first?.type !== 'field.clear' &&
+      first?.type !== 'value.clear' &&
+      !('value' in (first ?? {}))
+    )
       return inverseMismatch(operation);
+    const before =
+      first.type === 'field.clear' || first.type === 'value.clear'
+        ? absent
+        : 'value' in first
+          ? present(first.value)
+          : inverseMismatch(operation);
     add<ValueSubject>({
       ...base(resolved, operation),
       kind: 'value',
-      before: first.type === 'field.set' ? present(first.value) : absent,
+      before,
     });
   };
 
@@ -671,6 +685,15 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     if (!first) return inverseMismatch(operation);
     let subject = find('list', operation.at, resolved.addressHash);
     if (!subject) {
+      if (first.type === 'value.clear') {
+        add<ListSubject>({
+          ...base(resolved, operation),
+          kind: 'list',
+          node: resolved.node,
+          state: { mode: 'whole', value: undefined },
+        });
+        return;
+      }
       if (first.type === 'list.replace') {
         add<ListSubject>({
           ...base(resolved, operation),
@@ -783,6 +806,21 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     inverse: readonly DocumentOperationUnion[]
   ): void => {
     const current = read(root, operation.at);
+    if (
+      inverse.length === 1 &&
+      inverse[0].type === 'value.clear' &&
+      operation.type === 'tree.replace'
+    ) {
+      const subject = find('tree', operation.at, resolved.addressHash);
+      if (subject) subject.state = { mode: 'whole', value: undefined };
+      else
+        add<TreeSubject>({
+          ...base(resolved, operation),
+          kind: 'tree',
+          state: { mode: 'whole', value: undefined },
+        });
+      return;
+    }
     if (!tree.is(current)) return inverseMismatch(operation);
     const inverses = inverse.filter(treeOperation);
     if (inverses.length === 0 || inverses.length !== inverse.length)
@@ -797,7 +835,11 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     record: (resolved, operation, inverse) => {
       profile.batch.journalRecord();
       if (ownerOf(operation.at)) return;
-      if (operation.type === 'field.set' || operation.type === 'field.clear') {
+      if (
+        operation.type === 'field.set' ||
+        operation.type === 'field.clear' ||
+        operation.type === 'value.clear'
+      ) {
         recordValue(resolved, operation, inverse);
         return;
       }
@@ -810,7 +852,9 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
         operation.type === 'dict.delete' ||
         operation.type === 'dict.replace'
       ) {
-        recordDict(resolved, operation, inverse);
+        if (operation.type === 'dict.replace' && inverse[0]?.type === 'value.clear')
+          recordValue(resolved, operation, inverse);
+        else recordDict(resolved, operation, inverse);
         return;
       }
       if (

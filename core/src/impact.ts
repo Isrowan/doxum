@@ -18,8 +18,8 @@ export type CollectionImpact<TId> =
 export type DocumentImpact<TSchema extends DocumentSchema> = {
   readonly kind: 'incremental' | 'reset';
   readonly affects: (target: ImpactTarget<unknown>) => boolean;
-  readonly collection: <TId extends string, TEntry>(
-    selector: CollectionSelector<TId, TEntry>
+  readonly collection: <TId extends string>(
+    selector: CollectionSelector<TId>
   ) => CollectionImpact<TId>;
   readonly operations: readonly DocumentOperationUnion<TSchema>[];
 };
@@ -106,9 +106,7 @@ export const createImpact = <TSchema extends DocumentSchema>(input: {
       }
       return false;
     },
-    collection: <TId extends string, TEntry>(
-      selector: CollectionSelector<TId, TEntry>
-    ): CollectionImpact<TId> => {
+    collection: <TId extends string>(selector: CollectionSelector<TId>): CollectionImpact<TId> => {
       if (selector.schema !== input.schema)
         throw new Error('Collection selector belongs to another schema.');
       if (kind === 'reset') return resetCollectionImpact as CollectionImpact<TId>;
