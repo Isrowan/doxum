@@ -24,8 +24,8 @@ resolution.
 | Replace an entire trusted snapshot    | `runtime.replace(document, options)`                     |
 | Observe one schema location           | `schema.value` plus `runtime.subscribe`                  |
 | Observe a table or map                | `schema.collection` plus `runtime.subscribe`             |
-| Maintain mapped collection data       | `createCollectionView`                                   |
-| Maintain an aggregate or index        | `createMaterializedView`                                 |
+| Maintain mapped collection data       | `projection.map`                                         |
+| Maintain an aggregate or index        | `projection.value / projection.collection`               |
 | Read in React                         | `useDocumentSelector`, `useReadable`, or `useReadable`   |
 
 Do not write a second mutable copy of the document. `createDocument` is the
@@ -293,26 +293,38 @@ comparison helpers in application modules.
 
 ## Build derived read models
 
-`createCollectionView` maps one table or map into stable ids, cached `item(id)`
-readables, and a lazy `all` array. It updates only affected entries where possible.
-
 ```ts
-import { createCollectionView } from 'doxum';
-
-const taskTitles = createCollectionView({
-  runtime,
-  source: taskSchema.collection(path => path.tasks),
-  map: (_id, task) => task.title.get(),
+const projection = createProjectionRuntime({ onError: error => console.error(error) });
+const document = projection.document(runtime);
+const notes = document.collection(path => path.notes);
+const noteSummaries = projection.map(
+  notes,
+  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
+  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
+);
+const noteCount = projection.value({
+  sources: { notes },
+  build: ({ notes }) => ({
+    value: notes.read.ids().length,
+    update: ({ notes }) => ({
+      kind: 'changed',
+      value: notes.read.ids().length,
+    }),
+  }),
 });
-
-taskTitles.item('write-guide').current();
-taskTitles.all.current();
 ```
 
-Use `createMaterializedView` for an index or aggregate with custom incremental
-logic. A materialized view is derived state, not a caller-maintained cache. It
-may depend only on materialized views created earlier from the same runtime.
-Dispose every view when its owning feature is disposed.
+projection.map produces stable ids/item readables and lazy all. Declare a
+DocumentCollectionSource directly in any processor's sources, or use
+projection.value and projection.collection for explicit incremental logic.
+There is no automatic keyed dependency tracking. All sources belong to the
+same projection owner, but may refer to different document runtimes.
+
+Use projection.input(initial, { isEqual }) for boundary values; give processors
+its source and keep set at the application boundary. fromReadable attaches an
+existing external source without taking ownership of it. Batch synchronous
+multi-source changes before the first commit. Dispose the projection at service
+shutdown; React unmount only unsubscribes. Disposed handles throw.
 
 ## React integration
 

@@ -17,8 +17,8 @@
 | 整体替换可信快照           | `runtime.replace(document, options)`                  |
 | 监听一个 schema 位置       | `schema.value` + `runtime.subscribe`                  |
 | 监听 table 或 map          | `schema.collection` + `runtime.subscribe`             |
-| 维护映射后的集合数据       | `createCollectionView`                                |
-| 维护聚合或索引             | `createMaterializedView`                              |
+| 维护映射后的集合数据       | `projection.map`                                      |
+| 维护聚合或索引             | `projection.value / projection.collection`            |
 | 在 React 中读取            | `useDocumentSelector`、`useReadable` 或 `useReadable` |
 
 不要再维护一份可写的文档副本。`createDocument` 是 canonical state 的唯一所有者。
@@ -243,22 +243,30 @@ value selector 使用 `commit.impact.affects(target)`；table 或 map selector �
 
 ## 构建派生读模型
 
-`createCollectionView` 将一个 table 或 map 映射为稳定的 ids、缓存的 `item(id)` readable 和惰性 `all` 数组；在可能的情况下只更新受影响的条目。
-
 ```ts
-import { createCollectionView } from 'doxum';
-
-const taskTitles = createCollectionView({
-  runtime,
-  source: taskSchema.collection(path => path.tasks),
-  map: (_id, task) => task.title.get(),
+const projection = createProjectionRuntime({ onError: error => console.error(error) });
+const document = projection.document(runtime);
+const notes = document.collection(path => path.notes);
+const noteSummaries = projection.map(
+  notes,
+  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
+  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
+);
+const noteCount = projection.value({
+  sources: { notes },
+  build: ({ notes }) => ({
+    value: notes.read.ids().length,
+    update: ({ notes }) => ({
+      kind: 'changed',
+      value: notes.read.ids().length,
+    }),
+  }),
 });
-
-taskTitles.item('write-guide').current();
-taskTitles.all.current();
 ```
 
-需要自定义增量逻辑的索引或聚合使用 `createMaterializedView`。materialized view 是派生状态，不是由调用方手工同步的 cache；它只能依赖同一 runtime 中更早创建的 materialized view。每个 view 都要由所属功能在销毁时释放。
+projection.map 提供稳定的 ids/item readable 和惰性 all。DocumentCollectionSource 可直接用于自定义 processor 的 sources；projection.value 和 projection.collection 承载显式增量计算。不自动跟踪 keyed 依赖。sources 属于同一 projection owner，但可接入不同 document runtime。
+
+projection.input(initial, { isEqual }) 用于边界值；应用保留 set，processor 只接收 source。fromReadable 接入已有外部 source，不取得其生命周期所有权。多 source 同步更新应在首次 commit 前进入 batch。projection 随 service 销毁，React unmount 只取消订阅，disposed handle 明确抛错。
 
 ## React 集成
 

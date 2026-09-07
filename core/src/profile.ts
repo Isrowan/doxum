@@ -9,6 +9,15 @@ type CloneCounters = {
   documents: { initial: number };
 };
 type ProfileCounters = {
+  projection: {
+    sourceEvents: number;
+    scheduledNodes: number;
+    processedNodes: number;
+    touchedKeys: number;
+    changedKeys: number;
+    publishedNodes: number;
+    flushes: number;
+  };
   clone: CloneCounters;
   mutation: { normalized: number; executed: number; inverseCreated: number };
   batch: {
@@ -57,6 +66,7 @@ type ProfileCounters = {
 };
 
 export type ProfileSnapshot = Readonly<{
+  projection: Readonly<ProfileCounters['projection']>;
   clone: Readonly<{
     calls: number;
     containers: number;
@@ -90,6 +100,15 @@ const cloneReasons = (): Record<CloneReason, number> => ({
 });
 
 const counters = (): ProfileCounters => ({
+  projection: {
+    sourceEvents: 0,
+    scheduledNodes: 0,
+    processedNodes: 0,
+    touchedKeys: 0,
+    changedKeys: 0,
+    publishedNodes: 0,
+    flushes: 0,
+  },
   clone: {
     calls: 0,
     containers: 0,
@@ -146,6 +165,7 @@ const active = { current: undefined as ProfileCounters | undefined };
 // Snapshot allocation is intentionally delayed until the caller asks for it.
 const freezeSnapshot = (value: ProfileCounters): ProfileSnapshot =>
   Object.freeze({
+    projection: Object.freeze({ ...value.projection }),
     clone: Object.freeze({
       calls: value.clone.calls,
       containers: value.clone.containers,
@@ -164,6 +184,9 @@ const freezeSnapshot = (value: ProfileCounters): ProfileSnapshot =>
   });
 
 export const profile = {
+  projection: (counter: keyof ProfileCounters['projection'], amount = 1): void => {
+    if (active.current) active.current.projection[counter] += amount;
+  },
   clone: {
     call: (): void => {
       const value = active.current;

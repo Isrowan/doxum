@@ -134,10 +134,9 @@ commits. Undo and redo replay those groups through the same mutation pipeline.
 `replace` and remote commits invalidate history because they establish a new
 canonical baseline.
 
-During notification, registered materialized view processors run first in
-creation order. Their `flush` callbacks run before normal subscribers, so a
-listener cannot observe a downstream projection before its upstream input has
-settled. Targeted subscribers are bucketed by the first address segment, then
+During notification, internal projection attachments capture source commits,
+settle every attached graph, then flush projection listeners before normal
+subscribers. Targeted subscribers are bucketed by the first address segment, then
 filtered through `impact.affects`; root subscribers receive every commit.
 Processor, flush, and listener failures are captured as `observerErrors` on
 the committed operation or transaction result. A notification failure never
@@ -148,15 +147,45 @@ changes an already committed document into a rejected mutation.
 `select(runtime, selector)` evaluates a reader once. `track(runtime, selector)`
 also records the values and collection entries the selector accessed.
 
-`CollectionView` has one source collection and maintains immutable ids,
-keyed values, and a lazy aggregate array. It applies collection impact
-incrementally instead of remapping unrelated rows.
+`createProjectionRuntime` owns source registration, an explicit DAG, synchronous
+batching, fault recovery, and disposal. `projection.document(runtime)` shares
+runtime identity through `asReadable`. Its `collection(path => path.items)`
+delegates to the bound schema and caches a scoped collection source. Document
+sources may also declare fixed `targets(...)`. Neither operation installs
+automatic read dependencies. External `fromReadable` and `input` sources use
+semantic equality; their values must not be mutated after submission.
 
-`MaterializedView` owns one derived value and optional change payload. It
-records impact dependencies used by its update function. On future commits it
-skips its update if no recorded dependency is affected, otherwise it returns
-`changed`, `unchanged`, or `rebuild` explicitly. Materialized views may only
-depend on earlier views from the same runtime.
+`projection.map` is a one-to-one document collection mapping with stable keys and
+order. `projection.collection` provides explicit incremental build/update
+callbacks with scoped previous/next reads and a staged writer. It shares the
+same scheduler with `projection.value`. Ordinary updates touch only candidate
+keys; structural order/replace work may be linear. Equality preserves old item
+references, aggregate arrays are lazy, and output revision is independent of
+source progress. Collection changes reuse `CollectionImpact`; values expose
+previous/current state without an arbitrary custom change protocol.
+
+Processors read accepted upstream candidates through their callback context;
+public readables retain the previous publication until settlement completes.
+Failures discard staged output and the mutable processor instance. One fresh
+build may recover a failed update. Persistent failure makes current() throw and
+blocks descendants; unrelated branches continue. Listener exceptions are
+isolated individually. Explicit rebuild follows the same dependency graph.
+
+`projection.batch` defers projection settlement until the outer synchronous
+callback exits, including when it throws. It does not defer canonical commits,
+history, or document listeners, and it does not roll back sources. Enter the
+batch before the first commit, covering synchronous editor reconciliation.
+Document sources retain all ordered commits in a batch; processors union
+candidate keys and read final state rather than treating the last impact as the
+whole batch. Source reset rebuilds the affected node. No async cause graph or
+cross-projection dependency graph is provided.
+
+During processing and projection notifications, writes to declared documents
+and inputs are forbidden independently of the local-sync write lease. Dispose
+the projection before releasing external readables. Document disposal invalidates
+dependent nodes; node disposal with downstream consumers is rejected. Disposed
+readables throw. `doxum/integration` exposes read-only `projectionDebug` counts,
+not internal mutable scheduler state.
 
 ## React Boundary
 

@@ -2,14 +2,13 @@ import { writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import {
   createDocument,
-  createMaterializedView,
+  createProjectionRuntime,
   field,
   object,
   schema,
   table,
   tree,
   type DocumentOperation,
-  type DocumentReader,
   type DocumentRuntime,
 } from '../src/index';
 import { measureProfile, type ProfileSnapshot } from '../src/profile';
@@ -23,22 +22,6 @@ const documentSchema = schema({
   metadata: object({ value: field<number>(), note: field<string>() }),
 });
 
-const items = documentSchema.collection(path => path.items);
-const links = documentSchema.collection(path => path.links);
-
-type ItemSummary = { readonly group: string; readonly value: number };
-type ItemChange = {
-  readonly added: readonly string[];
-  readonly removed: readonly string[];
-  readonly updated: readonly string[];
-};
-type LinkSummary = { readonly from: string; readonly to: string };
-type IndexSummary = {
-  readonly groups: number;
-  readonly links: number;
-  readonly items: number;
-};
-
 type Size = {
   readonly items: number;
   readonly links: number;
@@ -51,6 +34,8 @@ type Row = {
   readonly iterations: number;
   readonly commits: number;
   readonly averageUs: number;
+  readonly p50Us: number;
+  readonly maxUs: number;
   readonly p95Us: number;
   readonly oracleMs: number;
   readonly heapBefore: number;
@@ -125,140 +110,85 @@ const makeInitial = (input: Size) => {
 };
 
 const createPipeline = (runtime: DocumentRuntime<typeof documentSchema>) => {
-  const itemIndex = createMaterializedView(runtime, {
-    build: ({ read }) => {
-      const value = new Map<string, ItemSummary>();
-      for (const id of read.items.ids()) {
-        const entry = read.items.get(id);
-        if (entry) value.set(id, { group: entry.group.get(), value: entry.value.get() });
-      }
-      let current = value;
-      return {
-        value,
-        update: ({ impact, read }) => {
-          const change = impact.collection(items);
-          if (change.kind === 'reset') return { kind: 'rebuild' as const };
-          if (change.added.size === 0 && change.removed.size === 0 && change.updated.size === 0)
-            return { kind: 'unchanged' as const };
-          const next = new Map(current);
-          for (const id of change.removed) next.delete(id);
-          for (const id of [...change.added, ...change.updated]) {
-            const entry = read.items.get(id);
-            if (entry)
-              next.set(id, {
-                group: entry.group.get(),
-                value: entry.value.get(),
-              });
-          }
-          current = next;
-          return {
-            kind: 'changed' as const,
-            value: next,
-            change: {
-              added: [...change.added],
-              removed: [...change.removed],
-              updated: [...change.updated],
-            },
-          };
-        },
-      };
+  const projection = createProjectionRuntime({
+    onError: error => {
+      throw error;
     },
   });
-
-  const groupIndex = createMaterializedView(runtime, {
+  const document = projection.document(runtime);
+  const itemIndex = projection.map(
+    document.collection(path => path.items),
+    (_id, entry) => ({ group: entry.group.get(), value: entry.value.get() }),
+    { isEqual: (a, b) => a.group === b.group && a.value === b.value }
+  );
+  const linkIndex = projection.map(
+    document.collection(path => path.links),
+    (_id, entry) => ({ from: entry.from.get(), to: entry.to.get() }),
+    { isEqual: (a, b) => a.from === b.from && a.to === b.to }
+  );
+  const groupIndex = projection.collection({
     sources: { itemIndex },
-    build: ({ sources }) => {
-      const value = new Map<string, Set<string>>();
-      for (const [id, entry] of sources.itemIndex.value as Map<string, ItemSummary>) {
-        const members = value.get(entry.group) ?? new Set<string>();
-        members.add(id);
-        value.set(entry.group, members);
+    build: ({ sources, writer }) => {
+      const groups = new Map<string, number>();
+      const relations = new Map<string, string>();
+      for (const id of sources.itemIndex.ids()) {
+        const group = sources.itemIndex.get(id)!.group;
+        relations.set(id, group);
+        groups.set(group, (groups.get(group) ?? 0) + 1);
       }
-      let current = value;
+      groups.forEach((count, group) => writer.set(group, count));
       return {
-        value,
-        update: ({ sources }) => {
-          if (!sources.itemIndex.change) return { kind: 'unchanged' as const };
-          const next = new Map<string, Set<string>>();
-          for (const [id, entry] of sources.itemIndex.value as Map<string, ItemSummary>) {
-            const members = next.get(entry.group) ?? new Set<string>();
-            members.add(id);
-            next.set(entry.group, members);
+        update: ({ sources, writer }) => {
+          const change = sources.itemIndex.change;
+          if (!change) return;
+          if (change.kind === 'reset') return { kind: 'rebuild' };
+          const touched = new Set<string>();
+          for (const id of [...change.removed, ...change.updated, ...change.added]) {
+            const before = relations.get(id);
+            const after = sources.itemIndex.get(id)?.group;
+            if (before === after) continue;
+            if (before !== undefined) {
+              groups.set(before, groups.get(before)! - 1);
+              touched.add(before);
+            }
+            if (after !== undefined) {
+              groups.set(after, (groups.get(after) ?? 0) + 1);
+              relations.set(id, after);
+              touched.add(after);
+            } else relations.delete(id);
           }
-          current = next;
-          return {
-            kind: 'changed' as const,
-            value: next,
-            change: { changed: true },
-          };
+          touched.forEach(group => {
+            const count = groups.get(group)!;
+            if (count) writer.set(group, count);
+            else {
+              groups.delete(group);
+              writer.remove(group);
+            }
+          });
         },
       };
     },
   });
-
-  const linkIndex = createMaterializedView(runtime, {
-    build: ({ read }) => {
-      const value = new Map<string, LinkSummary>();
-      for (const id of read.links.ids()) {
-        const entry = read.links.get(id);
-        if (entry) value.set(id, { from: entry.from.get(), to: entry.to.get() });
-      }
-      let current = value;
-      return {
-        value,
-        update: ({ impact, read }) => {
-          const change = impact.collection(links);
-          if (change.kind === 'reset') return { kind: 'rebuild' as const };
-          if (change.added.size === 0 && change.removed.size === 0 && change.updated.size === 0)
-            return { kind: 'unchanged' as const };
-          const next = new Map(current);
-          for (const id of change.removed) next.delete(id);
-          for (const id of [...change.added, ...change.updated]) {
-            const entry = read.links.get(id);
-            if (entry) next.set(id, { from: entry.from.get(), to: entry.to.get() });
-          }
-          current = next;
-          return {
-            kind: 'changed' as const,
-            value: next,
-            change: { changed: true },
-          };
+  const summary = projection.value({
+    sources: { groupIndex, linkIndex, itemIndex },
+    build: sources => ({
+      value: {
+        groups: sources.groupIndex.ids().length,
+        links: sources.linkIndex.ids().length,
+        items: sources.itemIndex.ids().length,
+      },
+      update: sources => ({
+        kind: 'changed',
+        value: {
+          groups: sources.groupIndex.ids().length,
+          links: sources.linkIndex.ids().length,
+          items: sources.itemIndex.ids().length,
         },
-      };
-    },
+      }),
+    }),
+    isEqual: (a, b) => a.groups === b.groups && a.links === b.links && a.items === b.items,
   });
-
-  const summary = createMaterializedView(runtime, {
-    sources: { groupIndex, linkIndex },
-    build: ({ sources }) => {
-      const value = {
-        groups: (sources.groupIndex.value as Map<string, Set<string>>).size,
-        links: (sources.linkIndex.value as Map<string, LinkSummary>).size,
-        items: [...(sources.groupIndex.value as Map<string, Set<string>>).values()].reduce(
-          (total, members) => total + members.size,
-          0
-        ),
-      };
-      return {
-        value,
-        update: ({ sources }) => {
-          if (!sources.groupIndex.change && !sources.linkIndex.change)
-            return { kind: 'unchanged' as const };
-          const next: IndexSummary = {
-            groups: (sources.groupIndex.value as Map<string, Set<string>>).size,
-            links: (sources.linkIndex.value as Map<string, LinkSummary>).size,
-            items: [...(sources.groupIndex.value as Map<string, Set<string>>).values()].reduce(
-              (total, members) => total + members.size,
-              0
-            ),
-          };
-          return { kind: 'changed' as const, value: next, change: undefined };
-        },
-      };
-    },
-  });
-
-  return { itemIndex, groupIndex, linkIndex, summary };
+  return { projection, itemIndex, groupIndex, linkIndex, summary };
 };
 
 type Pipeline = ReturnType<typeof createPipeline>;
@@ -267,24 +197,31 @@ const validatePipeline = (
   views: Pipeline,
   label = 'oracle'
 ): void => {
-  const currentItems = runtime.address.read(['items']) as
-    { readonly ids?: readonly string[] } | undefined;
-  const expectedItems = currentItems?.ids?.length ?? 0;
-  const itemMap = views.itemIndex.current() as Map<string, ItemSummary>;
-  const itemCount = itemMap.size;
-  const linkCount = (views.linkIndex.current() as Map<string, LinkSummary>).size;
-  const summary = views.summary.current() as IndexSummary;
-  if (itemCount !== expectedItems || summary.items !== expectedItems || summary.links !== linkCount)
-    throw new Error(
-      `Document workload pipeline oracle mismatch: ${label} expectedItems=${expectedItems} itemCount=${itemCount} missing=${(
-        currentItems?.ids ?? []
-      )
-        .filter(id => !itemMap.has(id))
-        .slice(0, 3)
-        .join(
-          ','
-        )} summaryItems=${summary.items} summaryLinks=${summary.links} linkCount=${linkCount}`
-    );
+  const current = runtime.snapshot();
+  const summary = views.summary.current();
+  if (
+    summary.items !== current.items.ids.length ||
+    summary.links !== current.links.ids.length ||
+    views.itemIndex.ids.current().length !== current.items.ids.length
+  )
+    throw new Error('Pipeline count mismatch: ' + label);
+  for (const id of current.items.ids) {
+    const item = views.itemIndex.item(id).current();
+    if (
+      item?.group !== current.items.byId[id].group ||
+      item?.value !== current.items.byId[id].value
+    )
+      throw new Error('Pipeline item mismatch: ' + id);
+  }
+  const expectedGroups = new Map<string, number>();
+  for (const item of Object.values(current.items.byId))
+    expectedGroups.set(item.group, (expectedGroups.get(item.group) ?? 0) + 1);
+  if (views.groupIndex.ids.current().length !== expectedGroups.size)
+    throw new Error('Pipeline group count mismatch');
+  expectedGroups.forEach((count, group) => {
+    if (views.groupIndex.item(group).current() !== count)
+      throw new Error('Pipeline membership mismatch: ' + group);
+  });
 };
 
 const operationsFor = (
@@ -440,16 +377,10 @@ const runScenario = (scenario: string, pipeline: boolean): Row => {
       validatePipeline(oracleRuntime, oracleViews, `${scenario} @ ${index}`);
     restoreRemovedItems(oracleRuntime, scenario, result);
   }
-  oracleViews?.itemIndex.dispose();
-  oracleViews?.groupIndex.dispose();
-  oracleViews?.linkIndex.dispose();
-  oracleViews?.summary.dispose();
+  oracleViews?.projection.dispose();
   oracleRuntime.dispose();
   const oracleMs = performance.now() - oracleStarted;
-  views?.itemIndex.dispose();
-  views?.groupIndex.dispose();
-  views?.linkIndex.dispose();
-  views?.summary.dispose();
+  views?.projection.dispose();
   runtime.dispose();
   const gcStarted = performance.now();
   if (gcExposed) (globalThis as unknown as { gc: () => void }).gc();
@@ -462,6 +393,8 @@ const runScenario = (scenario: string, pipeline: boolean): Row => {
     iterations,
     commits: iterations * (scenario === 'delete + undo' ? 2 : 1),
     averageUs: Number(((totalMs * 1000) / iterations).toFixed(2)),
+    p50Us: Number((sorted[Math.floor(sorted.length * 0.5)] * 1000).toFixed(2)),
+    maxUs: Number((sorted[sorted.length - 1] * 1000).toFixed(2)),
     p95Us: Number(
       (sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] * 1000).toFixed(2)
     ),
@@ -506,6 +439,8 @@ console.table(
     pipeline: row.pipeline,
     iterations: row.iterations,
     averageUs: row.averageUs,
+    p50Us: row.p50Us,
+    maxUs: row.maxUs,
     p95Us: row.p95Us,
     oracleMs: row.oracleMs,
     operations: row.profile.mutation.executed,
@@ -515,6 +450,9 @@ console.table(
     materializedUpdated: row.profile.materialized.updated,
     materializedSkipped: row.profile.materialized.skipped,
     materializedRebuilt: row.profile.materialized.rebuilt,
+    touchedKeys: row.profile.projection.touchedKeys,
+    changedKeys: row.profile.projection.changedKeys,
+    processedNodes: row.profile.projection.processedNodes,
     heapBeforeKb: row.heapBefore,
     heapAfterKb: row.heapAfter,
     gcMs: row.gcMs,

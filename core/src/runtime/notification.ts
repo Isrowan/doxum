@@ -4,14 +4,19 @@ import type {
   DocumentCommit,
   DocumentReadable,
   DocumentRuntime,
-  RuntimeProcessor,
   Unsubscribe,
   ObserverError,
 } from './contract';
 import * as target from '../impact-target';
 
+export type ProjectionAttachment<TSchema extends DocumentSchema> = {
+  capture(commit: DocumentCommit<TSchema>): void;
+  settle(): void;
+  flush(): readonly ObserverError[];
+  dispose(): void;
+};
 type ProcessorEntry<TSchema extends DocumentSchema> = {
-  readonly processor: RuntimeProcessor<TSchema>;
+  readonly processor: ProjectionAttachment<TSchema>;
   active: boolean;
 };
 type RootEntry<TSchema extends DocumentSchema> = {
@@ -73,9 +78,9 @@ export const shareNotification = <TSchema extends DocumentSchema>(
   );
 };
 
-export const registerProcessor = <TSchema extends DocumentSchema>(
+export const attachProjection = <TSchema extends DocumentSchema>(
   runtime: DocumentReadable<TSchema>,
-  processor: RuntimeProcessor<TSchema>
+  processor: ProjectionAttachment<TSchema>
 ): Unsubscribe => {
   const notification = notificationOf(runtime);
   const entry: ProcessorEntry<TSchema> = { processor, active: true };
@@ -151,7 +156,7 @@ export const notify = <TSchema extends DocumentSchema>(
       const entry = notification.processors[index];
       if (!entry?.active) continue;
       try {
-        entry.processor.process(commit);
+        entry.processor.capture(commit);
       } catch (error) {
         errors.push(Object.freeze({ phase: 'processor', error }));
       }
@@ -160,7 +165,16 @@ export const notify = <TSchema extends DocumentSchema>(
       const entry = notification.processors[index];
       if (!entry?.active) continue;
       try {
-        entry.processor.flush();
+        entry.processor.settle();
+      } catch (error) {
+        errors.push(Object.freeze({ phase: 'processor', error }));
+      }
+    }
+    for (let index = 0; index < processorCount; index += 1) {
+      const entry = notification.processors[index];
+      if (!entry?.active) continue;
+      try {
+        errors.push(...entry.processor.flush());
       } catch (error) {
         errors.push(Object.freeze({ phase: 'flush', error }));
       }
@@ -209,10 +223,21 @@ export const notify = <TSchema extends DocumentSchema>(
 export const disposeNotification = <TSchema extends DocumentSchema>(
   notification: RuntimeNotification<TSchema>
 ): void => {
+  const attachments = notification.processors.slice();
   notification.root.clear();
   notification.filtered.clear();
   notification.buckets.clear();
   notification.processors.length = 0;
   notification.candidates.clear();
   notification.rootSnapshot.length = 0;
+  const errors: unknown[] = [];
+  attachments.forEach(entry => {
+    if (!entry.active) return;
+    try {
+      entry.processor.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+  });
+  if (errors.length) throw new AggregateError(errors, 'Projection disposal notification failed.');
 };

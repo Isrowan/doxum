@@ -50,13 +50,17 @@ when a change touches addressing, mutation, impact, notifications, or views.
   shapes locally.
 - Schema resolution is authoritative for operations and selectors. Do not add
   alternate string-path parsers or separate address models.
-- `CollectionView` and `MaterializedView` are derived state. Their values must
+- `ProjectionCollection` and `ProjectionValue` are derived state. Their values must
   be recomputed from runtime state and declared sources, never manually kept in
   sync by callers.
 - Preserve notification ordering: materialized processors settle before
   external listeners; writes remain forbidden while notifying. Observer
   failures are returned on the committed result and must not be rethrown as a
   mutation rejection.
+- Explicit projection batches defer graph settlement and projection listeners,
+  but not document commits or document listeners. Batch the full application
+  action before its first commit; readers return the last published projection
+  inside the batch. Processor dependencies are explicit, not automatically tracked.
 
 ## Testing Expectations
 

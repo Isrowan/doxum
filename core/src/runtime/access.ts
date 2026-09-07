@@ -9,6 +9,7 @@ export type RuntimeAccessState<TSchema extends DocumentSchema> = {
   readonly schema: TSchema;
   document: ReadonlyDocument<TSchema>;
   disposed: boolean;
+  projectionLocks?: number;
 };
 
 const states = new WeakMap<object, RuntimeAccessState<DocumentSchema>>();

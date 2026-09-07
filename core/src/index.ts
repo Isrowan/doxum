@@ -114,15 +114,26 @@ export * as target from './impact-target';
 export type { Readable } from './projection/readable';
 export { select } from './projection/select';
 export type { DocumentSelector } from './projection/select';
-export { createCollectionView } from './projection/collection-view';
-export type { CollectionView } from './projection/collection-view';
-export { createMaterializedView } from './projection/materialized-view';
+export { createProjectionRuntime } from './projection/runtime';
+export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
-  MaterializedSource,
-  MaterializedSources,
-  MaterializedSourceValues,
-  MaterializedUpdateResult,
-  MaterializedViewUpdate,
-  MaterializedViewSpec,
-  MaterializedView,
-} from './projection/materialized-view';
+  ProjectionRuntime,
+  ProjectionSource,
+  ProjectionSources,
+  ProjectionInputs,
+  DocumentSource,
+  DocumentCollectionSource,
+  DocumentInput,
+  DocumentCollectionInput,
+  ProjectionInput,
+  ValueInput,
+  ValueUpdate,
+  ValueSpec,
+  ProjectionValue,
+  CollectionRead,
+  CollectionInput,
+  ProjectionCollectionWriter,
+  CollectionProcess,
+  CollectionSpec,
+  ProjectionCollection,
+} from './projection/contract';

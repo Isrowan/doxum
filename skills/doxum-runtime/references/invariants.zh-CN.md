@@ -78,9 +78,9 @@ update 与 notification 窗口中禁止写入。processor、flush 和 listener e
 
 ## 派生状态应声明，而不是由调用方同步
 
-`CollectionView` 从一个已声明的 collection 派生，并增量维护 ids、keyed values 和惰性 aggregate array。`MaterializedView` 从 document read、跟踪到的 impact dependency 和可选的更早 materialized source 派生一个值。materialized view 只能依赖同一 runtime 中比它更早创建的 view。
+ProjectionCollection 和 ProjectionValue 共用显式 source 图与发布机制。只有 scoped processor 写入派生输出。应用根据原生 impact 选择候选 key，Doxum 拥有最终 change、equality、revision 和 notification。不能泄漏可变私有索引，也不能保留 scoped reader/writer。update 必须同步。
 
-不要把 derived value 缓存在 canonical document state 中，除非它本来就是领域数据。不要让 UI 手工将变更推入 view。view 与 subscription 都应随 owner dispose。
+受影响节点全部 settle 后再通知。失败丢弃候选输出，限一次全新 build 恢复，持续失败阻断下游；listener 错误逐个隔离。处理和通知期间禁止 source write。显式 batch 延迟派生图发布，不延迟 canonical commit 或 document listener，不承诺 source rollback。owner 负责 dispose，仍有消费者的节点不能单独释放。
 
 ## Framework 与产品边界
 

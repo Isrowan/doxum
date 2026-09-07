@@ -188,68 +188,41 @@ as values. Use `target.address`, `target.id`, `target.belongs`, and
 `target.bucket` rather than duplicating their interpretation in a framework
 adapter or local helper.
 
-## Build a collection view for mapped rows
-
-Use a collection view when a table or map needs a reusable read model. Its
-mapping callback can read the entry's typed fields; `isEqual` lets the view
-retain a previous mapped value when a remapped row is semantically unchanged.
+## Build explicit projections
 
 ```ts
-const notes = documentSchema.collection(path => path.notes);
-
-const noteSummaries = createCollectionView({
-  runtime,
-  source: notes,
-  map: (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
-  isEqual: (left, right) => left.id === right.id && left.preview === right.preview,
-});
-
-const stop = noteSummaries.item('a').subscribe(() => rerenderRow('a'));
-const all = noteSummaries.all.current();
-```
-
-Do not make callers push changes into the view. It listens to its declared
-source and recomputes from runtime state. Dispose `noteSummaries` and `stop`
-with the UI or service that owns them.
-
-## Build a materialized aggregate or index
-
-Use a materialized view when you own an aggregate that can update from a
-commit. During `update`, inspect the impact through the provided `impact`
-object. That records the actual dependencies, so future unrelated commits can
-skip this update.
-
-```ts
-const notes = documentSchema.collection(path => path.notes);
-
-const noteCount = createMaterializedView(runtime, {
-  build: ({ read }) => ({
-    value: read.notes.ids().length,
-    update: ({ impact, read }) => {
-      const change = impact.collection(notes);
-      if (
-        change.kind === 'incremental' &&
-        change.added.size === 0 &&
-        change.removed.size === 0 &&
-        change.updated.size === 0 &&
-        !change.orderChanged
-      ) {
-        return { kind: 'unchanged' };
-      }
-      return {
-        kind: 'changed',
-        value: read.notes.ids().length,
-        change,
-      };
-    },
+const projection = createProjectionRuntime({ onError: error => console.error(error) });
+const document = projection.document(runtime);
+const notes = document.collection(path => path.notes);
+const noteSummaries = projection.map(
+  notes,
+  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
+  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
+);
+const noteCount = projection.value({
+  sources: { notes },
+  build: ({ notes }) => ({
+    value: notes.read.ids().length,
+    update: ({ notes }) => ({
+      kind: 'changed',
+      value: notes.read.ids().length,
+    }),
   }),
 });
 ```
 
-Return `rebuild` if local incremental logic cannot safely handle a commit.
-Views created later can name earlier views in `sources`; Doxum processes that
-graph in creation order and flushes it before external listeners observe the
-commit.
+Use map for one-to-one collection transforms. For custom indexes, use
+projection.collection with declared sources and scoped writer.set/remove/order/replace.
+Its previous and next readers separate published values from staged writes.
+Inspect each document source commit.impact, or an upstream collection change,
+to determine candidate keys. Dependencies are explicit and fixed, not learned
+from reads. Doxum determines final changes through equality.
+
+A failed update discards its instance and attempts one fresh build. Persistent
+faults block descendants; independent branches continue. Call rebuild through
+the node API, never manually emit. Dispose the projection with its owner.
+Wrap document mutation and editor cleanup in projection.batch before the first
+commit; reads inside the batch remain at the last published projection.
 
 ## Bind read models in React
 

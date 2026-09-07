@@ -1,5 +1,5 @@
 import {
-  createCollectionView,
+  createProjectionRuntime,
   createDocument,
   field,
   list,
@@ -32,14 +32,14 @@ const runtime = createDocument({
   },
 });
 
+const projection = createProjectionRuntime({ onError: () => undefined });
 const tasks = taskSchema.collection(path => path.tasks);
 const title = taskSchema.value(path => path.title);
 const taskTitle = taskSchema.value(path => path.tasks.item('task-1').title);
-const view = createCollectionView({
-  runtime,
-  source: tasks,
-  map: (_id, entry) => entry.title.get(),
-});
+const view = projection.map(
+  projection.document(runtime).collection(path => path.tasks),
+  (_id, entry) => entry.title.get()
+);
 
 runtime.update(transaction => {
   transaction.write.tasks.item('task-1').title.set('Written');
@@ -55,5 +55,5 @@ const currentTaskTitle: string | undefined = selectedTaskTitle;
 const currentViewItem: string | undefined = view.item('task-1').current();
 void [title, taskTitle, currentTitle, currentTaskTitle, currentViewItem];
 
-view.dispose();
+projection.dispose();
 runtime.dispose();

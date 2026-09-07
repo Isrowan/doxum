@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createCollectionView,
+  createProjectionRuntime,
   createDocument,
-  createMaterializedView,
   dict,
   field,
   list,
@@ -747,7 +746,8 @@ describe('performance-oriented mutation invariants', () => {
     expect(select(runtime, read => read.rows.at(0))?.id).toBe('next');
   });
 
-  it('updates one row in a 100k CollectionView without copying all', () => {
+  it('updates one row in a 100k projection without copying all', () => {
+    const projection = createProjectionRuntime({ onError: () => undefined });
     const rows = Array.from({ length: 100_000 }, (_, index) => `row-${index}`);
     const byId = Object.fromEntries(rows.map((id, index) => [id, { value: index }]));
     const document = {
@@ -760,11 +760,10 @@ describe('performance-oriented mutation invariants', () => {
     });
     const source = optimizationSchema.collection(path => path.items);
     const initializationProfile = startProfile();
-    const view = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.value.get(),
-    });
+    const view = projection.map(
+      projection.document(runtime).collection(path => path.items),
+      (_id, entry) => entry.value.get()
+    );
     const initializationCounters = initializationProfile.stop();
     expect(initializationCounters.collectionView.mappedItems).toBe(100_000);
     expect(initializationCounters.collectionView.idsScanned).toBe(100_000);
@@ -798,7 +797,7 @@ describe('performance-oriented mutation invariants', () => {
     expect(first).toBe(second);
     expect(first[42]).toBe(999);
     expect(afterRead.collectionView.arraysCopied).toBe(1);
-    view.dispose();
+    projection.dispose();
   });
 
   it('attributes every structural clone to its ownership boundary', () => {
@@ -849,17 +848,17 @@ describe('performance-oriented mutation invariants', () => {
     );
   });
 
-  it('maps only added items during a structural CollectionView update', () => {
+  it('maps only added items during a structural projection update', () => {
+    const projection = createProjectionRuntime({ onError: () => undefined });
     const runtime = createDocument({
       schema: optimizationSchema,
       initial: initial(),
     });
     const source = optimizationSchema.collection(path => path.items);
-    const view = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.value.get(),
-    });
+    const view = projection.map(
+      projection.document(runtime).collection(path => path.items),
+      (_id, entry) => entry.value.get()
+    );
     const profile = startProfile();
     runtime.update(tx => {
       tx.write.items.remove('b');
@@ -884,82 +883,20 @@ describe('performance-oriented mutation invariants', () => {
       },
     ]);
     expect(allListener).not.toHaveBeenCalled();
-    view.dispose();
+    projection.dispose();
   });
 
-  it('counts materialized update and learned dependency skip', () => {
-    const runtime = createDocument({
-      schema: optimizationSchema,
-      initial: initial(),
-    });
-    const title = optimizationSchema.value(path => path.title);
-    const view = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.title.get(),
-        update: ({ impact, read }) => {
-          if (!impact.affects(title)) return { kind: 'unchanged' as const };
-          return {
-            kind: 'changed' as const,
-            value: read.title.get(),
-            change: undefined,
-          };
-        },
-      }),
-    });
-    const profile = startProfile();
-    runtime.update(tx => tx.write.title.set('next'));
-    runtime.update(tx => tx.write.items.item('a').value.set(10));
-    const counters = profile.stop();
-    expect(counters.materialized.updated).toBe(1);
-    expect(counters.materialized.skipped).toBe(1);
-    expect(counters.impact.affectsChecks).toBeGreaterThan(0);
-    expect(counters.address.prefixComparisons).toBeGreaterThan(0);
-    expect(counters.address.segmentsCompared).toBeGreaterThan(0);
-    view.dispose();
-  });
-
-  it('compacts disposed processors and preserves the active pipeline', () => {
-    const runtime = createDocument({
-      schema: optimizationSchema,
-      initial: initial(),
-    });
-    for (let index = 0; index < 10_000; index += 1) {
-      createMaterializedView(runtime, {
-        build: ({ read }) => ({
-          value: read.title.get(),
-          update: () => ({ kind: 'unchanged' as const }),
-        }),
-      }).dispose();
-    }
-    const active = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.title.get(),
-        update: ({ read }) => ({
-          kind: 'changed' as const,
-          value: read.title.get(),
-          change: undefined,
-        }),
-      }),
-    });
-    const profile = startProfile();
-    runtime.update(tx => tx.write.title.set('after-churn'));
-    const counters = profile.stop();
-    expect(counters.materialized.updated).toBe(1);
-    expect(active.current()).toBe('after-churn');
-    active.dispose();
-  });
-
-  it('uses a listener snapshot for the current CollectionView notification', () => {
+  it('uses a listener snapshot for the current projection notification', () => {
+    const projection = createProjectionRuntime({ onError: () => undefined });
     const runtime = createDocument({
       schema: optimizationSchema,
       initial: initial(),
     });
     const source = optimizationSchema.collection(path => path.items);
-    const view = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.value.get(),
-    });
+    const view = projection.map(
+      projection.document(runtime).collection(path => path.items),
+      (_id, entry) => entry.value.get()
+    );
     const late = vi.fn();
     let unsubscribe = () => {};
     const first = vi.fn(() => {
@@ -972,6 +909,6 @@ describe('performance-oriented mutation invariants', () => {
     expect(late).not.toHaveBeenCalled();
     runtime.update(tx => tx.write.items.item('a').value.set(11));
     expect(late).toHaveBeenCalledTimes(1);
-    view.dispose();
+    projection.dispose();
   });
 });

@@ -117,15 +117,18 @@ and history stay settled.
 
 ## Derived state is declared, not synchronized by callers
 
-`CollectionView` derives one declared collection and incrementally maintains
-ids, keyed values, and a lazy aggregate array. `MaterializedView` derives one
-value from document reads, tracked impact dependencies, and optional earlier
-materialized sources. A materialized view can only depend on views of the same
-runtime that were created before it.
+ProjectionCollection and ProjectionValue share one explicit source graph and
+publication mechanism. Only scoped processors write derived output. Application
+code selects candidate keys from native impacts; Doxum owns final change,
+equality, revision and notification. Never expose mutable private indexes or
+retain scoped readers/writers. Updates must be synchronous.
 
-Do not cache derived values inside canonical document state unless they are
-real domain data. Do not have UI code manually feed changes into a view. Dispose
-views and subscriptions with their owner.
+All affected nodes settle before listeners; failures discard staged output and
+attempt one fresh build before faulting. Faulted ancestors block descendants.
+Listener exceptions are isolated. Source writes are forbidden during graph
+processing and notification. Explicit batch defers graph publication, not
+canonical commits or document listeners, and never promises source rollback.
+Dispose the owner; do not dispose a node while it still has consumers.
 
 ## Framework and product boundaries
 

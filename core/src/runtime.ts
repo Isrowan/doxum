@@ -24,7 +24,7 @@ import type {
   PreparedUpdateResult,
   TransactionResult,
 } from './runtime/contract';
-import { bindRuntimeAccess } from './runtime/access';
+import { bindRuntimeAccess, accessOf } from './runtime/access';
 import { assertRuntimeWritable, bindRuntimeDriver, disposeRuntimeDriver } from './runtime/driver';
 import {
   createNotification,
@@ -76,6 +76,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
   const assertWritable = (intent: Parameters<typeof assertRuntimeWritable>[1]): void => {
     if (state.disposed) throw new DocumentDisposedError();
     if (busy) throw new DocumentReentrancyError();
+    if (accessOf(runtime).projectionLocks) throw new DocumentReentrancyError();
     assertRuntimeWritable(runtime, intent);
   };
 
@@ -328,10 +329,14 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     history: history.api,
     dispose: () => {
       if (state.disposed) return;
+      if (busy || accessOf(runtime).projectionLocks) throw new DocumentReentrancyError();
       state.disposed = true;
-      disposeNotification(notification);
-      history.api.clear();
-      disposeRuntimeDriver(runtime);
+      try {
+        disposeNotification(notification);
+      } finally {
+        history.api.clear();
+        disposeRuntimeDriver(runtime);
+      }
     },
   };
 

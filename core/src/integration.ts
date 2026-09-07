@@ -3,6 +3,7 @@ import type { DocumentReader } from './access/reader';
 import type { DocumentReadable } from './runtime/contract';
 import { createDependencyTracker } from './access/dependency';
 import { readWith } from './runtime/access';
+export { projectionDebug } from './projection/runtime';
 
 export type TrackedSelection<TValue> = {
   readonly value: TValue;

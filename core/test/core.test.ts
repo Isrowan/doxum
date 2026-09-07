@@ -1,8 +1,7 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
-  createCollectionView,
+  createProjectionRuntime,
   createDocument,
-  createMaterializedView,
   asReadable,
   commandFootprint,
   dict,
@@ -346,55 +345,24 @@ describe('mutable Doxum runtime', () => {
     expect(target.same(own, foreign)).toBe(false);
     expect(Object.isFrozen(own.address)).toBe(true);
   });
-  it('updates collection and materialized views', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const source = projectSchema.collection(path => path.projects);
-    const collection = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.name.get(),
-    });
-    expect(collection.all.current()).toEqual(['A']);
-    runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
-    expect(collection.item('a').current()).toBe('AA');
-    const view = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.projects.ids().length,
-        update: ({ read }) => ({
-          kind: 'changed',
-          value: read.projects.ids().length,
-          change: undefined,
-        }),
-      }),
-    });
-    expect(view.current()).toBe(1);
-    runtime.update(tx =>
-      tx.write.projects.create({
-        id: 'b',
-        value: { name: 'B', archived: false },
-      })
-    );
-    expect(view.current()).toBe(2);
-    view.dispose();
-    collection.dispose();
-  });
+
   it('caches collection item handles and makes disposed handles inert', () => {
+    const projection = createProjectionRuntime({ onError: () => undefined });
     const runtime = createDocument({ schema: projectSchema, initial });
     const source = projectSchema.collection(path => path.projects);
-    const collection = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.name.get(),
-    });
+    const collection = projection.map(
+      projection.document(runtime).collection(path => path.projects),
+      (_id, entry) => entry.name.get()
+    );
     const item = collection.item('a');
     expect(collection.item('a')).toBe(item);
     const listener = vi.fn();
     item.subscribe(listener);
-    collection.dispose();
-    expect(item.current()).toBeUndefined();
+    projection.dispose();
+    expect(() => item.current()).toThrow('disposed');
     runtime.update(tx => tx.write.title.set('two'));
     expect(listener).not.toHaveBeenCalled();
-    expect(item.subscribe(listener)).toBeTypeOf('function');
+    expect(() => item.subscribe(listener)).toThrow('disposed');
     runtime.dispose();
   });
   it('stops history and subscribers after runtime disposal', () => {
@@ -448,95 +416,7 @@ describe('mutable Doxum runtime', () => {
     expect(runtime.replace(initial).status).toBe('committed');
     expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
   });
-  it('propagates materialized source changes in creation order', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const source = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.projects.ids().length,
-        update: ({ read }) => ({
-          kind: 'changed',
-          value: read.projects.ids().length,
-          change: { count: read.projects.ids().length },
-        }),
-      }),
-    });
-    const downstream = createMaterializedView(runtime, {
-      sources: { source },
-      build: ({ sources }) => ({
-        value: sources.source.value * 2,
-        update: ({ sources }) => ({
-          kind: 'changed',
-          value: sources.source.value * 2,
-          change: sources.source.change,
-        }),
-      }),
-    });
-    runtime.update(tx =>
-      tx.write.projects.create({
-        id: 'b',
-        value: { name: 'B', archived: false },
-      })
-    );
-    expect(source.current()).toBe(2);
-    expect(downstream.current()).toBe(4);
-    downstream.dispose();
-    source.dispose();
-  });
-  it('settles the materialized pipeline before notifying listeners', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const source = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.projects.ids().length,
-        update: ({ impact, read }) => {
-          impact.collection(projectSchema.collection(path => path.projects));
-          return {
-            kind: 'changed' as const,
-            value: read.projects.ids().length,
-            change: undefined,
-          };
-        },
-      }),
-    });
-    const downstream = createMaterializedView(runtime, {
-      sources: { source },
-      build: ({ sources }) => ({
-        value: sources.source.value * 2,
-        update: ({ sources }) => ({
-          kind: 'changed' as const,
-          value: sources.source.value * 2,
-          change: undefined,
-        }),
-      }),
-    });
-    const observed: number[] = [];
-    source.subscribe(() => observed.push(downstream.current()));
-    runtime.update(tx =>
-      tx.write.projects.create({
-        id: 'b',
-        value: { name: 'B', archived: false },
-      })
-    );
-    expect(observed).toEqual([4]);
-  });
-  it('skips a materialized update after learning an unrelated impact dependency', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const projects = projectSchema.collection(path => path.projects);
-    const update = vi.fn();
-    const view = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.projects.ids().length,
-        update: input => {
-          update();
-          input.impact.collection(projects);
-          return { kind: 'unchanged' as const };
-        },
-      }),
-    });
-    runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
-    runtime.update(tx => tx.write.title.set('two'));
-    expect(update).toHaveBeenCalledTimes(1);
-    view.dispose();
-  });
+
   it('detects net-zero tree moves without cloning or comparing the whole tree', () => {
     const mindmapSchema = schema({ mindmap: tree<string>() });
     const runtime = createDocument({
@@ -720,25 +600,6 @@ describe('mutable Doxum runtime', () => {
     expect(Object.isFrozen(result.reports[0])).toBe(true);
     expect(Object.isFrozen(result.reports[0].address)).toBe(true);
   });
-  it('captures processor errors after committing and settling its recovery', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const view = createMaterializedView(runtime, {
-      build: ({ read }) => ({
-        value: read.title.get(),
-        update: () => {
-          throw new Error('processor failure');
-        },
-      }),
-    });
-    const result = runtime.update(tx => tx.write.title.set('two'));
-    expect(result.status).toBe('committed');
-    if (result.status !== 'committed') return;
-    expect(result.observerErrors).toHaveLength(1);
-    expect(result.observerErrors[0].phase).toBe('processor');
-    expect(select(runtime, read => read.title.get())).toBe('two');
-    expect(view.current()).toBe('two');
-    view.dispose();
-  });
 
   it('coalesces net-zero entity changes without publishing a commit', () => {
     const runtime = createDocument({ schema: projectSchema, initial });
@@ -758,13 +619,13 @@ describe('mutable Doxum runtime', () => {
   });
 
   it('materializes collection all lazily and keeps the snapshot stable', () => {
+    const projection = createProjectionRuntime({ onError: () => undefined });
     const runtime = createDocument({ schema: projectSchema, initial });
     const source = projectSchema.collection(path => path.projects);
-    const view = createCollectionView({
-      runtime,
-      source,
-      map: (_id, entry) => entry.name.get(),
-    });
+    const view = projection.map(
+      projection.document(runtime).collection(path => path.projects),
+      (_id, entry) => entry.name.get()
+    );
     runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
     const first = view.all.current();
     expect(first).toEqual(['AA']);
@@ -772,6 +633,6 @@ describe('mutable Doxum runtime', () => {
     expect(view.item('a').current()).toBe('AAA');
     expect(view.all.current()).toEqual(['AAA']);
     expect(view.all.current()).toBe(view.all.current());
-    view.dispose();
+    projection.dispose();
   });
 });

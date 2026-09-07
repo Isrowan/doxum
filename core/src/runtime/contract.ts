@@ -114,10 +114,6 @@ export type DocumentTransaction<TSchema extends DocumentSchema> = {
 export type CommitListener<TSchema extends DocumentSchema> = (
   commit: DocumentCommit<TSchema>
 ) => void;
-export type RuntimeProcessor<TSchema extends DocumentSchema> = {
-  readonly process: (commit: DocumentCommit<TSchema>) => void;
-  readonly flush: () => void;
-};
 
 export type DocumentReadable<TSchema extends DocumentSchema> = {
   readonly address: {

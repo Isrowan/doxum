@@ -157,58 +157,34 @@ const unsubscribe = runtime.subscribe([notes, body], commit => {
 
 只有需要将两个 impact target 当作值比较时，使用 `target.same(left, right)`。应使用 `target.address`、`target.id`、`target.belongs` 与 `target.bucket`，不要在 framework adapter 或局部 helper 中复制它们的解释逻辑。
 
-## 用 CollectionView 构建映射行
-
-当一个 table 或 map 需要可复用 read model 时，使用 collection view。mapping callback 可以读取 entry 的类型化字段；`isEqual` 允许 view 在重新映射出的 row 语义不变时保留旧值。
+## 构建显式派生图
 
 ```ts
-const notes = documentSchema.collection(path => path.notes);
-
-const noteSummaries = createCollectionView({
-  runtime,
-  source: notes,
-  map: (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
-  isEqual: (left, right) => left.id === right.id && left.preview === right.preview,
-});
-
-const stop = noteSummaries.item('a').subscribe(() => rerenderRow('a'));
-const all = noteSummaries.all.current();
-```
-
-不要让调用方把变更推入 view。它会监听声明的 source 并从 runtime state 重新计算。`noteSummaries` 和 `stop` 应随所属 UI 或 service 一起 dispose。
-
-## 用 MaterializedView 构建聚合或索引
-
-当你拥有可以根据 commit 增量更新的 aggregate 时，使用 materialized view。`update` 期间通过传入的 `impact` 对象检查影响范围；这会记录真实依赖，使之后无关的 commit 可以跳过此次 update。
-
-```ts
-const notes = documentSchema.collection(path => path.notes);
-
-const noteCount = createMaterializedView(runtime, {
-  build: ({ read }) => ({
-    value: read.notes.ids().length,
-    update: ({ impact, read }) => {
-      const change = impact.collection(notes);
-      if (
-        change.kind === 'incremental' &&
-        change.added.size === 0 &&
-        change.removed.size === 0 &&
-        change.updated.size === 0 &&
-        !change.orderChanged
-      ) {
-        return { kind: 'unchanged' };
-      }
-      return {
-        kind: 'changed',
-        value: read.notes.ids().length,
-        change,
-      };
-    },
+const projection = createProjectionRuntime({ onError: error => console.error(error) });
+const document = projection.document(runtime);
+const notes = document.collection(path => path.notes);
+const noteSummaries = projection.map(
+  notes,
+  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
+  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
+);
+const noteCount = projection.value({
+  sources: { notes },
+  build: ({ notes }) => ({
+    value: notes.read.ids().length,
+    update: ({ notes }) => ({
+      kind: 'changed',
+      value: notes.read.ids().length,
+    }),
   }),
 });
 ```
 
-局部增量逻辑无法安全处理一个 commit 时，返回 `rebuild`。后创建的 view 可以在 `sources` 中声明更早创建的 view；Doxum 会按创建顺序处理该图，并在外部 listener 看到 commit 前将其 flush 完成。
+map 用于保留 key 和顺序的一对一映射。自定义索引使用 projection.collection，声明 sources，并通过 scoped writer.set/remove/order/replace 更新。previous 与 next 分别读取上次输出和本轮暂存结果。
+
+根据每个 document source 的 commits 中的 impact，或上游 collection change，决定候选 key。依赖显式固定，不通过 reader 自动学习。Doxum 根据 equality 决定最终 change。
+
+update 失败后丢弃实例并限一次全新 build 恢复；持续失败阻断下游，独立分支继续。rebuild 经过同一调度图，不手动 emit。projection 随 owner dispose。使用 projection.batch 包住首次 document commit 之前到 editor cleanup 结束的完整同步动作；batch 内派生读取保持上次发布状态。
 
 ## 在 React 中绑定读模型
 

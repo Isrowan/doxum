@@ -239,11 +239,52 @@ views, materialized views, and history state.
 
 ## Derived Views
 
-`createCollectionView` incrementally projects one table or map into `ids`,
-`all`, and cached `item(id)` readables. `createMaterializedView` is for
-indexes and aggregates that need custom incremental update logic. A materialized
-view may depend on earlier views from the same runtime; Doxum settles that graph
-before notifying external listeners.
+`createProjectionRuntime` owns an explicit graph of derived values and keyed
+collections. It combines document runtimes and external values without owning
+their mutations or history.
+
+```ts
+const projection = createProjectionRuntime({ onError: error => console.error(error) });
+const document = projection.document(runtime);
+const taskTitles = projection.map(
+  document.collection(path => path.tasks),
+  (_id, task) => task.title.get()
+);
+const taskCount = projection.value({
+  sources: { tasks: taskTitles },
+  build: ({ tasks }) => ({
+    value: tasks.ids().length,
+    update: ({ tasks }) => ({ kind: 'changed', value: tasks.ids().length }),
+  }),
+});
+```
+
+`projection.collection(spec)` handles custom incremental algorithms. Its scoped
+writer supports `set`, `remove`, `order`, and `replace`; `previous` and `next`
+provide scoped reads. Declare all sources and use their native commit impacts
+or upstream collection changes to choose candidate keys. Doxum stages writes,
+applies equality, and publishes exact `CollectionImpact` changes. It does not
+automatically track item dependencies. `ids`, lazy `all`, and cached `item(id)`
+implement `Readable` and work with `useReadable`.
+
+Use `projection.input(initial, { isEqual })` for boundary values such as container
+size. Its application-owned `set` updates a read-only `source`. Use
+`projection.fromReadable(existing, { isEqual })` for an existing external source.
+Neither replaces a document with domain mutation semantics.
+
+Wrap the entire synchronous application action in `projection.batch(() => ...)`
+before its first document commit to combine document changes and editor cleanup.
+Batches nest, preserve committed source changes on exceptions, and provide no
+cross-document rollback. Projection reads inside a batch return the last
+published state. Document listeners still run synchronously.
+
+All affected nodes settle before listeners. Output revisions change only when
+their output changes. Update failures discard the processor instance and attempt
+one fresh build; persistent faults block descendants, while independent branches
+continue. Errors reach `onError` and, when inside document notification, the
+committed result's `observerErrors`. Manual `rebuild()` uses the same graph.
+Dispose the projection with its service; component unmount only unsubscribes.
+Disposing a node with consumers is rejected, and disposed handles throw.
 
 ## Data Ownership
 
