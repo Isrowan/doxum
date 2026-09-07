@@ -73,6 +73,13 @@ guidance.
 
 ## Read through readers
 
+Use `import type { Infer } from 'doxum'` to name schema-derived values:
+`Infer<typeof task>` for a node and `Infer<typeof taskSchema>` for a document.
+Generated object types and variant branches are flat, with readonly fields
+and discriminants. Optional nodes include undefined; optional object members
+can be omitted. User-provided scalar payload types retain their own structure
+and mutability. Infer accepts nodes and schemas, not a raw shape object.
+
 The runtime does not expose its mutable document. Read through a callback:
 
 ```ts

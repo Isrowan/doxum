@@ -58,6 +58,11 @@ const runtime = createDocument({
 
 ## 通过 reader 读取
 
+用 `import type { Infer } from 'doxum'` 命名 schema 推导的值类型：节点使用
+`Infer<typeof task>`，整份文档使用 `Infer<typeof taskSchema>`。生成的对象与 variant
+分支是展平的结构，属性和判别字段均为 readonly。可选节点包含 undefined，对象中的可选成员
+可以省略。用户提供的标量载荷类型保留原本的结构和可变性。Infer 接收节点或 schema，不直接接收原始 shape 对象。
+
 runtime 不会暴露可变的 canonical document，应通过回调读取：
 
 ```ts

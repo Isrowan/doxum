@@ -72,33 +72,35 @@ export type DocumentNode =
   | ListNode<unknown>
   | TreeNode<unknown>;
 
-type EntityValue<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
-  N extends ObjectNode<infer S>
-    ? DocumentValueOfShape<S>
-    : N extends VariantNode<infer T, infer V>
-      ? {
-          [K in keyof V & string]: { [P in T]: K } & DocumentValueOfShape<
-            V[K] extends ObjectNode<infer S> ? S : never
-          >;
-        }[keyof V & string]
-      : never;
+// Flatten only schema-generated objects; user-supplied field values stay opaque.
+type SchemaObject<T> = { [K in keyof T]: T[K] } & {};
 
-export type DocumentValueOfNode<N> =
+/** Infer a document or node value, including optional node presence. */
+export type Infer<T extends DocumentNode | DocumentSchema> =
+  T extends DocumentSchema<infer S>
+    ? ShapeValue<S>
+    : T extends { readonly optional: true }
+      ? NodeValue<T> | undefined
+      : NodeValue<T>;
+
+type NodeValue<N> =
   N extends FieldNode<infer T, infer O>
     ? O extends true
       ? T | undefined
       : T
     : N extends ObjectNode<infer S>
-      ? DocumentValueOfShape<S>
+      ? ShapeValue<S>
       : N extends VariantNode<infer T, infer V>
-        ? EntityValue<VariantNode<T, V>>
+        ? {
+            [K in keyof V & string]: SchemaObject<{ readonly [P in T]: K } & NodeValue<V[K]>>;
+          }[keyof V & string]
         : N extends TableNode<infer V>
           ? {
               readonly ids: readonly string[];
-              readonly byId: Readonly<Record<string, EntityValue<V>>>;
+              readonly byId: Readonly<Record<string, NodeValue<V>>>;
             }
           : N extends MapNode<infer V>
-            ? Readonly<Record<string, EntityValue<V>>>
+            ? Readonly<Record<string, NodeValue<V>>>
             : N extends DictNode<infer K, infer T>
               ? Readonly<Partial<Record<K, T>>>
               : N extends ListNode<infer I>
@@ -111,10 +113,11 @@ type OptionalKeys<S extends ObjectShape> = {
   [K in keyof S]: S[K] extends { readonly optional: true } ? K : never;
 }[keyof S];
 type RequiredKeys<S extends ObjectShape> = Exclude<keyof S, OptionalKeys<S>>;
-export type DocumentValueOfShape<S extends ObjectShape> = {
-  readonly [K in RequiredKeys<S>]: DocumentValueOfNode<S[K]>;
-} & { readonly [K in OptionalKeys<S>]?: DocumentValueOfNode<S[K]> };
-export type ReadonlyDocument<S extends DocumentSchema> = DocumentValueOfShape<S['shape']>;
+type ShapeValue<S extends ObjectShape> = SchemaObject<
+  { readonly [K in RequiredKeys<S>]: NodeValue<S[K]> } & {
+    readonly [K in OptionalKeys<S>]?: NodeValue<S[K]>;
+  }
+>;
 
 export type EntitySchemaNode = ObjectNode<ObjectShape> | VariantNode<string, VariantShape>;
 
@@ -163,7 +166,7 @@ export type DocumentSchema<TShape extends ObjectShape = {}> = {
   ): ValueSelector<PathValueResult<TPath>>;
 };
 
-export type SchemaPath<S extends ObjectShape = {}> = SchemaPathFor<S, DocumentValueOfShape<S>>;
+export type SchemaPath<S extends ObjectShape = {}> = SchemaPathFor<S, ShapeValue<S>>;
 
 type VariantKeys<V extends VariantShape> = {
   [K in keyof V & string]: keyof (V[K] extends ObjectNode<infer S> ? S : {});
@@ -176,19 +179,14 @@ type VariantFieldPath<V extends VariantShape, K extends string> = {
       : never
     : never;
 }[keyof V & string];
-type VariantPath<T extends string, V extends VariantShape> = {
+type VariantPath<T extends string, V extends VariantShape, TValue> = {
   readonly [K in VariantKeys<V>]: VariantFieldPath<V, K>;
-} & { readonly [K in T]: PathMarker<keyof V & string> } & PathMarker<
-    EntityValue<VariantNode<T, V>>
-  >;
-type PathNodeValue<N extends DocumentNode> = N extends { readonly optional: true }
-  ? DocumentValueOfNode<N> | undefined
-  : DocumentValueOfNode<N>;
+} & { readonly [K in T]: PathMarker<keyof V & string> } & PathMarker<TValue>;
 type EntityPath<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
   N extends ObjectNode<infer S>
-    ? SchemaPathFor<S, PathNodeValue<N>>
+    ? SchemaPathFor<S, Infer<N>>
     : N extends VariantNode<infer T, infer V>
-      ? VariantPath<T, V>
+      ? VariantPath<T, V, Infer<N>>
       : never;
 export type CollectionPath<
   N extends EntitySchemaNode = EntitySchemaNode,
@@ -200,12 +198,12 @@ export type CollectionPath<
 
 type PathValue<N extends DocumentNode> =
   N extends ObjectNode<infer S>
-    ? SchemaPathFor<S, PathNodeValue<N>>
+    ? SchemaPathFor<S, Infer<N>>
     : N extends VariantNode<infer TTag, infer V>
-      ? VariantPath<TTag, V>
+      ? VariantPath<TTag, V, Infer<N>>
       : N extends TableNode<infer V> | MapNode<infer V>
-        ? CollectionPath<V, PathNodeValue<N>>
-        : PathMarker<PathNodeValue<N>>;
+        ? CollectionPath<V, Infer<N>>
+        : PathMarker<Infer<N>>;
 type CollectionInfo<T> = T extends {
   readonly [collectionNode]: infer TNode extends EntitySchemaNode;
 }

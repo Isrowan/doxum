@@ -7,20 +7,21 @@ projection dependencies remain explicit.
 
 ## Ownership And Replacement Ledger
 
-| Final capability                       | Owner and lifecycle                  | Replaces                                                | Consumers                               |
-| -------------------------------------- | ------------------------------------ | ------------------------------------------------------- | --------------------------------------- |
-| object / dict                          | Schema configuration                 | single / record nodes and exports                       | Readers, writers, selectors, mutation   |
-| Schema-owned path identities           | Schema callback scope                | Public address metadata and permissive paths            | Selectors, projection document sources  |
-| Variant value reader                   | Scoped reader                        | Mismatched branch-name reader type                      | select, React, projection               |
-| Pure value computation                 | Existing projection node             | Repeated build/update formulas                          | Application services                    |
-| Typed collection factory               | Existing staged collection node      | Equality annotations used only for inference            | Incremental algorithms                  |
-| Collection candidate summary           | Bound document source, one batch     | Repeated commit impact unions                           | map and custom processors               |
-| Map of a projected collection          | Existing map and collection executor | Custom processors for one-to-one transforms             | Derived chains                          |
-| Equality-specific external bindings    | Projection owner                     | Readable-only cache that ignored options                | fromReadable                            |
-| Revision-cached selection              | React hook instance                  | Repeated allocations from getSnapshot                   | useDocumentSelector                     |
-| Observable history and explicit groups | Document runtime                     | Unobservable history revisions and one entry per commit | React, projection, interaction services |
-| Observable synchronization state       | Local-sync attachment                | Poll-only state()                                       | React, projection, persistence status   |
-| DocumentOperation                      | Operation boundary                   | Duplicate union alias and unused schema generics        | Replay, commits, history                |
+| Final capability                       | Owner and lifecycle                  | Replaces                                                      | Consumers                                          |
+| -------------------------------------- | ------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------- |
+| object / dict                          | Schema configuration                 | single / record nodes and exports                             | Readers, writers, selectors, mutation              |
+| Infer<T>                               | Schema type inference, compile time  | DocumentValueOfNode / DocumentValueOfShape / ReadonlyDocument | Readers, writers, snapshots, selectors, local-sync |
+| Schema-owned path identities           | Schema callback scope                | Public address metadata and permissive paths                  | Selectors, projection document sources             |
+| Variant value reader                   | Scoped reader                        | Mismatched branch-name reader type                            | select, React, projection                          |
+| Pure value computation                 | Existing projection node             | Repeated build/update formulas                                | Application services                               |
+| Typed collection factory               | Existing staged collection node      | Equality annotations used only for inference                  | Incremental algorithms                             |
+| Collection candidate summary           | Bound document source, one batch     | Repeated commit impact unions                                 | map and custom processors                          |
+| Map of a projected collection          | Existing map and collection executor | Custom processors for one-to-one transforms                   | Derived chains                                     |
+| Equality-specific external bindings    | Projection owner                     | Readable-only cache that ignored options                      | fromReadable                                       |
+| Revision-cached selection              | React hook instance                  | Repeated allocations from getSnapshot                         | useDocumentSelector                                |
+| Observable history and explicit groups | Document runtime                     | Unobservable history revisions and one entry per commit       | React, projection, interaction services            |
+| Observable synchronization state       | Local-sync attachment                | Poll-only state()                                             | React, projection, persistence status              |
+| DocumentOperation                      | Operation boundary                   | Duplicate union alias and unused schema generics              | Replay, commits, history                           |
 
 ## Projection
 
@@ -64,6 +65,27 @@ identities stable when reusing bindings. Input continues to expose separate
 set and source capabilities. Dispose projection before external owners.
 
 ## Schema And Access
+
+Use the single type export `Infer` for schema-derived values:
+
+| Previous type                             | Final type                                                       |
+| ----------------------------------------- | ---------------------------------------------------------------- |
+| `DocumentValueOfNode<typeof node>`        | `Infer<typeof node>`                                             |
+| `ReadonlyDocument<typeof documentSchema>` | `Infer<typeof documentSchema>`                                   |
+| `DocumentValueOfShape<Shape>`             | `Infer<ObjectNode<Shape>>`, or infer from the owning node/schema |
+
+The three previous exports are removed without compatibility aliases. Shape
+and node mapping helpers are private to schema.ts. Object values and each
+variant branch are flattened, and generated discriminants are now readonly.
+Existing code assigning directly to a discriminant must use the mutation API.
+`Infer` includes undefined for every optional node, including variant, dict,
+list and tree. To name the present value of an optional variant use
+`Exclude<Infer<typeof node>, undefined>`; variant writer replace still accepts
+only a present branch, while clear handles absence. Collection create also
+continues to require a present entry value. Optional variant selectors
+now expose the same possibly absent value type as readers. Optional properties
+inside objects retain their existing presence semantics. Scalar payload types
+are preserved exactly rather than recursively simplified or made deeply readonly.
 
 - Replace single(entity) with entity itself and record<Key, Value>() with dict.
   Use object when all members of a fixed shape must exist.

@@ -4,7 +4,7 @@ import {
   type RuntimeWriteIntent,
 } from '../runtime/driver';
 import type { DocumentCommit, DocumentRuntime, OperationResult } from '../runtime/contract';
-import type { DocumentSchema, ReadonlyDocument } from '../schema';
+import type { DocumentSchema, Infer } from '../schema';
 import {
   LocalSyncConsistencyError,
   LocalSyncDisposedError,
@@ -197,7 +197,7 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
         throw new LocalSyncConsistencyError('The local timeline moved behind this attachment.');
       if (reset || headSeq < current.checkpointSeq) {
         const result = runRuntime(() =>
-          runtime.replace(current.checkpoint as ReadonlyDocument<TSchema>, { source: 'remote' })
+          runtime.replace(current.checkpoint as Infer<TSchema>, { source: 'remote' })
         );
         if (result.status === 'rejected')
           throw new LocalSyncConsistencyError('The local checkpoint could not be restored.');

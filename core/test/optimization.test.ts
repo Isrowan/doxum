@@ -12,7 +12,7 @@ import {
   table,
   tree,
   variant,
-  type ReadonlyDocument,
+  type Infer,
 } from '../src';
 import { createImpact } from '../src/impact';
 import * as anchor from '../src/mutation/anchor';
@@ -684,7 +684,7 @@ describe('performance-oriented mutation invariants', () => {
     const document = {
       ...initial(),
       outline: { rootId: 'node-0', nodes },
-    } satisfies ReadonlyDocument<typeof optimizationSchema>;
+    } satisfies Infer<typeof optimizationSchema>;
     const runtime = createDocument({
       schema: optimizationSchema,
       initial: document,
@@ -753,7 +753,7 @@ describe('performance-oriented mutation invariants', () => {
     const document = {
       ...initial(),
       items: { ids: rows, byId },
-    } satisfies ReadonlyDocument<typeof optimizationSchema>;
+    } satisfies Infer<typeof optimizationSchema>;
     const runtime = createDocument({
       schema: optimizationSchema,
       initial: document,

@@ -4,7 +4,7 @@ import type {
   DocumentAddress,
   DocumentNode,
   DocumentSchema,
-  DocumentValueOfNode,
+  Infer,
   DocumentTreeValue,
   EntitySchemaNode,
   ListNode,
@@ -27,8 +27,8 @@ export type DictionaryWriter<TKey extends string, TValue> = {
 export type CollectionWriter<TId, TNode extends EntitySchemaNode> = {
   readonly create: (
     entry:
-      | { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }
-      | readonly { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }[],
+      | { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }
+      | readonly { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }[],
     anchor?: DocumentAnchor
   ) => void;
   readonly item: (id: TId) => WriterOfNode<TNode>;
@@ -38,8 +38,8 @@ export type CollectionWriter<TId, TNode extends EntitySchemaNode> = {
 export type MapWriter<TId, TNode extends EntitySchemaNode> = {
   readonly create: (
     entry:
-      | { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }
-      | readonly { readonly id: TId; readonly value: DocumentValueOfNode<TNode> }[]
+      | { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }
+      | readonly { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }[]
   ) => void;
   readonly item: (id: TId) => WriterOfNode<TNode>;
   readonly remove: (id: TId | readonly TId[]) => void;
@@ -71,12 +71,15 @@ export type WriterOfNode<TNode extends DocumentNode> = TNode extends {
   kind: 'field';
 }
   ? TNode extends { readonly optional: true }
-    ? FieldWriter<DocumentValueOfNode<TNode>, true>
-    : FieldWriter<DocumentValueOfNode<TNode>>
+    ? FieldWriter<Infer<TNode>, true>
+    : FieldWriter<Infer<TNode>>
   : TNode extends ObjectNode<infer TShape>
     ? { readonly [K in keyof TShape]: WriterOfNode<TShape[K]> }
     : TNode extends VariantNode<string, infer _TVariants>
-      ? OptionalClear<TNode, { readonly replace: (value: DocumentValueOfNode<TNode>) => void }>
+      ? OptionalClear<
+          TNode,
+          { readonly replace: (value: Exclude<Infer<TNode>, undefined>) => void }
+        >
       : TNode extends TableNode<infer TValue>
         ? CollectionWriter<string, TValue>
         : TNode extends MapNode<infer TValue>
@@ -87,7 +90,7 @@ export type WriterOfNode<TNode extends DocumentNode> = TNode extends {
               ? OptionalClear<TNode, ListWriter<TItem>>
               : TNode extends TreeNode<infer TValue>
                 ? OptionalClear<TNode, TreeWriter<TValue>>
-                : FieldWriter<DocumentValueOfNode<TNode>>;
+                : FieldWriter<Infer<TNode>>;
 export type DocumentWriter<TSchema extends DocumentSchema> = WriterOfNode<
   ObjectNode<TSchema['shape']>
 >;

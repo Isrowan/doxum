@@ -4,13 +4,12 @@ import type {
   DocumentAddress,
   DocumentNode,
   DocumentSchema,
-  DocumentValueOfNode,
+  Infer,
   EntitySchemaNode,
   ImpactTarget,
   ListNode,
   MapNode,
   ObjectNode,
-  ReadonlyDocument,
   TableNode,
   TreeNode,
   VariantNode,
@@ -51,14 +50,11 @@ export type TreeReader<T> = {
 export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
   kind: 'field';
 }
-  ? FieldReader<DocumentValueOfNode<TNode>>
+  ? FieldReader<Infer<TNode>>
   : TNode extends ObjectNode<infer TShape>
     ? { readonly [K in keyof TShape]: ReaderOfNode<TShape[K]> }
     : TNode extends VariantNode<string, infer _TVariants>
-      ? FieldReader<
-          | DocumentValueOfNode<TNode>
-          | (TNode extends { readonly optional: true } ? undefined : never)
-        >
+      ? FieldReader<Infer<TNode>>
       : TNode extends TableNode<infer TValue>
         ? CollectionReader<string, TValue>
         : TNode extends MapNode<infer TValue>
@@ -69,7 +65,7 @@ export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
               ? ListReader<TItem>
               : TNode extends TreeNode<infer TValue>
                 ? TreeReader<TValue>
-                : FieldReader<DocumentValueOfNode<TNode>>;
+                : FieldReader<Infer<TNode>>;
 export type DocumentReader<TSchema extends DocumentSchema> = ReaderOfNode<
   ObjectNode<TSchema['shape']>
 >;
@@ -280,7 +276,7 @@ export const readerFor = (
 
 export const documentReader = <TSchema extends DocumentSchema>(
   schema: TSchema,
-  root: () => ReadonlyDocument<TSchema>,
+  root: () => Infer<TSchema>,
   active: () => boolean,
   dependencies?: DependencyTracker
 ): DocumentReader<TSchema> => {

@@ -45,7 +45,7 @@ const initial = {
 type SelectorValue<T> = T extends ValueSelector<infer TValue> ? TValue : never;
 type CollectionTypes<T> =
   T extends CollectionSelector<infer TId, infer TNode>
-    ? { id: TId; entry: import('../src').DocumentValueOfNode<TNode> }
+    ? { id: TId; entry: import('../src').Infer<TNode> }
     : never;
 
 describe('mutable Doxum runtime', () => {

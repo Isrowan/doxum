@@ -75,6 +75,18 @@ A `DocumentSchema` has two roles:
 1. It derives the TypeScript document, reader, and writer shapes.
 2. It defines the legal semantic address space for operations and selectors.
 
+`Infer<T>` is the public value inference entry for both nodes and complete
+schemas. `core/src/schema.ts` owns the internal node and shape mappings;
+readers, writers, snapshots and synchronization contracts consume the same
+inference. Object properties are flattened after required/optional mapping,
+and each variant branch is flattened after adding its readonly discriminant.
+This retains discriminant correlation without leaking generated intersections
+into the value type. User-provided scalar types remain opaque to this process.
+Optional nodes infer a value or undefined, and optional shape members retain
+their optional property modifier. Variant replacement accepts a present branch;
+absence is expressed by clear. Optional variant selectors and readers both
+include undefined in their result type.
+
 Addresses are immutable string paths. Static schema segments and dynamic
 collection segments are cached by `core/src/address.ts`; the resolver combines
 schema traversal with the current document when a variant branch or collection

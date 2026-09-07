@@ -1,4 +1,4 @@
-import type { DocumentAddress, DocumentSchema, ImpactTarget, ReadonlyDocument } from '../schema';
+import type { DocumentAddress, DocumentSchema, ImpactTarget, Infer } from '../schema';
 import type { AddressRef } from '../address';
 import type { DocumentOperation } from '../operations';
 import type { DocumentImpact } from '../impact';
@@ -153,10 +153,10 @@ export type DocumentRuntime<TSchema extends DocumentSchema> = DocumentReadable<T
     }
   ): OperationResult<DocumentCommit<TSchema>>;
   replace(
-    document: ReadonlyDocument<TSchema>,
+    document: Infer<TSchema>,
     options?: { readonly source?: Extract<CommitSource, 'system' | 'remote'> }
   ): OperationResult<DocumentCommit<TSchema>>;
-  snapshot(): ReadonlyDocument<TSchema>;
+  snapshot(): Infer<TSchema>;
   readonly history: LocalHistory<DocumentCommit<TSchema>>;
   dispose(): void;
 };

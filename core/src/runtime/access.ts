@@ -1,4 +1,4 @@
-import type { DocumentSchema, ReadonlyDocument } from '../schema';
+import type { DocumentSchema, Infer } from '../schema';
 import type { DocumentReader } from '../access/reader';
 import { documentReader } from '../access/reader';
 import type { DependencyTracker } from '../access/dependency';
@@ -7,7 +7,7 @@ import type { DocumentReadable } from './contract';
 
 export type RuntimeAccessState<TSchema extends DocumentSchema> = {
   readonly schema: TSchema;
-  document: ReadonlyDocument<TSchema>;
+  document: Infer<TSchema>;
   disposed: boolean;
   projectionLocks?: number;
 };
@@ -35,7 +35,7 @@ export const schemaOf = <TSchema extends DocumentSchema>(
 
 export const documentOf = <TSchema extends DocumentSchema>(
   runtime: DocumentReadable<TSchema>
-): ReadonlyDocument<TSchema> => accessOf(runtime).document;
+): Infer<TSchema> => accessOf(runtime).document;
 
 export const readWith = <TSchema extends DocumentSchema, TResult>(
   runtime: DocumentReadable<TSchema>,

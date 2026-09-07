@@ -61,7 +61,7 @@ Define the document shape once. Doxum infers the immutable document value and
 the reader and writer APIs from that schema.
 
 ```ts
-import { createDocument, field, object, schema, table } from 'doxum';
+import { createDocument, field, object, schema, table, type Infer } from 'doxum';
 
 const task = object({
   title: field<string>(),
@@ -72,6 +72,9 @@ const taskSchema = schema({
   title: field<string>(),
   tasks: table(task),
 });
+
+type Task = Infer<typeof task>;
+type TaskDocument = Infer<typeof taskSchema>;
 
 const runtime = createDocument({
   schema: taskSchema,
@@ -102,6 +105,31 @@ Mutation failure codes are a closed public `MutationIssueCode` union. For
 application validation, use `tx.report` or `tx.reject` with a
 diagnostic `{ code, message, address? }`; Doxum adds `source: 'application'`.
 Published diagnostic arrays and addresses are copied and frozen.
+
+## Infer Value Types
+
+Use `Infer<typeof node>` or `Infer<typeof documentSchema>` for value types.
+Schema-generated objects are flattened, with readonly properties and optional
+presence preserved. Variants produce a discriminated union of flat branches:
+
+```ts
+import { field, object, variant, type Infer } from 'doxum';
+
+const outcome = variant('kind', {
+  victory: object({ reason: field<'sealed' | 'destroyed'>() }),
+  defeat: object({ reason: field<'deadline' | 'collapse'>() }),
+});
+
+type Outcome = Infer<typeof outcome>;
+// { readonly kind: 'victory'; readonly reason: 'sealed' | 'destroyed' }
+// | { readonly kind: 'defeat'; readonly reason: 'deadline' | 'collapse' }
+```
+
+`Infer` includes `undefined` for an optional node; in a containing object its
+property is optional. User-supplied types in `field<T>`, dict, list and tree
+values retain their original type structure. Flattening does not recursively
+rewrite those types or apply deep readonly to them. TypeScript controls the
+exact alias presentation in editor hovers.
 
 ## Read And Subscribe
 

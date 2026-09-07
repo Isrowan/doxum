@@ -1,4 +1,4 @@
-import type { DocumentSchema, ImpactTarget, ReadonlyDocument } from './schema';
+import type { DocumentSchema, ImpactTarget, Infer } from './schema';
 import { contains, debugKey, overlaps, read as readAddress, resolveAddress } from './address';
 import { createImpact } from './impact';
 import { createHistory } from './history';
@@ -57,7 +57,7 @@ const publishDiagnostic = (value: DiagnosticInput): DocumentDiagnostic =>
 
 export const createDocument = <TSchema extends DocumentSchema>(input: {
   readonly schema: TSchema;
-  readonly initial: ReadonlyDocument<TSchema>;
+  readonly initial: Infer<TSchema>;
   readonly history?: { readonly capacity?: number } | false;
 }): DocumentRuntime<TSchema> => {
   const initialTreeError = tree.invalidDocument(input.schema, input.initial);
