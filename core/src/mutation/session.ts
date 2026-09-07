@@ -1,6 +1,6 @@
 import { resolveLocated } from '../address';
 import type { DocumentSchema } from '../schema';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import { profile } from '../profile';
 import type { MutationBatch } from './contract';
 import type { MutationIssue } from './issue';
@@ -14,9 +14,9 @@ export type MutationSession<TSchema extends DocumentSchema> = {
   readonly rollback: () => void;
 };
 
-type AppliedStep<TSchema extends DocumentSchema> = {
-  readonly forward: DocumentOperationUnion<TSchema>;
-  readonly inverse: readonly DocumentOperationUnion<TSchema>[];
+type AppliedStep = {
+  readonly forward: DocumentOperation;
+  readonly inverse: readonly DocumentOperation[];
 };
 
 export const createMutationSession = <TSchema extends DocumentSchema>(
@@ -24,7 +24,7 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
   schema: TSchema,
   options: { readonly copyPayload?: boolean } = {}
 ): MutationSession<TSchema> => {
-  const steps: AppliedStep<TSchema>[] = [];
+  const steps: AppliedStep[] = [];
   const journal = createChangeJournal(root);
   let state: 'active' | 'finished' | 'rolled-back' = 'active';
 
@@ -50,7 +50,7 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
         profile.batch.rejected();
         return decoded.issue;
       }
-      const normalized = operation.normalize(decoded.operation as DocumentOperationUnion<TSchema>);
+      const normalized = operation.normalize(decoded.operation);
       profile.batch.entry(
         normalized.type === 'entity.create'
           ? normalized.entries.length
@@ -74,9 +74,9 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
       if (result.status === 'unchanged') return undefined;
 
       const published = operation.publish(normalized);
-      const group: DocumentOperationUnion<TSchema>[] = [];
+      const group: DocumentOperation[] = [];
       for (const rawInverse of result.inverse) {
-        const inverse = operation.inverse(rawInverse as DocumentOperationUnion<TSchema>);
+        const inverse = operation.inverse(rawInverse);
         group.push(inverse);
         profile.mutation.inverse();
         profile.batch.inverse();
@@ -99,7 +99,7 @@ export const createMutationSession = <TSchema extends DocumentSchema>(
 
       let inverseCount = 0;
       for (const step of steps) inverseCount += step.inverse.length;
-      const inverse = new Array<DocumentOperationUnion<TSchema>>(inverseCount);
+      const inverse = new Array<DocumentOperation>(inverseCount);
       let writeIndex = 0;
       for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1)
         for (const entry of steps[stepIndex].inverse) inverse[writeIndex++] = entry;

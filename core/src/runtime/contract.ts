@@ -1,13 +1,15 @@
 import type { DocumentAddress, DocumentSchema, ImpactTarget, ReadonlyDocument } from '../schema';
 import type { AddressRef } from '../address';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { DocumentImpact } from '../impact';
 import type { DocumentReader } from '../access/reader';
 import type { DocumentWriter } from '../access/writer';
 import type { MutationIssue } from '../mutation/issue';
 import type { CommandFootprint } from '../mutation/footprint';
+import type { Readable } from '../projection/readable';
 
 export type Unsubscribe = () => void;
+export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';
 
 export class DocumentReentrancyError extends Error {
@@ -27,16 +29,16 @@ export type DocumentCommit<TSchema extends DocumentSchema> = {
   readonly revision: number;
   readonly kind: 'operations' | 'replace';
   readonly source: CommitSource;
-  readonly operations: readonly DocumentOperationUnion<TSchema>[];
-  readonly inverse: readonly DocumentOperationUnion<TSchema>[];
+  readonly operations: readonly DocumentOperation[];
+  readonly inverse: readonly DocumentOperation[];
   readonly impact: DocumentImpact<TSchema>;
 };
-export type DocumentDiagnostic = {
-  readonly source: 'application';
+export type DiagnosticInput = {
   readonly code: string;
   readonly message: string;
   readonly address?: DocumentAddress;
 };
+export type DocumentDiagnostic = DiagnosticInput & { readonly source: 'application' };
 export type DocumentProblem = DocumentDiagnostic | MutationIssue;
 export type ObserverError = {
   readonly phase: 'processor' | 'flush' | 'listener';
@@ -65,8 +67,8 @@ export type PreparedUpdateResult<TValue, TSchema extends DocumentSchema> =
   | {
       readonly status: 'prepared';
       readonly value: TValue;
-      readonly operations: readonly DocumentOperationUnion<TSchema>[];
-      readonly inverse: readonly DocumentOperationUnion<TSchema>[];
+      readonly operations: readonly DocumentOperation[];
+      readonly inverse: readonly DocumentOperation[];
       readonly impact: DocumentImpact<TSchema>;
       readonly footprint: CommandFootprint;
       readonly reports: readonly DocumentDiagnostic[];
@@ -97,19 +99,18 @@ export type HistoryState = {
   readonly undoDepth: number;
   readonly redoDepth: number;
 };
-export type LocalHistory<TCommit> = {
-  current(): HistoryState;
-  subscribe(listener: () => void): Unsubscribe;
+export type LocalHistory<TCommit> = Readable<HistoryState> & {
   undo(): OperationResult<TCommit>;
   redo(): OperationResult<TCommit>;
   clear(): void;
+  group(): { end(): void; cancel(): OperationResult<TCommit> };
 };
 
 export type DocumentTransaction<TSchema extends DocumentSchema> = {
   readonly read: DocumentReader<TSchema>;
   readonly write: DocumentWriter<TSchema>;
-  readonly reject: (issue: DocumentDiagnostic | readonly DocumentDiagnostic[]) => never;
-  readonly report: (issue: DocumentDiagnostic) => void;
+  readonly reject: (issue: DiagnosticInput | readonly DiagnosticInput[]) => never;
+  readonly report: (issue: DiagnosticInput) => void;
 };
 export type CommitListener<TSchema extends DocumentSchema> = (
   commit: DocumentCommit<TSchema>
@@ -135,14 +136,14 @@ export type DocumentRuntime<TSchema extends DocumentSchema> = DocumentReadable<T
   /** Schema configuration captured when this runtime was created. */
   readonly schema: TSchema;
   update<TResult>(
-    run: (transaction: DocumentTransaction<TSchema>) => TResult,
+    run: (transaction: DocumentTransaction<TSchema>) => Synchronous<TResult>,
     options?: {
       readonly source?: Extract<CommitSource, 'local' | 'system'>;
       readonly history?: boolean;
     }
   ): TransactionResult<TResult, DocumentCommit<TSchema>>;
   prepare<TResult>(
-    run: (transaction: DocumentTransaction<TSchema>) => TResult
+    run: (transaction: DocumentTransaction<TSchema>) => Synchronous<TResult>
   ): PreparedUpdateResult<TResult, TSchema>;
   apply(
     operations: unknown,

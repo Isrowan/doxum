@@ -1,6 +1,6 @@
 import { locate, read } from '../address';
 import type { ResolvedAddress } from '../address';
-import type { DocumentAnchor, DocumentOperationUnion } from '../operations';
+import type { DocumentAnchor, DocumentOperation } from '../operations';
 import type { DocumentAddress, DocumentNode } from '../schema';
 import { profile } from '../profile';
 import { isRecord, ownPayload, sameStructuralValue } from '../value/ownership';
@@ -33,7 +33,7 @@ type ValueSubject = SubjectBase & {
 
 type VariantSubject = SubjectBase & {
   readonly kind: 'variant';
-  readonly before: unknown;
+  readonly before: Presence;
 };
 
 type DictState =
@@ -107,8 +107,8 @@ type JournalFinish =
 type ChangeJournal = {
   readonly record: (
     resolved: ResolvedAddress,
-    operation: DocumentOperationUnion,
-    inverse: readonly DocumentOperationUnion[]
+    operation: DocumentOperation,
+    inverse: readonly DocumentOperation[]
   ) => void;
   readonly finish: () => JournalFinish;
 };
@@ -143,7 +143,7 @@ const replaceArray = <T>(target: T[], value: readonly T[]): void => {
 
 const present = (value: unknown): Presence => ({ status: 'present', value });
 const absent: Presence = Object.freeze({ status: 'absent' });
-const inverseMismatch = (operation: DocumentOperationUnion): never => {
+const inverseMismatch = (operation: DocumentOperation): never => {
   throw new Error(`Mutation inverse does not match '${operation.type}'.`);
 };
 
@@ -243,7 +243,8 @@ const restoreEntity = (value: unknown, subject: EntitySubject): void => {
 const restoreRootSubject = (value: unknown, subject: ChangeSubject): unknown => {
   if (subject.kind === 'value')
     return subject.before.status === 'present' ? subject.before.value : undefined;
-  if (subject.kind === 'variant') return subject.before;
+  if (subject.kind === 'variant')
+    return subject.before.status === 'present' ? subject.before.value : undefined;
   if (subject.kind === 'dict') {
     if (isRecord(value)) restoreDict(value, subject.state);
     return value;
@@ -271,7 +272,7 @@ const restoreSubject = (
     return value;
   }
   if (subject.kind === 'variant') {
-    writeContainer(value, address, subject.before);
+    writePresence(value, address, subject.before);
     return value;
   }
   const current = read(value, address);
@@ -375,8 +376,13 @@ const analyzeEntity = (root: unknown, subject: EntitySubject): EntityAnalysis =>
 
 const subjectChanged = (root: unknown, subject: Exclude<ChangeSubject, EntitySubject>): boolean => {
   if (subject.kind === 'value') return valueChanged(root, subject);
-  if (subject.kind === 'variant')
-    return !sameStructuralValue(subject.before, read(root, subject.address));
+  if (subject.kind === 'variant') {
+    const target = locate(root, subject.address);
+    const exists = !!target && hasOwn(target.parent, target.key);
+    return subject.before.status === 'absent'
+      ? exists
+      : !exists || !sameStructuralValue(subject.before.value, target?.value);
+  }
   if (subject.kind === 'dict') return dictChanged(root, subject);
   if (subject.kind === 'list') return listChanged(root, subject);
   return tree.changeChanged(subject.state, read(root, subject.address));
@@ -385,7 +391,7 @@ const subjectChanged = (root: unknown, subject: Exclude<ChangeSubject, EntitySub
 const listOrderBefore = (
   value: readonly unknown[],
   node: ListNode,
-  inverse: DocumentOperationUnion
+  inverse: DocumentOperation
 ): readonly string[] => {
   const order = value.map(node.keyOf);
   if (inverse.type === 'list.remove') return order.filter(key => key !== inverse.key);
@@ -403,7 +409,7 @@ const listOrderBefore = (
 
 const recordListPresence = (
   state: Extract<ListState, { readonly mode: 'incremental' }>,
-  inverse: DocumentOperationUnion
+  inverse: DocumentOperation
 ): void => {
   if (inverse.type === 'list.remove' && !state.items.has(inverse.key))
     state.items.set(inverse.key, absent);
@@ -412,8 +418,8 @@ const recordListPresence = (
 };
 
 const entityOrderInverse = (
-  operation: DocumentOperationUnion,
-  inverse: DocumentOperationUnion
+  operation: DocumentOperation,
+  inverse: DocumentOperation
 ): EntityOrderInverse => {
   if (inverse.type === 'entity.remove') return { kind: 'remove', ids: inverse.ids };
   if (inverse.type === 'entity.create') {
@@ -462,9 +468,9 @@ const restoreEntityOrder = (order: string[], inverses: readonly EntityOrderInver
 };
 
 const treeOperation = (
-  operation: DocumentOperationUnion
+  operation: DocumentOperation
 ): operation is Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   {
     readonly type: 'tree.insert' | 'tree.move' | 'tree.remove' | 'tree.set' | 'tree.replace';
   }
@@ -588,7 +594,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     return before;
   };
 
-  const base = (resolved: ResolvedAddress, operation: DocumentOperationUnion): SubjectBase => ({
+  const base = (resolved: ResolvedAddress, operation: DocumentOperation): SubjectBase => ({
     address: operation.at,
     addressHash: resolved.addressHash,
     ...(resolved.collection ? { collection: resolved.collection } : {}),
@@ -597,10 +603,10 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
   const recordValue = (
     resolved: ResolvedAddress,
     operation: Extract<
-      DocumentOperationUnion,
+      DocumentOperation,
       { readonly type: 'field.set' | 'field.clear' | 'value.clear' | 'dict.replace' }
     >,
-    inverse: readonly DocumentOperationUnion[]
+    inverse: readonly DocumentOperation[]
   ): void => {
     if (find('value', operation.at, resolved.addressHash)) return;
     const first = inverse[0];
@@ -626,26 +632,27 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
 
   const recordVariant = (
     resolved: ResolvedAddress,
-    operation: Extract<DocumentOperationUnion, { readonly type: 'variant.replace' }>,
-    inverse: readonly DocumentOperationUnion[]
+    operation: Extract<DocumentOperation, { readonly type: 'variant.replace' | 'value.clear' }>,
+    inverse: readonly DocumentOperation[]
   ): void => {
     if (find('variant', operation.at, resolved.addressHash)) return;
     const first = inverse[0];
-    if (first?.type !== 'variant.replace') return inverseMismatch(operation);
+    if (first?.type !== 'variant.replace' && first?.type !== 'value.clear')
+      return inverseMismatch(operation);
     add<VariantSubject>({
       ...base(resolved, operation),
       kind: 'variant',
-      before: absorb(first.value, operation.at),
+      before: first.type === 'value.clear' ? absent : present(absorb(first.value, operation.at)),
     });
   };
 
   const recordDict = (
     resolved: ResolvedAddress,
     operation: Extract<
-      DocumentOperationUnion,
+      DocumentOperation,
       { readonly type: 'dict.set' | 'dict.delete' | 'dict.replace' }
     >,
-    inverse: readonly DocumentOperationUnion[]
+    inverse: readonly DocumentOperation[]
   ): void => {
     const first = inverse[0];
     if (!first) return inverseMismatch(operation);
@@ -675,10 +682,10 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
   const recordList = (
     resolved: ResolvedAddress,
     operation: Extract<
-      DocumentOperationUnion,
+      DocumentOperation,
       { readonly type: 'list.insert' | 'list.move' | 'list.remove' | 'list.replace' }
     >,
-    inverse: readonly DocumentOperationUnion[]
+    inverse: readonly DocumentOperation[]
   ): void => {
     if (resolved.node.kind !== 'list') return inverseMismatch(operation);
     const first = inverse[0];
@@ -742,10 +749,10 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
   const recordEntity = (
     resolved: ResolvedAddress,
     operation: Extract<
-      DocumentOperationUnion,
+      DocumentOperation,
       { readonly type: 'entity.create' | 'entity.remove' | 'entity.move' }
     >,
-    inverse: readonly DocumentOperationUnion[]
+    inverse: readonly DocumentOperation[]
   ): void => {
     if (resolved.node.kind !== 'table' && resolved.node.kind !== 'map')
       return inverseMismatch(operation);
@@ -798,12 +805,12 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
   const recordTree = (
     resolved: ResolvedAddress,
     operation: Extract<
-      DocumentOperationUnion,
+      DocumentOperation,
       {
         readonly type: 'tree.insert' | 'tree.move' | 'tree.remove' | 'tree.set' | 'tree.replace';
       }
     >,
-    inverse: readonly DocumentOperationUnion[]
+    inverse: readonly DocumentOperation[]
   ): void => {
     const current = read(root, operation.at);
     if (
@@ -835,6 +842,10 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     record: (resolved, operation, inverse) => {
       profile.batch.journalRecord();
       if (ownerOf(operation.at)) return;
+      if (operation.type === 'value.clear' && resolved.node.kind === 'variant') {
+        recordVariant(resolved, operation, inverse);
+        return;
+      }
       if (
         operation.type === 'field.set' ||
         operation.type === 'field.clear' ||

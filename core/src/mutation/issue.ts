@@ -1,5 +1,5 @@
 import type { DocumentAddress } from '../schema';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 
 export type MutationIssueCode =
   | 'invalid-address'
@@ -26,7 +26,7 @@ export type MutationIssue = {
   readonly code: MutationIssueCode;
   readonly address: DocumentAddress;
   readonly message: string;
-  readonly operation?: DocumentOperationUnion['type'];
+  readonly operation?: DocumentOperation['type'];
 };
 
 const ownAddress = (address: DocumentAddress): DocumentAddress => Object.freeze(address.slice());
@@ -35,7 +35,7 @@ export const at = (
   address: DocumentAddress,
   code: MutationIssueCode,
   message: string,
-  operation?: DocumentOperationUnion['type']
+  operation?: DocumentOperation['type']
 ): MutationIssue =>
   Object.freeze({
     source: 'mutation',
@@ -46,7 +46,7 @@ export const at = (
   });
 
 export const from = (
-  operation: DocumentOperationUnion,
+  operation: DocumentOperation,
   code: MutationIssueCode,
   message: string
 ): MutationIssue => at(operation.at, code, message, operation.type);

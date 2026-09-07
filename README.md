@@ -100,8 +100,8 @@ in that update is rolled back.
 
 Mutation failure codes are a closed public `MutationIssueCode` union. For
 application validation, use `tx.report` or `tx.reject` with a
-`DocumentDiagnostic`; published diagnostic arrays and addresses are copied and
-frozen.
+diagnostic `{ code, message, address? }`; Doxum adds `source: 'application'`.
+Published diagnostic arrays and addresses are copied and frozen.
 
 ## Read And Subscribe
 
@@ -141,6 +141,13 @@ runtime.history.redo();
 runtime.apply([{ type: 'field.set', at: ['title'], value: 'Ship Doxum' }]);
 ```
 
+Use `runtime.history.group()` for one action spanning multiple synchronous
+updates, such as a drag. Keep its handle until the action ends, then call
+`end()` to retain one undo entry or `cancel()` to apply its inverses atomically.
+Groups cannot nest. Undo, redo, clear, remote/replace commits, and committed
+updates with `history: false` end the current group. History implements
+`Readable<HistoryState>` and can be used with `useReadable` or `fromReadable`.
+
 `apply` is the boundary for replaying operations from persistence or a network
 adapter. Doxum does not provide those adapters. A `replace` or a commit marked
 as `remote` invalidates local history because its prior inverse sequence is no
@@ -177,7 +184,7 @@ the log can faithfully append. `flush()` is the explicit point that waits for
 commits observed before the call to persist (or, in a follower, waits to catch
 up to the durable head). A browser crash, quota failure, or malformed JSON
 payload can therefore leave an already visible leader commit unpersisted;
-inspect `state()` or use `onError` to surface that condition.
+observe `state` or use `onError` to surface that condition.
 
 ```ts
 import { createDocument, select } from 'doxum';
@@ -197,7 +204,7 @@ const localSync = await attachLocalSync({
   documentId: 'project-1',
 });
 
-if (localSync.state().status === 'leader') {
+if (localSync.state.current().status === 'leader') {
   runtime.update(tx => {
     tx.write.title.set('Ship Doxum');
   });
@@ -210,6 +217,10 @@ await localSync.flush(); // persist observed leader commands / catch up a follow
 
 await localSync.dispose();
 ```
+
+`localSync.state` is a `Readable`: `state.current()` returns a stable snapshot,
+`state.subscribe(listener)` observes persistence, leadership and error changes,
+and React can consume it with `useReadable(localSync.state)`.
 
 `attachLocalSync` first hydrates the passed runtime from IndexedDB; await it
 before allowing reads or edits. It does not make runtime mutation asynchronous,
@@ -250,22 +261,27 @@ const taskTitles = projection.map(
   document.collection(path => path.tasks),
   (_id, task) => task.title.get()
 );
-const taskCount = projection.value({
-  sources: { tasks: taskTitles },
-  build: ({ tasks }) => ({
-    value: tasks.ids().length,
-    update: ({ tasks }) => ({ kind: 'changed', value: tasks.ids().length }),
-  }),
-});
+const taskCount = projection.value({ tasks: taskTitles }, ({ tasks }) => tasks.ids().length);
+const labels = projection.map(taskTitles, (id, title) => `${id}: ${title}`);
 ```
 
-`projection.collection(spec)` handles custom incremental algorithms. Its scoped
+`projection.value(sources, compute, { isEqual }?)` is the ordinary pure-compute
+entry. Stateful algorithms use `projection.value({ sources, build }, { isEqual }?)`,
+where build returns `{ value, update }`. Both use the same scheduler and lifecycle.
+
+`projection.collection<Item>()(spec)` handles custom incremental algorithms. Its scoped
 writer supports `set`, `remove`, `order`, and `replace`; `previous` and `next`
 provide scoped reads. Declare all sources and use their native commit impacts
-or upstream collection changes to choose candidate keys. Doxum stages writes,
+or upstream collection changes to choose candidate keys. A document collection
+context also provides `candidates.keys`, `candidates.orderDirty` and `reset`,
+aggregated across the entire batch. Candidates include net-zero changes; read
+final state to decide the output. Doxum stages writes,
 applies equality, and publishes exact `CollectionImpact` changes. It does not
 automatically track item dependencies. `ids`, lazy `all`, and cached `item(id)`
 implement `Readable` and work with `useReadable`.
+
+`map` accepts document collections and upstream projection collections while
+preserving keys and order. Source dependencies stay explicit.
 
 Use `projection.input(initial, { isEqual })` for boundary values such as container
 size. Its application-owned `set` updates a read-only `source`. Use
@@ -285,6 +301,15 @@ continue. Errors reach `onError` and, when inside document notification, the
 committed result's `observerErrors`. Manual `rebuild()` uses the same graph.
 Dispose the projection with its service; component unmount only unsubscribes.
 Disposing a node with consumers is rejected, and disposed handles throw.
+
+Schema access uses `object` for structured entities and `dict` for keyed values.
+Variants expose `reader.get()` as a discriminated union and `writer.replace()`
+for replacement. Optional presence is supported by field, variant, dict, list
+and tree nodes. Dictionaries expose `get(key)`, `has(key)`, `keys()` and
+`values()`; lists additionally support `get(key)` and `has(key)` using `keyOf`.
+Tree insert/move accept `{ parentId, index }`, with index denoting the final
+position after removing a moved node. See [API migration](docs/api-migration.md)
+for breaking changes and the public surface.
 
 ## Data Ownership
 

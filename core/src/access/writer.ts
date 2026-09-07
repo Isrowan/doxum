@@ -10,12 +10,11 @@ import type {
   ListNode,
   MapNode,
   ObjectNode,
-  SingleNode,
   TableNode,
   TreeNode,
   VariantNode,
 } from '../schema';
-import type { DocumentAnchor, DocumentOperationUnion } from '../operations';
+import type { DocumentAnchor, DocumentOperation } from '../operations';
 
 export type FieldWriter<T, Optional extends boolean = false> = {
   readonly set: (value: T) => void;
@@ -52,8 +51,15 @@ export type ListWriter<T> = {
   readonly replace: (value: readonly T[]) => void;
 };
 export type TreeWriter<T> = {
-  readonly insert: (id: string, value: T, parentId?: string, index?: number) => void;
-  readonly move: (id: string, parentId?: string, index?: number) => void;
+  readonly insert: (
+    id: string,
+    value: T,
+    position?: { readonly parentId?: string; readonly index?: number }
+  ) => void;
+  readonly move: (
+    id: string,
+    position?: { readonly parentId?: string; readonly index?: number }
+  ) => void;
   readonly remove: (id: string) => void;
   readonly set: (id: string, value: T) => void;
   readonly replace: (value: DocumentTreeValue<T>) => void;
@@ -71,28 +77,26 @@ export type WriterOfNode<TNode extends DocumentNode> = TNode extends {
     ? { readonly [K in keyof TShape]: WriterOfNode<TShape[K]> }
     : TNode extends VariantNode<string, infer _TVariants>
       ? OptionalClear<TNode, { readonly replace: (value: DocumentValueOfNode<TNode>) => void }>
-      : TNode extends SingleNode<infer TValue>
-        ? WriterOfNode<TValue>
-        : TNode extends TableNode<infer TValue>
-          ? CollectionWriter<string, TValue>
-          : TNode extends MapNode<infer TValue>
-            ? MapWriter<string, TValue>
-            : TNode extends DictNode<infer TKey, infer TValue>
-              ? OptionalClear<TNode, DictionaryWriter<TKey, TValue>>
-              : TNode extends ListNode<infer TItem>
-                ? OptionalClear<TNode, ListWriter<TItem>>
-                : TNode extends TreeNode<infer TValue>
-                  ? OptionalClear<TNode, TreeWriter<TValue>>
-                  : FieldWriter<DocumentValueOfNode<TNode>>;
+      : TNode extends TableNode<infer TValue>
+        ? CollectionWriter<string, TValue>
+        : TNode extends MapNode<infer TValue>
+          ? MapWriter<string, TValue>
+          : TNode extends DictNode<infer TKey, infer TValue>
+            ? OptionalClear<TNode, DictionaryWriter<TKey, TValue>>
+            : TNode extends ListNode<infer TItem>
+              ? OptionalClear<TNode, ListWriter<TItem>>
+              : TNode extends TreeNode<infer TValue>
+                ? OptionalClear<TNode, TreeWriter<TValue>>
+                : FieldWriter<DocumentValueOfNode<TNode>>;
 export type DocumentWriter<TSchema extends DocumentSchema> = WriterOfNode<
   ObjectNode<TSchema['shape']>
 >;
 
-export type OperationSink = (operation: DocumentOperationUnion) => void;
+export type OperationSink = (operation: DocumentOperation) => void;
 
 const schemaRoot = (schema: DocumentSchema): DocumentNode => object(schema.shape);
 
-const emit = (sink: OperationSink, operation: DocumentOperationUnion): void => sink(operation);
+const emit = (sink: OperationSink, operation: DocumentOperation): void => sink(operation);
 
 export const writerFor = (
   node: DocumentNode,
@@ -105,7 +109,7 @@ export const writerFor = (
       set: (value: unknown) => emit(sink, { type: 'field.set', at: address, value }),
       clear: node.optional ? () => emit(sink, { type: 'field.clear', at: address }) : undefined,
     };
-  if (node.kind === 'dict' || node.kind === 'record')
+  if (node.kind === 'dict')
     return {
       set: (key: string, value: unknown) =>
         emit(sink, { type: 'dict.set', at: address, key, value }),
@@ -138,22 +142,26 @@ export const writerFor = (
     };
   if (node.kind === 'tree')
     return {
-      insert: (treeNodeId: string, value: unknown, parentId?: string, index?: number) =>
+      insert: (
+        treeNodeId: string,
+        value: unknown,
+        position?: { parentId?: string; index?: number }
+      ) =>
         emit(sink, {
           type: 'tree.insert',
           at: address,
           treeNodeId,
           value,
-          parentId,
-          index,
+          parentId: position?.parentId,
+          index: position?.index,
         }),
-      move: (treeNodeId: string, parentId?: string, index?: number) =>
+      move: (treeNodeId: string, position?: { parentId?: string; index?: number }) =>
         emit(sink, {
           type: 'tree.move',
           at: address,
           treeNodeId,
-          parentId,
-          index,
+          parentId: position?.parentId,
+          index: position?.index,
         }),
       remove: (treeNodeId: string) => emit(sink, { type: 'tree.remove', at: address, treeNodeId }),
       set: (treeNodeId: string, value: unknown) =>
@@ -230,7 +238,6 @@ export const writerFor = (
         }),
     };
   }
-  if (node.kind === 'single') return writerFor(node.value, address, sink);
   if (node.kind === 'variant')
     return {
       replace: (value: unknown) => emit(sink, { type: 'variant.replace', at: address, value }),

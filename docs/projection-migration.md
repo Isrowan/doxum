@@ -22,26 +22,27 @@ const titles = projection.map(tasks, (_id, task) => task.title.get());
 The previous standalone collection factory is removed. Collection sources are
 cached by document/schema target identity, share one document subscription, and
 can also be declared directly in a custom processor's sources. Mapping preserves
-keys and order. First-version map accepts document collection sources; use a
-custom collection processor for filtering, joins, or other upstream collections.
+keys and order. Map accepts document collection sources and upstream projection
+collections. Use a custom collection processor for filtering or joins.
 
 ## Values And Custom Collections
 
 The previous materialized factory and its source metadata types are removed.
-Use `projection.value({ sources, build, isEqual })` for values, or
-`projection.collection({ sources, build, isEqual })` for keyed output.
+Use `projection.value(sources, compute, { isEqual }?)` for ordinary values,
+`projection.value({ sources, build }, { isEqual }?)` for stateful values, and
+`projection.collection<Item>()({ sources, build, isEqual })` for keyed output.
 
 Value build returns `{ value, update }`. Update receives the declared source
-contexts and returns `unchanged`, `changed(value)`, or `rebuild`. Put build before
-an unannotated equality callback for TypeScript inference, or annotate the value
-type explicitly. Collection build/update receives `{ sources, previous, next,
-writer }`; declare the item type through a typed `CollectionSpec` or equality
-callback when it cannot be inferred. A generic writer's callback body alone
-cannot infer its value type.
+contexts and returns `unchanged`, `changed(value)`, or `rebuild`. Equality is a
+separate options argument inferred from the output, independent of property
+order. Collection build/update receives `{ sources, previous, next, writer }`;
+the item type is explicit and sources are inferred. A second type parameter
+can constrain collection keys: `projection.collection<Item, Key>()(spec)`.
 
 Document contexts expose scoped read, revision, reset and ordered commits.
-Collection contexts additionally expose their bound target. Check the native
-impacts of every commit in a batch, merge candidate keys, and read final state.
+Collection contexts additionally expose their bound target, `candidates.keys`
+and `candidates.orderDirty`. These summarize every relevant commit in a batch;
+check `reset` first and read final state. Candidates are not net output changes.
 Upstream keyed nodes expose get/has/ids and `CollectionImpact`; ordinary values
 expose value/previous/changed. No arbitrary materialized custom change payload
 or automatic read-dependency learning remains. Fixed document targets can be
@@ -75,6 +76,8 @@ revision counters or drain/emit protocols.
 Use `projection.input(initial, { isEqual })` for application boundary values;
 retain its set method at that boundary and give processors only its source.
 Use `fromReadable` to attach an existing external readable without owning it.
+Bindings share one external subscription but cache separately by readable and
+equality function identity. Reusing a readable never silently ignores equality.
 Release the projection before disposing an external readable.
 
 Wrap document mutation and synchronous editor cleanup in `projection.batch`

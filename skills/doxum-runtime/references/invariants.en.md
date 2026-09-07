@@ -145,7 +145,7 @@ attachment-specific undo API. While attached, external `replace` and external
 `apply` marked `remote` are rejected because only operation commands are
 appendable; the attachment's hydration and replay lease is the one trusted
 exception. Local-sync does not promise strict durability;
-application code uses `state()`, `onError`, and `flush()` when it needs to
+application code uses `state.current()`, `onError`, and `flush()` when it needs to
 observe persistence or catch-up. Doxum intentionally does not decide network
 synchronization, authorization, retry, acknowledgement, ordering, or conflict
 resolution. An application must make those decisions before applying operations

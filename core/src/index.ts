@@ -1,17 +1,4 @@
-export {
-  field,
-  optional,
-  object,
-  variant,
-  single,
-  table,
-  map,
-  record,
-  dict,
-  list,
-  tree,
-  schema,
-} from './schema';
+export { field, optional, object, variant, table, map, dict, list, tree, schema } from './schema';
 export type {
   DocumentAddress,
   DocumentListConfig,
@@ -23,10 +10,8 @@ export type {
   ObjectNode,
   VariantShape,
   VariantNode,
-  SingleNode,
   TableNode,
   MapNode,
-  RecordNode,
   DictNode,
   ListNode,
   TreeNode,
@@ -45,7 +30,6 @@ export type {
 export type {
   DocumentAnchor,
   DocumentOperation,
-  DocumentOperationUnion,
   FieldSetOperation,
   FieldClearOperation,
   ValueClearOperation,
@@ -69,6 +53,7 @@ export type {
 } from './operations';
 export type {
   FieldReader,
+  DictionaryReader,
   CollectionReader,
   ListReader,
   TreeReader,
@@ -86,8 +71,6 @@ export type {
   DocumentWriter,
 } from './access/writer';
 export type { CollectionImpact, DocumentImpact } from './impact';
-export type { AddressRef } from './address';
-export { contains, debugKey, overlaps, read as readAddress, resolveAddress } from './address';
 export { createDocument } from './runtime';
 export { asReadable } from './runtime/readable';
 export { DocumentReentrancyError, DocumentDisposedError } from './runtime/contract';
@@ -108,8 +91,6 @@ export type {
   ObserverError,
 } from './runtime/contract';
 export type { MutationIssue, MutationIssueCode } from './mutation/issue';
-export { commandFootprint, decodeCommandFootprint, footprintsOverlap } from './mutation/footprint';
-export type { CommandFootprint, CommandFootprintTarget } from './mutation/footprint';
 export * as target from './impact-target';
 export type { Readable } from './projection/readable';
 export { select } from './projection/select';
@@ -119,21 +100,11 @@ export { ProjectionError, ProjectionDisposedError } from './projection/contract'
 export type {
   ProjectionRuntime,
   ProjectionSource,
-  ProjectionSources,
-  ProjectionInputs,
   DocumentSource,
   DocumentCollectionSource,
-  DocumentInput,
-  DocumentCollectionInput,
   ProjectionInput,
-  ValueInput,
-  ValueUpdate,
   ValueSpec,
   ProjectionValue,
-  CollectionRead,
-  CollectionInput,
-  ProjectionCollectionWriter,
-  CollectionProcess,
   CollectionSpec,
   ProjectionCollection,
 } from './projection/contract';

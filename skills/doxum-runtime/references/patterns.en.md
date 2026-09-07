@@ -11,10 +11,8 @@ list of exported symbols.
 | One scalar or immutable leaf    | `field<T>()`               | `T`                 | `set`, and `clear` for an optional field     |
 | Nested named fields             | `object({ ... })`          | object              | child writers                                |
 | Tagged structural alternatives  | `variant('kind', { ... })` | tagged object       | `replace` the complete branch value          |
-| One structured entity           | `single(entity)`           | object              | child writers                                |
 | Ordered entities                | `table(entity)`            | `{ ids, byId }`     | `create`, `item`, `remove`, `move`           |
 | Unordered entities              | `map(entity)`              | id record           | `create`, `item`, `remove`                   |
-| Scalar record                   | `record<Id, T>()`          | complete record     | `set`, `delete`, `replace`                   |
 | Sparse scalar dictionary        | `dict<Key, T>()`           | partial record      | `set`, `delete`, `replace`                   |
 | Ordered scalar/structural items | `list({ keyOf })`          | array               | `insert`, `move`, `remove`, `replace`        |
 | One rooted hierarchy            | `tree<T>()`                | `{ rootId, nodes }` | `insert`, `move`, `remove`, `set`, `replace` |
@@ -57,7 +55,6 @@ function completeTask(id: string) {
     const task = tx.read.tasks.get(id);
     if (!task) {
       tx.reject({
-        source: 'application',
         code: 'task-not-found',
         message: `Task '${id}' does not exist.`,
         address: ['tasks', id],
@@ -67,7 +64,6 @@ function completeTask(id: string) {
 
     tx.write.tasks.item(id).completed.set(true);
     tx.report({
-      source: 'application',
       code: 'task-completed',
       message: 'Task marked complete.',
       address: ['tasks', id],
@@ -155,8 +151,8 @@ the invariant incrementally.
 ```ts
 runtime.update(tx => {
   tx.write.outline.insert('root', { title: 'Project' });
-  tx.write.outline.insert('plan', { title: 'Plan' }, 'root');
-  tx.write.outline.move('plan', 'root', 0);
+  tx.write.outline.insert('plan', { title: 'Plan' }, { parentId: 'root' });
+  tx.write.outline.move('plan', { parentId: 'root', index: 0 });
   tx.write.outline.set('plan', { title: 'Plan release' });
 });
 ```
@@ -199,23 +195,16 @@ const noteSummaries = projection.map(
   (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
   { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
 );
-const noteCount = projection.value({
-  sources: { notes },
-  build: ({ notes }) => ({
-    value: notes.read.ids().length,
-    update: ({ notes }) => ({
-      kind: 'changed',
-      value: notes.read.ids().length,
-    }),
-  }),
-});
+const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
 ```
 
-Use map for one-to-one collection transforms. For custom indexes, use
-projection.collection with declared sources and scoped writer.set/remove/order/replace.
+Use map for one-to-one document or projection collection transforms. For custom indexes, use
+`projection.collection<Item>()(spec)` with declared sources and scoped writer.set/remove/order/replace.
 Its previous and next readers separate published values from staged writes.
-Inspect each document source commit.impact, or an upstream collection change,
-to determine candidate keys. Dependencies are explicit and fixed, not learned
+Use document collection `reset`, `candidates.keys` and `candidates.orderDirty`,
+or inspect native commit impacts and upstream collection changes for algorithms
+that need them. Candidates include net-zero changes; read final state.
+Dependencies are explicit and fixed, not learned
 from reads. Doxum determines final changes through equality.
 
 A failed update discards its instance and attempts one fresh build. Persistent

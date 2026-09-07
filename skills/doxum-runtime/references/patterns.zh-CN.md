@@ -9,10 +9,8 @@
 | 一个标量或不可变叶子 | `field<T>()`               | `T`                 | `set`；optional field 还可 `clear`           |
 | 命名的嵌套字段       | `object({ ... })`          | object              | 子 writer                                    |
 | 带 tag 的结构分支    | `variant('kind', { ... })` | tagged object       | `replace` 完整分支值                         |
-| 一个结构化实体       | `single(entity)`           | object              | 子 writer                                    |
 | 有序实体             | `table(entity)`            | `{ ids, byId }`     | `create`、`item`、`remove`、`move`           |
 | 无序实体             | `map(entity)`              | id record           | `create`、`item`、`remove`                   |
-| 标量 record          | `record<Id, T>()`          | 完整 record         | `set`、`delete`、`replace`                   |
 | 稀疏标量字典         | `dict<Key, T>()`           | partial record      | `set`、`delete`、`replace`                   |
 | 有序标量/结构条目    | `list({ keyOf })`          | array               | `insert`、`move`、`remove`、`replace`        |
 | 单根层级             | `tree<T>()`                | `{ rootId, nodes }` | `insert`、`move`、`remove`、`set`、`replace` |
@@ -49,7 +47,6 @@ function completeTask(id: string) {
     const task = tx.read.tasks.get(id);
     if (!task) {
       tx.reject({
-        source: 'application',
         code: 'task-not-found',
         message: `Task '${id}' does not exist.`,
         address: ['tasks', id],
@@ -59,7 +56,6 @@ function completeTask(id: string) {
 
     tx.write.tasks.item(id).completed.set(true);
     tx.report({
-      source: 'application',
       code: 'task-completed',
       message: 'Task marked complete.',
       address: ['tasks', id],
@@ -131,8 +127,8 @@ Doxum tree 要么为空，要么存在唯一且连通的 root。`nodes` 必须�
 ```ts
 runtime.update(tx => {
   tx.write.outline.insert('root', { title: 'Project' });
-  tx.write.outline.insert('plan', { title: 'Plan' }, 'root');
-  tx.write.outline.move('plan', 'root', 0);
+  tx.write.outline.insert('plan', { title: 'Plan' }, { parentId: 'root' });
+  tx.write.outline.move('plan', { parentId: 'root', index: 0 });
   tx.write.outline.set('plan', { title: 'Plan release' });
 });
 ```
@@ -168,21 +164,12 @@ const noteSummaries = projection.map(
   (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
   { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
 );
-const noteCount = projection.value({
-  sources: { notes },
-  build: ({ notes }) => ({
-    value: notes.read.ids().length,
-    update: ({ notes }) => ({
-      kind: 'changed',
-      value: notes.read.ids().length,
-    }),
-  }),
-});
+const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
 ```
 
-map 用于保留 key 和顺序的一对一映射。自定义索引使用 projection.collection，声明 sources，并通过 scoped writer.set/remove/order/replace 更新。previous 与 next 分别读取上次输出和本轮暂存结果。
+map 用于 document 或投影集合中保留 key 和顺序的一对一映射。自定义索引使用 `projection.collection<Item>()(spec)`，声明 sources，并通过 scoped writer.set/remove/order/replace 更新。previous 与 next 分别读取上次输出和本轮暂存结果。
 
-根据每个 document source 的 commits 中的 impact，或上游 collection change，决定候选 key。依赖显式固定，不通过 reader 自动学习。Doxum 根据 equality 决定最终 change。
+document collection 提供整个批次的 reset、candidates.keys 和 candidates.orderDirty；需要更多细节时仍可读取原生 commits/impact 或上游 collection change。候选 key 包括净零变化，必须读取最终状态决定输出。依赖显式固定，不通过 reader 自动学习。Doxum 根据 equality 决定最终 change。
 
 update 失败后丢弃实例并限一次全新 build 恢复；持续失败阻断下游，独立分支继续。rebuild 经过同一调度图，不手动 emit。projection 随 owner dispose。使用 projection.batch 包住首次 document commit 之前到 editor cleanup 结束的完整同步动作；batch 内派生读取保持上次发布状态。
 

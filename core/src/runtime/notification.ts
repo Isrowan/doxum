@@ -41,6 +41,17 @@ export type RuntimeNotification<TSchema extends DocumentSchema> = {
 const ROOT_BUCKET = Symbol('document-root');
 type BucketKey = string | typeof ROOT_BUCKET;
 const notifications = new WeakMap<object, RuntimeNotification<DocumentSchema>>();
+const readableOwners = new WeakMap<object, DocumentReadable<DocumentSchema>>();
+
+export const bindDocumentReadable = (
+  readable: object,
+  runtime: DocumentReadable<DocumentSchema>
+): void => {
+  readableOwners.set(readable, runtime);
+};
+export const documentReadableOwner = (
+  readable: object
+): DocumentReadable<DocumentSchema> | undefined => readableOwners.get(readable);
 
 const key = (value: ImpactTarget<unknown>): BucketKey => target.bucket(value) ?? ROOT_BUCKET;
 
@@ -139,7 +150,8 @@ export const subscribeTargets = <TSchema extends DocumentSchema>(
 
 export const notify = <TSchema extends DocumentSchema>(
   notification: RuntimeNotification<TSchema>,
-  commit: DocumentCommit<TSchema>
+  commit: DocumentCommit<TSchema>,
+  afterSettle?: () => readonly ObserverError[]
 ): readonly ObserverError[] => {
   notification.notifying = true;
   const errors: ObserverError[] = [];
@@ -180,6 +192,7 @@ export const notify = <TSchema extends DocumentSchema>(
       }
     }
 
+    if (afterSettle) errors.push(...afterSettle());
     const candidates = notification.candidates;
     candidates.clear();
     if (commit.impact.kind === 'reset') {

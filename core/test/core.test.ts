@@ -3,7 +3,6 @@ import {
   createProjectionRuntime,
   createDocument,
   asReadable,
-  commandFootprint,
   dict,
   field,
   list,
@@ -12,7 +11,6 @@ import {
   optional,
   schema,
   select,
-  footprintsOverlap,
   table,
   target,
   tree,
@@ -20,6 +18,7 @@ import {
   type CollectionSelector,
   type CollectionReader,
   type DictionaryWriter,
+  type DictionaryReader,
   type DocumentReader,
   type DocumentWriter,
   type FieldReader,
@@ -31,6 +30,7 @@ import {
   type ReaderOfNode,
   type ValueSelector,
 } from '../src';
+import { commandFootprint, footprintsOverlap } from '../src/integration';
 
 const project = object({ name: field<string>(), archived: field<boolean>() });
 const projectSchema = schema({
@@ -79,9 +79,7 @@ describe('mutable Doxum runtime', () => {
     expectTypeOf<EntryReader['note']>().toEqualTypeOf<FieldReader<string | undefined>>();
     expectTypeOf<EntryReader['outline']>().toEqualTypeOf<TreeReader<string>>();
     expectTypeOf<EntryReader['tags']>().toEqualTypeOf<ListReader<string>>();
-    expectTypeOf<EntryReader['attrs']>().toEqualTypeOf<
-      FieldReader<Readonly<Partial<Record<string, number>>>>
-    >();
+    expectTypeOf<EntryReader['attrs']>().toEqualTypeOf<DictionaryReader<string, number>>();
   });
 
   it('infers selector and collection types from schema paths', () => {
@@ -193,9 +191,7 @@ describe('mutable Doxum runtime', () => {
       return tx.read.title.get();
     });
     expect(unchanged).toEqual({ status: 'unchanged', value: 'one', reports: [] });
-    const rejected = runtime.prepare(tx =>
-      tx.reject({ source: 'application', code: 'invalid', message: 'No.' })
-    );
+    const rejected = runtime.prepare(tx => tx.reject({ code: 'invalid', message: 'No.' }));
     expect(rejected).toEqual({
       status: 'rejected',
       issues: [{ source: 'application', code: 'invalid', message: 'No.' }],
@@ -372,7 +368,7 @@ describe('mutable Doxum runtime', () => {
     runtime.update(tx => tx.write.title.set('two'));
     runtime.dispose();
     expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
-    expect(runtime.history.undo().status).toBe('unchanged');
+    expect(() => runtime.history.undo()).toThrow('disposed');
     expect(() => runtime.subscribe(() => undefined)).toThrow('disposed');
     expect(listener).toHaveBeenCalledTimes(1);
   });
@@ -433,8 +429,8 @@ describe('mutable Doxum runtime', () => {
       },
     });
     const result = runtime.update(tx => {
-      tx.write.mindmap.move('a', 'root', 1);
-      tx.write.mindmap.move('a', 'root', 0);
+      tx.write.mindmap.move('a', { parentId: 'root', index: 1 });
+      tx.write.mindmap.move('a', { parentId: 'root', index: 0 });
     });
     expect(result.status).toBe('unchanged');
     expect(select(runtime, read => read.mindmap.children('root'))).toEqual(['a', 'b']);
@@ -535,7 +531,7 @@ describe('mutable Doxum runtime', () => {
     ).toBe('committed');
     expect(select(runtime, read => read.outline.rootId())).toBe('root');
     expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
-    expect(select(runtime, read => read.attrs.get())).toEqual({ count: 2 });
+    expect(select(runtime, read => read.attrs.values())).toEqual({ count: 2 });
 
     expect(
       runtime.update(tx => {
@@ -546,11 +542,11 @@ describe('mutable Doxum runtime', () => {
     ).toBe('committed');
     expect(select(runtime, read => read.outline.rootId())).toBeUndefined();
     expect(select(runtime, read => read.tags.values())).toEqual([]);
-    expect(select(runtime, read => read.attrs.get())).toBeUndefined();
+    expect(select(runtime, read => read.attrs.values())).toEqual({});
     expect(runtime.history.undo().status).toBe('committed');
     expect(select(runtime, read => read.outline.rootId())).toBe('root');
     expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
-    expect(select(runtime, read => read.attrs.get())).toEqual({ count: 2 });
+    expect(select(runtime, read => read.attrs.values())).toEqual({ count: 2 });
   });
   it('reports observer errors on committed results without rolling back', () => {
     const runtime = createDocument({ schema: projectSchema, initial });
@@ -578,7 +574,6 @@ describe('mutable Doxum runtime', () => {
     const address = ['title'];
     const result = runtime.update(tx => {
       tx.report({
-        source: 'application',
         code: 'title-warning',
         message: 'Review the title.',
         address,

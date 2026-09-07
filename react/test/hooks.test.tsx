@@ -13,6 +13,60 @@ const text = (value: unknown) => React.createElement('span', null, String(value)
 const valueOf = (renderer: ReactTestRenderer) => renderer.root.findByType('span').children.join('');
 
 describe('doxum/react', () => {
+  it('caches allocating inline selectors and refreshes selector props without a document commit', () => {
+    const runtime = createDocument({ schema: documentSchema, initial: { title: 'one', count: 0 } });
+    let renders = 0;
+    function Probe({ prefix }: { prefix: string }) {
+      renders++;
+      const value = useDocumentSelector(runtime, read => ({
+        title: `${prefix}:${read.title.get()}`,
+      }));
+      return text(value.title);
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Probe, { prefix: 'A' }));
+    });
+    expect(valueOf(renderer)).toBe('A:one');
+    expect(renders).toBeLessThan(5);
+    const before = renders;
+    act(() => {
+      runtime.update(tx => tx.write.count.set(1));
+    });
+    expect(renders).toBe(before);
+    act(() => {
+      renderer.update(React.createElement(Probe, { prefix: 'B' }));
+    });
+    expect(valueOf(renderer)).toBe('B:one');
+    act(() => {
+      runtime.update(tx => tx.write.title.set('two'));
+    });
+    expect(valueOf(renderer)).toBe('B:two');
+    act(() => renderer.unmount());
+    runtime.dispose();
+  });
+
+  it('uses Object.is for signed zero and NaN selector notifications', () => {
+    const runtime = createDocument({ schema: documentSchema, initial: { title: '', count: 0 } });
+    function Probe() {
+      const n = useDocumentSelector(runtime, read => read.count.get());
+      return text(Object.is(n, -0) ? '-0' : String(n));
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Probe));
+    });
+    act(() => {
+      runtime.update(tx => tx.write.count.set(-0));
+    });
+    expect(valueOf(renderer)).toBe('-0');
+    act(() => {
+      runtime.update(tx => tx.write.count.set(NaN));
+    });
+    expect(valueOf(renderer)).toBe('NaN');
+    act(() => renderer.unmount());
+    runtime.dispose();
+  });
   it('surfaces projection faults to an error boundary and reads recovered values after reset', () => {
     const projection = createProjectionRuntime({ onError: () => undefined });
     const input = projection.input(0);

@@ -54,7 +54,7 @@ const runtime = createDocument({
 });
 ```
 
-`table` 通过 `{ ids, byId }` 保留应用可见的顺序；`map` 存储无顺序的 id 索引实体。单个结构化实体用 `single`，标量键值数据用 `dict` 或 `record`，带应用稳定 key 的有序序列用 `list`，经过校验的单根层级结构用 `tree`。建模取舍见 [patterns.zh-CN.md](patterns.zh-CN.md)。
+`table` 通过 `{ ids, byId }` 保留应用可见的顺序；`map` 存储无顺序的 id 索引实体。单个结构化实体用 `object`，标量键值数据用 `dict`，带应用稳定 key 的有序序列用 `list`，经过校验的单根层级结构用 `tree`。建模取舍见 [patterns.zh-CN.md](patterns.zh-CN.md)。
 
 ## 通过 reader 读取
 
@@ -89,7 +89,6 @@ const result = runtime.update(tx => {
   const task = tx.read.tasks.get('write-guide');
   if (!task) {
     tx.reject({
-      source: 'application',
       code: 'task-not-found',
       message: 'The requested task no longer exists.',
       address: ['tasks', 'write-guide'],
@@ -136,8 +135,13 @@ runtime.update(tx => {
 table 支持 `create`、`item`、`remove` 和 `move`。map 与之相同，但没有 `move`，因为它无顺序。list 支持 `insert`、`move`、`remove` 与 `replace`；其身份来自 schema 中的 `keyOf`。完整的集合与 tree 模式见 [patterns.zh-CN.md](patterns.zh-CN.md)。
 
 optional 的 field、variant、dict、list 和 tree writer 提供 `clear()`；其中结构化叶子也可
-在当前缺失时直接调用 `replace()` 建立值。optional object、table 和 map 没有整体 clear，
-应通过子 writer 或集合操作修改。
+在当前缺失时直接调用 `replace()` 建立值。schema 构造器和类型均拒绝 optional object、table 和 map，
+这些容器应保持存在，通过子 writer 或集合操作修改。variant reader 的 get() 返回判别联合；
+dict reader 提供 get(key)、has(key)、keys() 和 values()，list 也支持 get(key)/has(key)。
+
+一次动作跨越多个 update 时，打开 `runtime.history.group()`，结束后调用 end() 保留一个撤销项，
+或调用 cancel() 撤销整次动作。group 不能嵌套。history 实现 Readable，localSync.state 也是
+Readable，两者都可以直接接入 useReadable 和 projection.fromReadable。
 
 ## 在边界回放 operation
 
@@ -200,7 +204,7 @@ const localSync = await attachLocalSync({
   documentId: 'project-1',
 });
 
-if (localSync.state().status === 'leader') {
+if (localSync.state.current().status === 'leader') {
   runtime.update(tx => tx.write.title.set('Ship Doxum'));
   runtime.history.undo();
 }
@@ -211,7 +215,7 @@ await localSync.dispose();
 
 开始使用前必须等待 attachment，因为它会用 IndexedDB 恢复传入 runtime。这是“同步可见、
 异步持久化”而不是严格 durable：崩溃、存储失败或非 JSON payload，都可能让已经可见的
-leader commit 未持久化。用 `localSync.state()` 与 `onError` 显示该状态，`flush()` 是显式
+leader commit 未持久化。用 `localSync.state.current()` 与 `onError` 显示该状态，`flush()` 是显式
 的持久化/追赶边界。attachment 不拥有也不会 dispose runtime，且不提供另一套 undo API：
 leader 使用 `runtime.history.undo()` 与 `runtime.history.redo()`。history 有意只在内存中
 存在；attachment 恢复及 remote tail apply 都会使它失效，因此不会跨重开或 leader 交接保留。
@@ -252,19 +256,10 @@ const noteSummaries = projection.map(
   (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
   { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
 );
-const noteCount = projection.value({
-  sources: { notes },
-  build: ({ notes }) => ({
-    value: notes.read.ids().length,
-    update: ({ notes }) => ({
-      kind: 'changed',
-      value: notes.read.ids().length,
-    }),
-  }),
-});
+const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
 ```
 
-projection.map 提供稳定的 ids/item readable 和惰性 all。DocumentCollectionSource 可直接用于自定义 processor 的 sources；projection.value 和 projection.collection 承载显式增量计算。不自动跟踪 keyed 依赖。sources 属于同一 projection owner，但可接入不同 document runtime。
+projection.map 提供稳定的 ids/item readable 和惰性 all，也能接入上游投影集合。DocumentCollectionSource 可直接用于自定义 processor 的 sources；有状态算法使用 `projection.value({ sources, build }, { isEqual }?)` 或 `projection.collection<Item>()(spec)`。document collection context 提供整个批次的 `candidates.keys`、`candidates.orderDirty` 和 `reset`。不自动跟踪 keyed 依赖。sources 属于同一 projection owner，但可接入不同 document runtime。
 
 projection.input(initial, { isEqual }) 用于边界值；应用保留 set，processor 只接收 source。fromReadable 接入已有外部 source，不取得其生命周期所有权。多 source 同步更新应在首次 commit 前进入 batch。projection 随 service 销毁，React unmount 只取消订阅，disposed handle 明确抛错。
 

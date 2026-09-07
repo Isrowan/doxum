@@ -57,7 +57,8 @@ mutation session                                      |
 commit { revision, operations, inverse, impact } <---+
         |
         +--> local history
-        +--> materialized view processors, in creation order
+        +--> projection graph capture, settlement and publication
+        +--> history listeners
         +--> targeted subscribers
         +--> root subscribers
 ```
@@ -82,6 +83,19 @@ entry must be selected.
 Business selectors use `schema.value(...)` for value paths and
 `schema.collection(...)` for collection paths. Raw `ImpactTarget` values remain
 an advanced boundary for impact, notification, projection, and adapters.
+Path builders retain their identity and address in private WeakMaps; business
+fields such as `address` and `item` remain available. Only collection paths have
+the `item(id)` traversal method. Selectors validate callback ownership and node
+kind against schema configuration, including inactive variant branches.
+
+`object` owns structured shape; the redundant `single` node is removed. `dict`
+is the sole keyed scalar container; the inconsistent `record` node is removed.
+Variant readers return discriminated value snapshots through `get()`; writers
+replace a complete branch. Optional is restricted to field, variant, dict,
+list and tree, whose initialization and clear operations have exact inverses.
+Dictionary keyed reads avoid copying unrelated entries. List keyed reads use
+the same key resolver as mutation and scan without cloning the whole list.
+Tree positions are named objects; move index is a final index after removal.
 
 Tables preserve a user-visible `ids` order plus an id-indexed `byId` record.
 Maps are unordered id-indexed collections. Lists use an application-supplied
@@ -107,6 +121,9 @@ session then normalizes one canonical shape, resolves it, invokes the correct
 executor, and saves inverse operations. Engine failures are closed
 `MutationIssue` values with `source: "mutation"`; application validation uses
 the separate `DocumentDiagnostic` shape through `report` and `reject`.
+Callers supply code, message and optional address; runtime adds the application
+source. Operation payloads use the non-generic `DocumentOperation` union;
+schema-specific type safety lives at the reader/writer boundary.
 `MutationIssueCode` is a stable public union. Published application diagnostics
 are copied and frozen. Rejections and exceptions roll back the session.
 
@@ -133,14 +150,25 @@ History records forward and inverse operation groups only for local and system
 commits. Undo and redo replay those groups through the same mutation pipeline.
 `replace` and remote commits invalidate history because they establish a new
 canonical baseline.
+History exposes a stable Readable snapshot. An explicit `history.group()`
+collects committed batches into one entry without copying earlier batches on
+each update. End keeps the group; cancel replays its inverses through apply.
+Undo/redo stage the target stack before publication so commit listeners see
+settled history. Rejected replay restores the stack. A net-zero replay consumes
+the entry without creating a document commit. Non-recorded commits close the
+group; remote/replace commits invalidate it. Groups cannot nest.
 
 During notification, internal projection attachments capture source commits,
-settle every attached graph, then flush projection listeners before normal
+settle every attached graph, then flush projection and history listeners before normal
 subscribers. Targeted subscribers are bucketed by the first address segment, then
 filtered through `impact.affects`; root subscribers receive every commit.
 Processor, flush, and listener failures are captured as `observerErrors` on
 the committed operation or transaction result. A notification failure never
 changes an already committed document into a rejected mutation.
+History readables carry an internal document-owner association. `fromReadable`
+captures them in the document notification phase, so a graph depending on both
+document and history settles once with consistent inputs. This association is
+internal runtime plumbing, not a public source protocol.
 
 ## Read Models
 
@@ -155,8 +183,11 @@ sources may also declare fixed `targets(...)`. Neither operation installs
 automatic read dependencies. External `fromReadable` and `input` sources use
 semantic equality; their values must not be mutated after submission.
 
-`projection.map` is a one-to-one document collection mapping with stable keys and
-order. `projection.collection` provides explicit incremental build/update
+`projection.value(sources, compute, options?)` handles pure calculations. Its
+stateful form takes `{ sources, build }` and separate equality options, and
+uses the same node implementation. `projection.map` maps document or projected
+collections one-to-one with stable keys and order.
+`projection.collection<Item>()(spec)` provides explicit incremental build/update
 callbacks with scoped previous/next reads and a staged writer. It shares the
 same scheduler with `projection.value`. Ordinary updates touch only candidate
 keys; structural order/replace work may be linear. Equality preserves old item
@@ -175,9 +206,11 @@ isolated individually. Explicit rebuild follows the same dependency graph.
 callback exits, including when it throws. It does not defer canonical commits,
 history, or document listeners, and it does not roll back sources. Enter the
 batch before the first commit, covering synchronous editor reconciliation.
-Document sources retain all ordered commits in a batch; processors union
-candidate keys and read final state rather than treating the last impact as the
-whole batch. Source reset rebuilds the affected node. No async cause graph or
+Document sources retain all ordered commits in a batch; bound collection sources
+also cache candidate keys and an order-dirty flag across the batch. Processors
+read final state; candidate summaries deliberately retain net-zero touched keys.
+External readable bindings share subscriptions and preserve each equality policy.
+Source reset rebuilds the affected node. No async cause graph or
 cross-projection dependency graph is provided.
 
 During processing and projection notifications, writes to declared documents
@@ -191,9 +224,11 @@ not internal mutable scheduler state.
 
 `doxum/react` uses `track` to calculate selector dependencies, installs a
 matching runtime subscription, and delegates subscription consistency to
-React's `useSyncExternalStore`. Its selector cache preserves a previous
-reference when the configured equality function says the semantic result is
-unchanged. Server rendering can provide an explicit `server` snapshot.
+React's `useSyncExternalStore`. Each selector closure caches its result by
+document revision, including newly allocated objects/arrays. Equality can retain
+the previous reference across revisions. Selector/runtime changes create a new
+cache, and subscriptions use Object.is when comparing published results.
+Server rendering can provide an explicit `server` snapshot.
 
 ## Extension Boundaries
 
@@ -213,6 +248,10 @@ Keep integrations outside core:
   attachment-specific undo API. `flush()` waits for observed leader commands to
   persist or for a follower to catch up; it does not make a visible write
   retroactively durable.
+  Its `state` is a stable Readable of role, durable head/checkpoint or error;
+  listeners are notified on persistence, leadership, failure and disposal.
+  Observer errors are reported without converting successful persistence into
+  a storage failure. Dispose publishes a terminal state and releases listeners.
 - Other persistence should store and replay `DocumentOperation` batches, or use
   an application-defined snapshot strategy with `replace`.
 - Network synchronization should assign ordering, acknowledgements, retry, and

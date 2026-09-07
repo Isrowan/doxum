@@ -36,7 +36,8 @@ application happens to contain a Doxum runtime.
   synchronize derived data.
 - Handle expected mutation failure from the returned `rejected` result and its
   `MutationIssue` values. Use `tx.report` or `tx.reject` with
-  `DocumentDiagnostic` for application validation. A thrown callback error
+  `{ code, message, address? }` for application validation; runtime adds the
+  application source to published `DocumentDiagnostic` values. A thrown callback error
   rolls back and is rethrown.
 - A committed result with `observerErrors` is still committed. Do not retry its
   write as if canonical state had been rolled back.

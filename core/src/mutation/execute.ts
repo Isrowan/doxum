@@ -1,5 +1,5 @@
 import type { ResolvedAddress } from '../address';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { MutationOutcome } from './contract';
 import * as issue from './issue';
 import { executeEntity } from './execute-entity';
@@ -13,7 +13,7 @@ const hasOwn = (value: object, key: string | number): boolean =>
 
 const executeClear = (
   target: ResolvedAddress,
-  operation: Extract<DocumentOperationUnion, { type: 'value.clear' }>
+  operation: Extract<DocumentOperation, { type: 'value.clear' }>
 ): MutationOutcome => {
   if (!('optional' in target.node) || !target.node.optional)
     return {
@@ -25,7 +25,6 @@ const executeClear = (
     target.node.kind !== 'field' &&
     target.node.kind !== 'variant' &&
     target.node.kind !== 'dict' &&
-    target.node.kind !== 'record' &&
     target.node.kind !== 'list' &&
     target.node.kind !== 'tree'
   )
@@ -38,7 +37,7 @@ const executeClear = (
       ),
     };
 
-  const inverse: DocumentOperationUnion = (() => {
+  const inverse: DocumentOperation = (() => {
     switch (target.node.kind) {
       case 'field':
         return { type: 'field.set', at: operation.at, value: target.value };
@@ -49,7 +48,6 @@ const executeClear = (
           value: cloneValue(target.value, 'inverse'),
         };
       case 'dict':
-      case 'record':
         return {
           type: 'dict.replace',
           at: operation.at,
@@ -77,7 +75,7 @@ const executeClear = (
   return { status: 'changed', inverse: [inverse] };
 };
 
-const invalidTarget = (operation: DocumentOperationUnion): MutationOutcome => ({
+const invalidTarget = (operation: DocumentOperation): MutationOutcome => ({
   status: 'rejected',
   issue: issue.from(
     operation,
@@ -91,7 +89,7 @@ const invalidTarget = (operation: DocumentOperationUnion): MutationOutcome => ({
 // semantics against one resolved schema address.
 export const execute = (
   root: unknown,
-  operation: DocumentOperationUnion,
+  operation: DocumentOperation,
   target: ResolvedAddress | undefined,
   copyPayload: boolean
 ): MutationOutcome => {
@@ -113,7 +111,7 @@ export const execute = (
     operation.type === 'dict.delete' ||
     operation.type === 'dict.replace'
   )
-    return !target || (target.node.kind !== 'dict' && target.node.kind !== 'record')
+    return !target || target.node.kind !== 'dict'
       ? invalidTarget(operation)
       : executeValue(target, operation, copyPayload);
 

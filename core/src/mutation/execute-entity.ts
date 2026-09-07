@@ -1,5 +1,5 @@
 import type { ResolvedAddress } from '../address';
-import type { DocumentOperationUnion, EntityCreateOperation } from '../operations';
+import type { DocumentOperation, EntityCreateOperation } from '../operations';
 import type { DocumentNode } from '../schema';
 import type { MutationOutcome } from './contract';
 import * as anchor from './anchor';
@@ -8,7 +8,7 @@ import * as issue from './issue';
 import { cloneValue, isRecord, transferPayload } from '../value/ownership';
 
 type EntityOperation = Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   { type: 'entity.create' | 'entity.remove' | 'entity.move' }
 >;
 
@@ -203,7 +203,7 @@ export const executeEntity = (
     return rejected(operation, 'invalid-anchor', 'An entity cannot be moved relative to itself.');
   const nextIndex = anchor.afterRemove(ids, position, operation.anchor);
   if (nextIndex === position) return { status: 'unchanged' };
-  const inverse: DocumentOperationUnion = {
+  const inverse: DocumentOperation = {
     type: 'entity.move',
     at: operation.at,
     id: operation.id,

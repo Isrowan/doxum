@@ -5,7 +5,8 @@ import { profile } from '../profile';
 
 export const createValue = <S extends ProjectionSources, T>(
   scheduler: Scheduler,
-  spec: ValueSpec<S, T>
+  spec: ValueSpec<S, T>,
+  options?: { readonly isEqual?: (a: T, b: T) => boolean }
 ): ProjectionValue<T> => {
   let instance: ReturnType<typeof spec.build> | undefined;
   let value!: T;
@@ -40,7 +41,7 @@ export const createValue = <S extends ProjectionSources, T>(
         } else candidate = result.kind === 'changed' ? result.value : value;
       }
       previous = value;
-      changed = !initialized || !(spec.isEqual ?? Object.is)(value, candidate);
+      changed = !initialized || !(options?.isEqual ?? Object.is)(value, candidate);
       next = changed ? candidate : value;
       reset = build;
       return changed;

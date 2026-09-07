@@ -42,28 +42,37 @@ export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
   const equality = options?.isEqual ?? objectIs;
   const cache = useRef<SelectorCache<TSchema, TResult> | undefined>(undefined);
   const serverCache = useRef<
-    { readonly source: (() => TResult) | undefined; readonly value: TResult } | undefined
+    | {
+        readonly runtime: DocumentReadable<TSchema>;
+        readonly selector: DocumentSelector<TSchema, TResult>;
+        readonly source: (() => TResult) | undefined;
+        readonly value: TResult;
+      }
+    | undefined
   >(undefined);
 
-  const read = useCallback((): TResult => {
-    const selection = track(runtime, selector);
-    const next = selection.value;
-    const previous = cache.current;
-
-    // Keep the prior reference for semantic equality on the same runtime. This
-    // is what makes inline selectors safe with useSyncExternalStore.
-    const targets = selection.targets;
-    if (previous && previous.runtime === runtime && equality(previous.value, next)) {
-      cache.current = { runtime, value: previous.value, targets };
-      return previous.value;
-    }
-
-    cache.current = { runtime, value: next, targets };
-    return next;
+  const read = useMemo(() => {
+    // Each selector closure owns its revision cache, including inline selectors
+    // that allocate arrays or objects. Equality only compares distinct snapshots.
+    let snapshot: { readonly revision: number; readonly value: TResult } | undefined;
+    return (): TResult => {
+      const revision = runtime.revision();
+      if (snapshot?.revision === revision) return snapshot.value;
+      const selection = track(runtime, selector);
+      const previous = cache.current;
+      const value =
+        previous && previous.runtime === runtime && equality(previous.value, selection.value)
+          ? previous.value
+          : selection.value;
+      cache.current = { runtime, value, targets: selection.targets };
+      snapshot = { revision, value };
+      return value;
+    };
   }, [equality, runtime, selector]);
 
   const subscribe = useCallback(
     (listener: () => void) => {
+      read();
       let targets = cache.current?.targets ?? [];
       let unsubscribe: () => void = () => undefined;
       const install = () => {
@@ -84,7 +93,7 @@ export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
           targets = nextTargets;
           unsubscribe = install();
         }
-        if (previous && previous.value !== next) listener();
+        if (previous && !Object.is(previous.value, next)) listener();
       };
       unsubscribe = install();
       return () => unsubscribe();
@@ -95,11 +104,17 @@ export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
   const server = options?.server;
   const readServer = useCallback((): TResult => {
     const previous = serverCache.current;
-    if (previous && previous.source === server) return previous.value;
+    if (
+      previous &&
+      previous.source === server &&
+      previous.runtime === runtime &&
+      previous.selector === selector
+    )
+      return previous.value;
     const value = server ? server() : read();
-    serverCache.current = { source: server, value };
+    serverCache.current = { runtime, selector, source: server, value };
     return value;
-  }, [read, server]);
+  }, [read, server, runtime, selector]);
 
   return useSyncExternalStore(subscribe, read, readServer);
 }

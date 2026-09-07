@@ -17,6 +17,7 @@ import type {
   CommitSource,
   DocumentCommit,
   DocumentDiagnostic,
+  DiagnosticInput,
   DocumentProblem,
   DocumentRuntime,
   DocumentTransaction,
@@ -27,6 +28,7 @@ import type {
 import { bindRuntimeAccess, accessOf } from './runtime/access';
 import { assertRuntimeWritable, bindRuntimeDriver, disposeRuntimeDriver } from './runtime/driver';
 import {
+  bindDocumentReadable,
   createNotification,
   disposeNotification,
   notify,
@@ -46,9 +48,10 @@ class RejectedUpdate extends Error {
 
 const EMPTY: readonly never[] = Object.freeze([]) as readonly never[];
 
-const publishDiagnostic = (value: DocumentDiagnostic): DocumentDiagnostic =>
+const publishDiagnostic = (value: DiagnosticInput): DocumentDiagnostic =>
   Object.freeze({
     ...value,
+    source: 'application',
     ...(value.address === undefined ? {} : { address: Object.freeze(value.address.slice()) }),
   });
 
@@ -142,6 +145,18 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     capacity: input.history === false ? 0 : Math.max(0, input.history?.capacity ?? 100),
     revision: () => revision,
     apply: operations => applyBatch(operations, 'history', false),
+    assertIdle: () => {
+      if (state.disposed) throw new DocumentDisposedError();
+      if (busy || accessOf(runtime).projectionLocks) throw new DocumentReentrancyError();
+    },
+    notify: run => {
+      busy = true;
+      try {
+        return run();
+      } finally {
+        busy = false;
+      }
+    },
   });
 
   const publish = (
@@ -162,10 +177,12 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     if (kind === 'replace' || source === 'remote') history.invalidate();
     else if (recordHistory && (source === 'local' || source === 'system'))
       history.record(batch.operations, batch.inverse);
+    else if (source === 'history') history.publish();
+    else history.endGroup();
     busy = true;
     let observerErrors;
     try {
-      observerErrors = notify(notification, commit);
+      observerErrors = notify(notification, commit, history.flush);
     } finally {
       busy = false;
     }
@@ -334,7 +351,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
       try {
         disposeNotification(notification);
       } finally {
-        history.api.clear();
+        history.dispose();
         disposeRuntimeDriver(runtime);
       }
     },
@@ -343,5 +360,6 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
   bindRuntimeAccess(runtime, state);
   bindRuntimeDriver(runtime);
   notification = createNotification(runtime);
+  bindDocumentReadable(history.api, runtime);
   return runtime;
 };

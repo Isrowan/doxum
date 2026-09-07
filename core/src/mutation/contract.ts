@@ -1,11 +1,11 @@
 import type { DocumentAddress, DocumentSchema } from '../schema';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { MutationIssue } from './issue';
 
 export type MutationOutcome =
   | {
       readonly status: 'changed';
-      readonly inverse: readonly DocumentOperationUnion[];
+      readonly inverse: readonly DocumentOperation[];
     }
   | { readonly status: 'unchanged' }
   | { readonly status: 'rejected'; readonly issue: MutationIssue };
@@ -26,8 +26,8 @@ export type MutationBatch<TSchema extends DocumentSchema = DocumentSchema> =
   | { readonly status: 'unchanged' }
   | {
       readonly status: 'changed';
-      readonly operations: readonly DocumentOperationUnion<TSchema>[];
-      readonly inverse: readonly DocumentOperationUnion<TSchema>[];
+      readonly operations: readonly DocumentOperation[];
+      readonly inverse: readonly DocumentOperation[];
       readonly paths: readonly DocumentAddress[];
       readonly collections: readonly MutationCollectionChange[];
     };

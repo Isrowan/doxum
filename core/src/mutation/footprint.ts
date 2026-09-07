@@ -1,5 +1,5 @@
 import type { DocumentAddress } from '../schema';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 
 export type CommandFootprintTarget =
   | { readonly kind: 'value'; readonly at: DocumentAddress }
@@ -45,9 +45,7 @@ const add = (
   targets.set(targetKey(stable), stable);
 };
 
-export const commandFootprint = (
-  operations: readonly DocumentOperationUnion[]
-): CommandFootprint => {
+export const commandFootprint = (operations: readonly DocumentOperation[]): CommandFootprint => {
   const targets = new Map<string, CommandFootprintTarget>();
   for (const operation of operations) {
     switch (operation.type) {

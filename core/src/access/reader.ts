@@ -11,7 +11,6 @@ import type {
   MapNode,
   ObjectNode,
   ReadonlyDocument,
-  SingleNode,
   TableNode,
   TreeNode,
   VariantNode,
@@ -20,14 +19,23 @@ import { read as readAddress } from '../address';
 import { cloneValue, isRecord } from '../value/ownership';
 import { profile } from '../profile';
 import type { DependencyTracker } from './dependency';
+import * as anchor from '../mutation/anchor';
 
 export type FieldReader<T> = { readonly get: () => T };
+export type DictionaryReader<K extends string, V> = {
+  get(key: K): V | undefined;
+  has(key: K): boolean;
+  keys(): readonly K[];
+  values(): Readonly<Partial<Record<K, V>>>;
+};
 export type CollectionReader<TId, TNode extends EntitySchemaNode> = {
   readonly ids: () => readonly TId[];
   readonly has: (id: TId) => boolean;
   readonly get: (id: TId) => ReaderOfNode<TNode> | undefined;
 };
 export type ListReader<T> = {
+  readonly get: (key: string) => T | undefined;
+  readonly has: (key: string) => boolean;
   readonly values: () => readonly T[];
   readonly length: () => number;
   readonly at: (index: number) => T | undefined;
@@ -46,21 +54,22 @@ export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
   ? FieldReader<DocumentValueOfNode<TNode>>
   : TNode extends ObjectNode<infer TShape>
     ? { readonly [K in keyof TShape]: ReaderOfNode<TShape[K]> }
-    : TNode extends VariantNode<string, infer TVariants>
-      ? { readonly [K in keyof TVariants]: ReaderOfNode<TVariants[K]> }
-      : TNode extends SingleNode<infer TValue>
-        ? ReaderOfNode<TValue>
-        : TNode extends TableNode<infer TValue>
+    : TNode extends VariantNode<string, infer _TVariants>
+      ? FieldReader<
+          | DocumentValueOfNode<TNode>
+          | (TNode extends { readonly optional: true } ? undefined : never)
+        >
+      : TNode extends TableNode<infer TValue>
+        ? CollectionReader<string, TValue>
+        : TNode extends MapNode<infer TValue>
           ? CollectionReader<string, TValue>
-          : TNode extends MapNode<infer TValue>
-            ? CollectionReader<string, TValue>
-            : TNode extends DictNode<infer TKey, infer TValue>
-              ? FieldReader<Readonly<Partial<Record<TKey, TValue>>>>
-              : TNode extends ListNode<infer TItem>
-                ? ListReader<TItem>
-                : TNode extends TreeNode<infer TValue>
-                  ? TreeReader<TValue>
-                  : FieldReader<DocumentValueOfNode<TNode>>;
+          : TNode extends DictNode<infer TKey, infer TValue>
+            ? DictionaryReader<TKey, TValue>
+            : TNode extends ListNode<infer TItem>
+              ? ListReader<TItem>
+              : TNode extends TreeNode<infer TValue>
+                ? TreeReader<TValue>
+                : FieldReader<DocumentValueOfNode<TNode>>;
 export type DocumentReader<TSchema extends DocumentSchema> = ReaderOfNode<
   ObjectNode<TSchema['shape']>
 >;
@@ -108,16 +117,47 @@ export const readerFor = (
         return readAt(context, address);
       },
     };
-  if (node.kind === 'dict' || node.kind === 'record')
+  if (node.kind === 'dict')
     return {
-      get: () => {
+      get: (key: string) => {
+        collectValue(context, address);
+        const value = readAt(context, address);
+        return cloneValue(
+          isRecord(value) && Object.prototype.hasOwnProperty.call(value, key)
+            ? value[key]
+            : undefined,
+          'reader'
+        );
+      },
+      has: (key: string) => {
+        collectValue(context, address);
+        const value = readAt(context, address);
+        return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key);
+      },
+      keys: () => {
+        collectValue(context, address);
+        const value = readAt(context, address);
+        return isRecord(value) ? Object.keys(value) : [];
+      },
+      values: () => {
         collectValue(context, address);
         profile.reader.structuralSnapshot();
-        return cloneValue(readAt(context, address), 'reader');
+        return cloneValue(readAt(context, address) ?? {}, 'reader');
       },
     };
   if (node.kind === 'list')
     return {
+      get: (key: string) => {
+        collectValue(context, address);
+        const value = readAt(context, address);
+        if (!Array.isArray(value)) return undefined;
+        return cloneValue(value[anchor.keys(value, node.keyOf).index(key)], 'reader');
+      },
+      has: (key: string) => {
+        collectValue(context, address);
+        const value = readAt(context, address);
+        return Array.isArray(value) && anchor.keys(value, node.keyOf).index(key) >= 0;
+      },
       values: () => {
         collectValue(context, address);
         const value = readAt(context, address);
@@ -212,24 +252,13 @@ export const readerFor = (
       },
     };
   }
-  if (node.kind === 'single') return readerFor(node.value, context, address);
   if (node.kind === 'variant')
-    return new Proxy(
-      {},
-      {
-        get: (_target, property: string | symbol) => {
-          if (typeof property === 'symbol') return undefined;
-          const value = readAt(context, address);
-          const tag =
-            isRecord(value) && typeof value[node.tag] === 'string'
-              ? String(value[node.tag])
-              : undefined;
-          const branch = tag ? node.variants[tag] : undefined;
-          const child = branch?.shape[property];
-          return child ? readerFor(child, context, [...address, property]) : undefined;
-        },
-      }
-    );
+    return {
+      get: () => {
+        collectValue(context, address);
+        return cloneValue(readAt(context, address), 'reader');
+      },
+    };
 
   let children: Map<string, unknown> | undefined;
   return new Proxy(

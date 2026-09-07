@@ -1,11 +1,11 @@
 import type { ResolvedAddress } from '../address';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { MutationOutcome } from './contract';
 import * as issue from './issue';
 import { cloneValue, isRecord, ownPayload, sameStructuralValue } from '../value/ownership';
 
 type ValueOperation = Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   {
     type:
       'field.set' | 'field.clear' | 'variant.replace' | 'dict.set' | 'dict.delete' | 'dict.replace';
@@ -34,7 +34,7 @@ export const executeValue = (
       if (target.node.kind !== 'field' || !target.node.optional)
         return rejected(operation, 'required-field', 'Only optional fields can be cleared.');
       if (!existed) return { status: 'unchanged' };
-      const inverse: DocumentOperationUnion = {
+      const inverse: DocumentOperation = {
         type: 'field.set',
         at: operation.at,
         value: target.value,
@@ -43,7 +43,7 @@ export const executeValue = (
       return { status: 'changed', inverse: [inverse] };
     }
     if (existed && Object.is(target.value, operation.value)) return { status: 'unchanged' };
-    const inverse: DocumentOperationUnion = existed
+    const inverse: DocumentOperation = existed
       ? { type: 'field.set', at: operation.at, value: target.value }
       : { type: 'field.clear', at: operation.at };
     (target.parent as Record<string | number, unknown>)[target.key] = operation.value;
@@ -52,7 +52,11 @@ export const executeValue = (
 
   if (operation.type === 'variant.replace') {
     if (sameStructuralValue(target.value, operation.value)) return { status: 'unchanged' };
-    const inverse: DocumentOperationUnion = {
+    if (target.value === undefined && target.node.optional) {
+      (target.parent as Record<string | number, unknown>)[target.key] = own(operation.value);
+      return { status: 'changed', inverse: [{ type: 'value.clear', at: operation.at }] };
+    }
+    const inverse: DocumentOperation = {
       type: 'variant.replace',
       at: operation.at,
       value: ownPayload(target.value, 'inverse'),
@@ -64,7 +68,7 @@ export const executeValue = (
   if (operation.type === 'dict.replace' && target.value === undefined) {
     if (!('optional' in target.node) || !target.node.optional)
       return rejected(operation, 'invalid-address', 'Dictionary target is invalid.');
-    const inverse: DocumentOperationUnion = { type: 'value.clear', at: operation.at };
+    const inverse: DocumentOperation = { type: 'value.clear', at: operation.at };
     (target.parent as Record<string | number, unknown>)[target.key] = own(operation.value);
     return { status: 'changed', inverse: [inverse] };
   }
@@ -72,7 +76,7 @@ export const executeValue = (
     return rejected(operation, 'invalid-address', 'Dictionary target is invalid.');
   if (operation.type === 'dict.replace') {
     if (sameStructuralValue(target.value, operation.value)) return { status: 'unchanged' };
-    const inverse: DocumentOperationUnion = {
+    const inverse: DocumentOperation = {
       type: 'dict.replace',
       at: operation.at,
       value: cloneValue(target.value, 'inverse'),
@@ -83,7 +87,7 @@ export const executeValue = (
   const existed = Object.prototype.hasOwnProperty.call(target.value, operation.key);
   if (operation.type === 'dict.delete') {
     if (!existed) return { status: 'unchanged' };
-    const inverse: DocumentOperationUnion = {
+    const inverse: DocumentOperation = {
       type: 'dict.set',
       at: operation.at,
       key: operation.key,
@@ -94,7 +98,7 @@ export const executeValue = (
   }
   if (existed && Object.is(target.value[operation.key], operation.value))
     return { status: 'unchanged' };
-  const inverse: DocumentOperationUnion = existed
+  const inverse: DocumentOperation = existed
     ? {
         type: 'dict.set',
         at: operation.at,

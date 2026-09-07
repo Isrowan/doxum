@@ -10,7 +10,7 @@ import {
   type ProjectionRuntime,
   type ProjectionError,
   type CollectionImpact,
-  type ProjectionCollectionWriter,
+  type CollectionSpec,
 } from '../src';
 import { projectionDebug } from '../src/integration';
 import { startProfile } from '../src/profile';
@@ -80,11 +80,15 @@ describe('projection source and value', () => {
       kind: 'changed' as const,
       value: { title: document.read.title.get() },
     }));
-    const value = projection.value({
-      sources: { document: document.targets(model.value(path => path.title)) },
-      build: ({ document }) => ({ value: { title: document.read.title.get() }, update }),
-      isEqual: (a, b) => a.title === b.title,
-    });
+    const value = projection.value(
+      {
+        sources: { document: document.targets(model.value(path => path.title)) },
+        build: ({ document }) => ({ value: { title: document.read.title.get() }, update }),
+      },
+      {
+        isEqual: (a, b) => a.title === b.title,
+      }
+    );
     const before = value.current();
     const listener = vi.fn();
     value.subscribe(listener);
@@ -249,8 +253,9 @@ describe('projection collection publication', () => {
   it('stages net-zero writes, undefined presence, order and replacement equality', () => {
     const { projection } = setup();
     const input = projection.input(0);
-    let writer: ProjectionCollectionWriter<string, number | undefined> | undefined;
-    const collection = projection.collection({
+    let writer:
+      Parameters<CollectionSpec<{}, string, number | undefined>['build']>[0]['writer'] | undefined;
+    const collection = projection.collection<number | undefined>()({
       sources: { input: input.source },
       isEqual: (a: number | undefined, b) => Object.is(a, b),
       build: ({ writer: output }) => {
@@ -322,7 +327,7 @@ describe('projection collection publication', () => {
   it('rejects malformed order or duplicate keys before publishing and recovers once', () => {
     const { projection, errors } = setup();
     const input = projection.input(0);
-    const view = projection.collection({
+    const view = projection.collection<number>()({
       sources: { input: input.source },
       isEqual: (a: number, b) => a === b,
       build: ({ writer }) => {
@@ -600,6 +605,7 @@ describe('batch, recovery and lifecycle', () => {
       })
     ).toThrow(original);
     expect(view.item('a').current()).toBe(5);
+    // @ts-expect-error Async callbacks are rejected at both boundaries.
     expect(() => projection.batch(() => Promise.resolve())).toThrow('synchronous');
   });
 
@@ -752,7 +758,7 @@ describe('batch, recovery and lifecycle', () => {
     runtime.prepare(tx => tx.write.items.item('a').value.set(7));
     runtime.update(tx => {
       tx.write.items.item('a').value.set(7);
-      tx.reject({ source: 'application', code: 'no', message: 'no' });
+      tx.reject({ code: 'no', message: 'no' });
     });
     expect(view.item('a').current()).toBe(1);
     expect(notify).not.toHaveBeenCalled();

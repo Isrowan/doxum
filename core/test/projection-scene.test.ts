@@ -34,7 +34,7 @@ describe('explicit projection workloads', () => {
     );
     const edges = document.collection(path => path.edges);
     const calculated: string[] = [];
-    const routes = projection.collection({
+    const routes = projection.collection<string>()({
       sources: { nodes, edges },
       isEqual: (a: string, b) => a === b,
       build: ({ sources, writer }) => {
@@ -89,23 +89,7 @@ describe('explicit projection workloads', () => {
         };
       },
     });
-    const render = projection.collection({
-      sources: { routes },
-      isEqual: (a: string, b) => a === b,
-      build: ({ sources, writer }) => {
-        for (const id of sources.routes.ids()) writer.set(id, `path:${sources.routes.get(id)}`);
-        return {
-          update: ({ sources, writer }) => {
-            const change = sources.routes.change;
-            if (change?.kind === 'reset') return { kind: 'rebuild' };
-            if (!change) return;
-            change.removed.forEach(id => writer.remove(id));
-            for (const id of [...change.added, ...change.updated])
-              writer.set(id, `path:${sources.routes.get(id)}`);
-          },
-        };
-      },
-    });
+    const render = projection.map(routes, (_id, route) => `path:${route}`);
     runtime.update(tx => tx.write.nodes.item('a').label.set('content only'));
     expect(calculated).toEqual([]);
     runtime.update(tx => tx.write.nodes.item('a').x.set(10));
@@ -134,7 +118,7 @@ describe('explicit projection workloads', () => {
     });
     const hover = projection.input<string | undefined>(undefined);
     const candidates: string[] = [];
-    const view = projection.collection({
+    const view = projection.collection<boolean>()({
       sources: { hover: hover.source },
       isEqual: (a: boolean, b) => a === b,
       build: () => ({

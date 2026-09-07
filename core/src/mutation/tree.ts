@@ -1,9 +1,9 @@
 import type { DocumentAddress, DocumentNode, DocumentSchema } from '../schema';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import { cloneValue, isRecord, ownPayload, sameStructuralValue } from '../value/ownership';
 
 type TreeOperation = Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   {
     type: 'tree.insert' | 'tree.move' | 'tree.remove' | 'tree.set' | 'tree.replace';
   }
@@ -23,7 +23,7 @@ export type MutableTree = {
 export type TreeOutcome =
   | {
       readonly status: 'changed';
-      readonly inverse: readonly DocumentOperationUnion[];
+      readonly inverse: readonly DocumentOperation[];
     }
   | { readonly status: 'unchanged' }
   | {
@@ -393,7 +393,6 @@ const documentTreeError = (
     }
     return undefined;
   }
-  if (node.kind === 'single') return documentTreeError(node.value, value, address);
   if (node.kind === 'variant') {
     if (!isRecord(value) || typeof value[node.tag] !== 'string') return undefined;
     const variant = node.variants[value[node.tag] as keyof typeof node.variants];
@@ -493,7 +492,7 @@ export const set = (
   if (!entry)
     return rejected('missing-tree-node', `Tree node '${operation.treeNodeId}' does not exist.`);
   if (Object.is(entry.value, value)) return { status: 'unchanged' };
-  const inverse: DocumentOperationUnion = {
+  const inverse: DocumentOperation = {
     type: 'tree.set',
     at: operation.at,
     treeNodeId: operation.treeNodeId,
@@ -611,12 +610,11 @@ export const move = (
     return rejected('invalid-tree', 'Tree parent links are inconsistent.');
   const originalIndex = childIndex(currentParent, operation.treeNodeId);
   if (originalIndex < 0) return rejected('invalid-tree', 'Tree parent links are inconsistent.');
-  let nextIndex = Math.min(
+  currentParent.children.splice(originalIndex, 1);
+  const nextIndex = Math.min(
     operation.index ?? nextParent.children.length,
     nextParent.children.length
   );
-  currentParent.children.splice(originalIndex, 1);
-  if (parentId === operation.parentId && nextIndex > originalIndex) nextIndex -= 1;
   if (parentId === operation.parentId && nextIndex === originalIndex) {
     currentParent.children.splice(originalIndex, 0, operation.treeNodeId);
     return { status: 'unchanged' };

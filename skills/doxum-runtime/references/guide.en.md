@@ -65,8 +65,8 @@ const runtime = createDocument({
 ```
 
 `table` preserves application-visible order through `{ ids, byId }`. `map`
-stores id-indexed entities without order. Use `single` for one structured
-entity, `dict` or `record` for scalar key/value data, `list` for an ordered
+stores id-indexed entities without order. Use `object` for one structured
+entity, `dict` for scalar key/value data, `list` for an ordered
 sequence with an application-supplied stable key, and `tree` for a validated
 single-root hierarchy. See [patterns.en.md](patterns.en.md) for modelling
 guidance.
@@ -108,7 +108,6 @@ const result = runtime.update(tx => {
   const task = tx.read.tasks.get('write-guide');
   if (!task) {
     tx.reject({
-      source: 'application',
       code: 'task-not-found',
       message: 'The requested task no longer exists.',
       address: ['tasks', 'write-guide'],
@@ -165,8 +164,15 @@ collection and tree examples.
 
 Optional field, variant, dict, list, and tree writers expose `clear()`. Optional
 structured leaves can also be initialized from an absent state with `replace()`.
-Optional objects, tables, and maps have no whole-value clear; modify them through
-their child writers or collection operations.
+Optional objects, tables, and maps are rejected by the schema constructor and
+types. Model those containers as present and use their child or collection operations.
+Variant readers expose get() as a discriminated union. Dictionary readers use
+get(key), has(key), keys() and values(); lists also provide get(key)/has(key).
+
+For one action spanning several updates, open `runtime.history.group()` and
+call its `end()` to retain one undo entry or `cancel()` to revert the action.
+Groups cannot nest. History implements Readable, and `localSync.state` is also
+a Readable: both work with useReadable and projection.fromReadable.
 
 ## Replay operations at the boundary
 
@@ -243,7 +249,7 @@ const localSync = await attachLocalSync({
   documentId: 'project-1',
 });
 
-if (localSync.state().status === 'leader') {
+if (localSync.state.current().status === 'leader') {
   runtime.update(tx => tx.write.title.set('Ship Doxum'));
   runtime.history.undo();
 }
@@ -254,7 +260,7 @@ await localSync.dispose();
 
 This is synchronous visibility with asynchronous persistence, not strict
 durability: a crash, storage failure, or invalid JSON payload can leave a
-visible leader commit unpersisted. Use `localSync.state()` and `onError` to show
+visible leader commit unpersisted. Use `localSync.state.current()` and `onError` to show
 that condition. `flush()` is the explicit persistence/catch-up boundary. The
 attachment does not own or dispose the runtime and it does not expose an undo
 API: use `runtime.history.undo()` and `runtime.history.redo()` while the tab is
@@ -302,21 +308,15 @@ const noteSummaries = projection.map(
   (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
   { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
 );
-const noteCount = projection.value({
-  sources: { notes },
-  build: ({ notes }) => ({
-    value: notes.read.ids().length,
-    update: ({ notes }) => ({
-      kind: 'changed',
-      value: notes.read.ids().length,
-    }),
-  }),
-});
+const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
 ```
 
 projection.map produces stable ids/item readables and lazy all. Declare a
 DocumentCollectionSource directly in any processor's sources, or use
-projection.value and projection.collection for explicit incremental logic.
+`projection.value({ sources, build }, { isEqual }?)` and
+`projection.collection<Item>()(spec)` for explicit incremental logic.
+Map also accepts upstream projection collections. Document collection contexts
+provide batch-wide `candidates.keys`, `candidates.orderDirty` and `reset`.
 There is no automatic keyed dependency tracking. All sources belong to the
 same projection owner, but may refer to different document runtimes.
 

@@ -1,5 +1,5 @@
 import type { ResolvedAddress } from '../address';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { MutationOutcome } from './contract';
 import * as anchor from './anchor';
 import type { MutationIssueCode } from './issue';
@@ -7,7 +7,7 @@ import * as issue from './issue';
 import { cloneValue, ownPayload, sameStructuralValue } from '../value/ownership';
 
 type ListOperation = Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   { type: 'list.insert' | 'list.move' | 'list.remove' | 'list.replace' }
 >;
 
@@ -53,7 +53,7 @@ export const executeList = (
     }
     if (!absent && sameStructuralValue(list, operation.value)) return { status: 'unchanged' };
     const keys = list.map(target.node.keyOf);
-    const inverse: DocumentOperationUnion = absent
+    const inverse: DocumentOperation = absent
       ? { type: 'value.clear', at: operation.at }
       : {
           type: 'list.replace',
@@ -92,7 +92,7 @@ export const executeList = (
   if (position < 0)
     return rejected(operation, 'missing-list-item', `List item '${operation.key}' does not exist.`);
   if (operation.type === 'list.remove') {
-    const inverse: DocumentOperationUnion = {
+    const inverse: DocumentOperation = {
       type: 'list.insert',
       at: operation.at,
       key: operation.key,
@@ -112,7 +112,7 @@ export const executeList = (
     return rejected(operation, 'invalid-anchor', 'A list item cannot be moved relative to itself.');
   const nextIndex = anchor.afterRemove(orderedKeys, position, operation.anchor);
   if (nextIndex === position) return { status: 'unchanged' };
-  const inverse: DocumentOperationUnion = {
+  const inverse: DocumentOperation = {
     type: 'list.move',
     at: operation.at,
     key: operation.key,

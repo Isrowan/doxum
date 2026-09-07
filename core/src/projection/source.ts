@@ -2,18 +2,29 @@ import { documentReader, readerFor } from '../access/reader';
 import { nodeAt } from '../address';
 import * as target from '../impact-target';
 import { accessOf } from '../runtime/access';
-import { attachProjection } from '../runtime/notification';
+import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { DocumentSchema, ImpactTarget, CollectionSelector } from '../schema';
+import { collectionSchema } from '../schema';
 import type { DocumentSource, ProjectionSource, ValueInput } from './contract';
 import { ProjectionError } from './contract';
+import { collectionHandles } from './collection';
 import type { Readable } from './readable';
 import { assertScope, projectionHandles, type Scheduler, type SourceRecord } from './scheduler';
 
 export const createSources = (scheduler: Scheduler) => {
   const documents = new Map<object, object>();
-  const readables = new Map<object, object>();
-  const collections = new WeakMap<object, { source: object; target: CollectionSelector }>();
+  const readables = new Map<
+    object,
+    Map<
+      object,
+      {
+        readonly source: object;
+        readonly accept: (value: unknown) => void;
+      }
+    >
+  >();
+  const collections = new WeakSet<object>();
   const document = <S extends DocumentSchema>(runtime: DocumentReadable<S>): DocumentSource<S> => {
     scheduler.assertIdle();
     const state = accessOf(runtime);
@@ -36,21 +47,30 @@ export const createSources = (scheduler: Scheduler) => {
       );
       if (old) return old.handle;
       let commits: DocumentCommit<S>[] = [];
+      let reset = false;
+      let orderDirty = false;
+      const keys = new Set<string>();
+      let candidates:
+        { readonly keys: readonly string[]; readonly orderDirty: boolean } | undefined;
       const record: SourceRecord = {
         consumers: new Set(),
         disposed: false,
         fault: undefined,
         revision: runtime.revision,
-        reset: () => commits.some(commit => commit.kind === 'replace'),
+        reset: () => reset,
         clear: () => {
           commits = [];
+          reset = orderDirty = false;
+          keys.clear();
+          candidates = undefined;
         },
         context: active => {
           assertScope(active);
           if (state.disposed) throw new Error('Document has been disposed.');
           const read = collection
             ? readerFor(
-                nodeAt(state.schema, collection.address)!,
+                nodeAt(state.schema, collection.address, state.document) ??
+                  collectionSchema(collection),
                 { root: () => state.document, active },
                 collection.address
               )
@@ -61,6 +81,14 @@ export const createSources = (scheduler: Scheduler) => {
             revision: runtime.revision(),
             commits: Object.freeze(commits.slice()),
             reset: record.reset(),
+            ...(collection
+              ? {
+                  candidates: (candidates ??= Object.freeze({
+                    keys: Object.freeze([...keys]),
+                    orderDirty,
+                  })),
+                }
+              : {}),
           });
         },
       };
@@ -70,9 +98,6 @@ export const createSources = (scheduler: Scheduler) => {
             collection: (pick: Parameters<S['collection']>[0]) => {
               scheduler.assertIdle();
               const selector = state.schema.collection(pick);
-              const node = nodeAt(state.schema, selector.address);
-              if (node?.kind !== 'table' && node?.kind !== 'map')
-                throw new TypeError('Expected a table or map collection path.');
               return make([selector], selector);
             },
             targets: (...selected: ImpactTarget[]) => {
@@ -83,11 +108,23 @@ export const createSources = (scheduler: Scheduler) => {
           };
       Object.freeze(handle);
       bindings.push({ handle, targets, record });
-      if (collection) collections.set(handle, { source: handle, target: collection });
+      if (collection) collections.add(handle);
       scheduler.register(handle, record);
       // The attachment delivers to all local bindings without extra document subscriptions.
       receivers.set(record, commit => {
         commits.push(commit);
+        reset ||= commit.kind === 'replace';
+        if (collection) {
+          const change = commit.impact.collection(collection);
+          if (change.kind === 'reset') reset = true;
+          else {
+            change.added.forEach(key => keys.add(key));
+            change.removed.forEach(key => keys.add(key));
+            change.updated.forEach(key => keys.add(key));
+            orderDirty ||= Boolean(change.added.size || change.removed.size || change.orderChanged);
+          }
+          candidates = undefined;
+        }
       });
       return handle;
     };
@@ -189,47 +226,100 @@ export const createSources = (scheduler: Scheduler) => {
       scheduler.assertIdle();
       if (projectionHandles.has(readable))
         throw new Error('Projection nodes must be declared directly as sources.');
-      const old = readables.get(readable);
-      if (old) return old as ProjectionSource<ValueInput<T>>;
-      const input = valueSource(readable.current(), options?.isEqual ?? Object.is);
-      const receive = () => {
+      const equal = options?.isEqual ?? Object.is;
+      let bindings = readables.get(readable);
+      const old = bindings?.get(equal);
+      if (old) return old.source as ProjectionSource<ValueInput<T>>;
+      const input = valueSource(readable.current(), equal);
+      if (bindings) {
+        bindings.set(equal, { source: input.source, accept: value => input.accept(value as T) });
+        return input.source;
+      }
+      bindings = new Map([
+        [equal, { source: input.source, accept: (value: unknown) => input.accept(value as T) }],
+      ]);
+      const members = bindings;
+      const receive = (settle = true) => {
         if (!scheduler.active) return;
+        let value: T;
         try {
-          input.accept(readable.current());
+          value = readable.current();
         } catch (cause) {
-          const record = scheduler.source(input.source);
-          record.fault = new ProjectionError(
-            'source',
-            'external readable',
-            [readable.revision()],
-            cause
-          );
-          scheduler.capture(record);
+          for (const member of members.values()) {
+            const record = scheduler.source(member.source);
+            record.fault = new ProjectionError(
+              'source',
+              'external readable',
+              [record.revision()],
+              cause
+            );
+            scheduler.capture(record);
+          }
+          if (settle) scheduler.run();
+          return;
         }
-        scheduler.run();
+        for (const member of members.values()) {
+          try {
+            member.accept(value);
+          } catch (cause) {
+            const record = scheduler.source(member.source);
+            record.fault = new ProjectionError(
+              'source',
+              'external readable',
+              [record.revision()],
+              cause
+            );
+            scheduler.capture(record);
+          }
+        }
+        if (settle) scheduler.run();
       };
       let unsubscribe: (() => void) | undefined;
+      let detach: (() => void) | undefined;
       try {
-        unsubscribe = readable.subscribe(receive);
+        const owner = documentReadableOwner(readable);
+        if (owner) {
+          document(owner);
+          detach = attachProjection(owner, {
+            capture: () => receive(false),
+            settle: scheduler.settle,
+            flush: scheduler.flush,
+            dispose: () => {
+              for (const member of members.values()) {
+                const record = scheduler.source(member.source);
+                record.fault = new ProjectionError(
+                  'source',
+                  'document readable disposed',
+                  [record.revision()],
+                  new Error('Document has been disposed.')
+                );
+                scheduler.capture(record);
+              }
+              scheduler.run();
+            },
+          });
+        }
+        unsubscribe = readable.subscribe(() => receive());
         input.accept(readable.current());
       } catch (error) {
         try {
           unsubscribe?.();
+          detach?.();
         } finally {
           scheduler.unregisterSource(input.source);
         }
         throw error;
       }
       scheduler.cleanups.add(unsubscribe);
-      readables.set(readable, input.source);
+      if (detach) scheduler.cleanups.add(detach);
+      readables.set(readable, bindings);
       scheduler.run();
       return input.source;
     },
-    collectionTarget: (handle: object) => {
+    assertCollection: (handle: object) => {
       scheduler.source(handle);
-      const value = collections.get(handle);
-      if (!value) throw new Error('map requires a document collection source.');
-      return value.target;
+      if (!collections.has(handle) && !collectionHandles.has(handle))
+        throw new Error('map requires a collection source.');
     },
   };
 };

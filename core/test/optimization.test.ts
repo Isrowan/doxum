@@ -216,7 +216,7 @@ describe('performance-oriented mutation invariants', () => {
 
     expect(result.status).toBe('unchanged');
     expect(runtime.revision()).toBe(0);
-    expect(select(runtime, read => read.values.get())).toEqual({ a: 1, b: 2 });
+    expect(select(runtime, read => read.values.values())).toEqual({ a: 1, b: 2 });
   });
 
   it('coalesces entry updates with remove and recreate', () => {

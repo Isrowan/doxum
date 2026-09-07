@@ -1,8 +1,14 @@
 import type { CollectionReader, DocumentReader, ReaderOfNode } from '../access/reader';
 import type { CollectionImpact } from '../impact';
-import type { DocumentCommit, DocumentReadable, Unsubscribe } from '../runtime/contract';
+import type {
+  DocumentCommit,
+  DocumentReadable,
+  Synchronous,
+  Unsubscribe,
+} from '../runtime/contract';
 import type {
   CollectionNode,
+  CollectionPath,
   CollectionSelector,
   DocumentSchema,
   EntitySchemaNode,
@@ -29,9 +35,7 @@ export type DocumentCollectionInput<S extends DocumentSchema, N extends EntitySc
   readonly revision: number;
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
-};
-type CollectionPath = {
-  readonly __collection?: { readonly id: string; readonly node: EntitySchemaNode };
+  readonly candidates: { readonly keys: readonly string[]; readonly orderDirty: boolean };
 };
 export type DocumentSource<S extends DocumentSchema> = ProjectionSource<DocumentInput<S>> & {
   collection<P extends CollectionPath>(
@@ -63,7 +67,6 @@ export type ValueUpdate<T> =
 export type ValueSpec<S extends ProjectionSources, T> = {
   readonly name?: string;
   readonly sources: S;
-  readonly isEqual?: (previous: NoInfer<T>, next: NoInfer<T>) => boolean;
   readonly build: (sources: ProjectionInputs<S>) => {
     readonly value: T;
     readonly update: (sources: ProjectionInputs<S>) => ValueUpdate<NoInfer<T>>;
@@ -137,15 +140,28 @@ export type ProjectionRuntime = {
     initial: T,
     options?: { readonly isEqual?: (a: T, b: T) => boolean }
   ): ProjectionInput<T>;
-  value<S extends ProjectionSources, T>(spec: ValueSpec<S, T>): ProjectionValue<T>;
-  collection<S extends ProjectionSources, K extends string, V>(
+  value<S extends ProjectionSources, T>(
+    sources: S,
+    compute: (sources: ProjectionInputs<S>) => Synchronous<T>,
+    options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
+  ): ProjectionValue<T>;
+  value<S extends ProjectionSources, T>(
+    spec: ValueSpec<S, T>,
+    options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
+  ): ProjectionValue<T>;
+  collection<V, K extends string = string>(): <S extends ProjectionSources>(
     spec: CollectionSpec<S, K, V>
-  ): ProjectionCollection<K, V>;
+  ) => ProjectionCollection<K, V>;
   map<S extends DocumentSchema, N extends EntitySchemaNode, V>(
     source: DocumentCollectionSource<S, N>,
-    mapper: (id: string, entry: ReaderOfNode<N>) => V,
+    mapper: (id: string, entry: ReaderOfNode<N>) => Synchronous<V>,
     options?: { readonly isEqual?: (a: V, b: V) => boolean }
   ): ProjectionCollection<string, V>;
-  batch<T>(run: () => T): T;
+  map<K extends string, V, R>(
+    source: ProjectionCollection<K, V>,
+    mapper: (id: K, entry: V) => Synchronous<R>,
+    options?: { readonly isEqual?: (a: NoInfer<R>, b: NoInfer<R>) => boolean }
+  ): ProjectionCollection<K, R>;
+  batch<T>(run: () => Synchronous<T>): T;
   dispose(): void;
 };

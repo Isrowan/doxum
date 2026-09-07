@@ -12,6 +12,8 @@ import type { Readable } from './readable';
 import { createNode } from './node';
 import { assertScope, assertSynchronous, projectionHandles, type Scheduler } from './scheduler';
 
+export const collectionHandles = new WeakSet<object>();
+
 const readonlySet = <T>(values: Iterable<T>): ReadonlySet<T> => {
   const set = new Set(values);
   const view: ReadonlySet<T> = Object.freeze({
@@ -356,6 +358,7 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
   } as ProjectionCollection<K, V>;
   projectionHandles.add(handle.ids);
   projectionHandles.add(handle.all);
+  collectionHandles.add(handle);
   owner.install(handle);
   return Object.freeze(handle);
 };

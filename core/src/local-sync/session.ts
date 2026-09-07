@@ -116,10 +116,45 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
     let releaseLeadership: (() => void) | undefined;
     let leadershipLease: Promise<void> | undefined;
     let queued: Promise<void> = Promise.resolve();
+    let snapshot: LocalSyncState = Object.freeze({ status: role, headSeq, checkpointSeq });
+    let stateRevision = 0;
+    const stateListeners = new Set<() => void>();
+    const publishState = (): void => {
+      const next: LocalSyncState = disposed
+        ? { status: 'disposed' }
+        : fault
+          ? { status: 'error', headSeq, checkpointSeq, error: fault }
+          : { status: role, headSeq, checkpointSeq };
+      if (
+        snapshot.status === next.status &&
+        (snapshot.status === 'disposed' ||
+          (next.status !== 'disposed' &&
+            snapshot.headSeq === next.headSeq &&
+            snapshot.checkpointSeq === next.checkpointSeq &&
+            (snapshot.status !== 'error' ||
+              (next.status === 'error' && snapshot.error === next.error))))
+      )
+        return;
+      snapshot = Object.freeze(next);
+      stateRevision++;
+      for (const listener of [...stateListeners]) {
+        if (!stateListeners.has(listener)) continue;
+        try {
+          listener();
+        } catch (error) {
+          try {
+            input.onError?.(error);
+          } catch {
+            /* A listener cannot fail persistence. */
+          }
+        }
+      }
+    };
 
     const fail = (error: unknown): void => {
       if (fault || disposed) return;
       fault = error;
+      publishState();
       try {
         input.onError?.(error);
       } catch {
@@ -175,6 +210,7 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
           'Local commit log does not reach its recorded head sequence.'
         );
       checkpointSeq = current.checkpointSeq;
+      publishState();
     };
 
     const enqueue = (run: () => Promise<void>): Promise<void> => {
@@ -197,6 +233,7 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
       if (storedCommit.seq !== headSeq + 1)
         throw new LocalSyncConsistencyError('A local command was assigned an unexpected sequence.');
       headSeq = storedCommit.seq;
+      publishState();
       channel?.postMessage({
         kind: 'commit',
         documentId,
@@ -227,12 +264,16 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
       await restore();
       if (closing || disposed || fault) return;
       role = 'leader';
+      publishState();
       activated?.();
       try {
         await holdLeadership();
       } finally {
         releaseLeadership = undefined;
-        if (!closing && !disposed && !fault) role = 'follower';
+        if (!closing && !disposed && !fault) {
+          role = 'follower';
+          publishState();
+        }
       }
     };
 
@@ -306,11 +347,17 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
     if (fault) throw fault;
 
     const localSync: LocalSync = {
-      state: (): LocalSyncState => {
-        if (disposed) return { status: 'disposed' };
-        if (fault) return { status: 'error', headSeq, checkpointSeq, error: fault };
-        return { status: role, headSeq, checkpointSeq };
-      },
+      state: Object.freeze({
+        current: () => snapshot,
+        revision: () => stateRevision,
+        subscribe: (listener: () => void) => {
+          if (disposed) throw new LocalSyncDisposedError();
+          stateListeners.add(listener);
+          return () => {
+            stateListeners.delete(listener);
+          };
+        },
+      }),
       flush: async (): Promise<void> => {
         assertOpen();
         try {
@@ -336,6 +383,8 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
         driver?.dispose();
         channel?.close();
         timeline.close();
+        publishState();
+        stateListeners.clear();
       },
     };
     return Object.freeze(localSync);

@@ -1,6 +1,7 @@
 import type { DocumentSchema } from '../schema';
 import type { DocumentRuntime } from '../runtime/contract';
 import type { JsonCommandLimits } from './json';
+import type { Readable } from '../projection/readable';
 
 export class LocalSyncUnavailableError extends Error {
   constructor(capability: 'IndexedDB' | 'Web Locks' | 'BroadcastChannel') {
@@ -63,7 +64,7 @@ export type LocalSyncState =
   | { readonly status: 'disposed' };
 
 export type LocalSync = {
-  state(): LocalSyncState;
+  readonly state: Readable<LocalSyncState>;
   flush(): Promise<void>;
   dispose(): Promise<void>;
 };

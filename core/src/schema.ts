@@ -41,10 +41,6 @@ export type VariantNode<
   readonly tag: TTag;
   readonly variants: TVariants;
 };
-export type SingleNode<TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
-  BaseNode<'single'> & {
-    readonly value: TValue;
-  };
 export type TableNode<TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
   BaseNode<'table'> & {
     readonly value: TValue;
@@ -53,10 +49,6 @@ export type MapNode<TValue extends ObjectNode<ObjectShape> | VariantNode<string,
   BaseNode<'map'> & {
     readonly value: TValue;
   };
-export type RecordNode<TId extends string, TValue> = BaseNode<'record'> & {
-  readonly __id?: TId;
-  readonly __value?: TValue;
-};
 export type DictNode<TKey extends string, TValue> = BaseNode<'dict'> & {
   readonly __key?: TKey;
   readonly __value?: TValue;
@@ -74,10 +66,8 @@ export type DocumentNode =
   | FieldNode<unknown, true>
   | ObjectNode<ObjectShape>
   | VariantNode<string, VariantShape>
-  | SingleNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
   | TableNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
   | MapNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
-  | RecordNode<string, unknown>
   | DictNode<string, unknown>
   | ListNode<unknown>
   | TreeNode<unknown>;
@@ -102,24 +92,20 @@ export type DocumentValueOfNode<N> =
       ? DocumentValueOfShape<S>
       : N extends VariantNode<infer T, infer V>
         ? EntityValue<VariantNode<T, V>>
-        : N extends SingleNode<infer V>
-          ? EntityValue<V>
-          : N extends TableNode<infer V>
-            ? {
-                readonly ids: readonly string[];
-                readonly byId: Readonly<Record<string, EntityValue<V>>>;
-              }
-            : N extends MapNode<infer V>
-              ? Readonly<Record<string, EntityValue<V>>>
-              : N extends RecordNode<infer I, infer T>
-                ? Readonly<Record<I, T>>
-                : N extends DictNode<infer K, infer T>
-                  ? Readonly<Partial<Record<K, T>>>
-                  : N extends ListNode<infer I>
-                    ? readonly I[]
-                    : N extends TreeNode<infer T>
-                      ? DocumentTreeValue<T>
-                      : never;
+        : N extends TableNode<infer V>
+          ? {
+              readonly ids: readonly string[];
+              readonly byId: Readonly<Record<string, EntityValue<V>>>;
+            }
+          : N extends MapNode<infer V>
+            ? Readonly<Record<string, EntityValue<V>>>
+            : N extends DictNode<infer K, infer T>
+              ? Readonly<Partial<Record<K, T>>>
+              : N extends ListNode<infer I>
+                ? readonly I[]
+                : N extends TreeNode<infer T>
+                  ? DocumentTreeValue<T>
+                  : never;
 
 type OptionalKeys<S extends ObjectShape> = {
   [K in keyof S]: S[K] extends { readonly optional: true } ? K : never;
@@ -158,18 +144,18 @@ export type ImpactTarget<T = unknown> =
       readonly id?: string;
     }
   | CollectionSelector<string>;
-type PathMarker<TValue> = { readonly __value?: TValue };
+declare const pathValue: unique symbol;
+declare const collectionNode: unique symbol;
+type PathMarker<TValue> = { readonly [pathValue]: TValue };
 
 type SchemaPathFor<S extends ObjectShape = ObjectShape, TValue = unknown> = {
   readonly [K in keyof S]: PathValue<S[K]>;
-} & {
-  readonly item: (id: string) => SchemaPathFor<{}, unknown>;
 } & PathMarker<TValue>;
 
 export type DocumentSchema<TShape extends ObjectShape = {}> = {
   readonly kind: 'schema';
   readonly shape: TShape;
-  collection<TPath extends PathMarker<unknown>>(
+  collection<TPath extends CollectionPath>(
     pick: (path: SchemaPath<TShape>) => TPath
   ): CollectionSelector<CollectionId<TPath>, CollectionNode<TPath>>;
   value<TPath extends PathMarker<unknown>>(
@@ -190,48 +176,40 @@ type VariantFieldPath<V extends VariantShape, K extends string> = {
       : never
     : never;
 }[keyof V & string];
-type VariantPath<V extends VariantShape> = {
+type VariantPath<T extends string, V extends VariantShape> = {
   readonly [K in VariantKeys<V>]: VariantFieldPath<V, K>;
-} & {
-  readonly item: (id: string) => SchemaPathFor<{}, unknown>;
-} & PathMarker<EntityValue<VariantNode<string, V>>>;
+} & { readonly [K in T]: PathMarker<keyof V & string> } & PathMarker<
+    EntityValue<VariantNode<T, V>>
+  >;
 type PathNodeValue<N extends DocumentNode> = N extends { readonly optional: true }
   ? DocumentValueOfNode<N> | undefined
   : DocumentValueOfNode<N>;
 type EntityPath<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
   N extends ObjectNode<infer S>
     ? SchemaPathFor<S, PathNodeValue<N>>
-    : N extends VariantNode<string, infer V>
-      ? VariantPath<V>
+    : N extends VariantNode<infer T, infer V>
+      ? VariantPath<T, V>
       : never;
-type CollectionPath<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> = Omit<
-  EntityPath<N>,
-  'item'
-> & {
+export type CollectionPath<
+  N extends EntitySchemaNode = EntitySchemaNode,
+  TValue = unknown,
+> = PathMarker<TValue> & {
   readonly item: (id: string) => EntityPath<N>;
-  readonly __collection?: {
-    readonly id: string;
-    readonly node: N;
-  };
+  readonly [collectionNode]: N;
 };
 
 type PathValue<N extends DocumentNode> =
   N extends ObjectNode<infer S>
     ? SchemaPathFor<S, PathNodeValue<N>>
-    : N extends VariantNode<infer _TTag, infer V>
-      ? VariantPath<V>
+    : N extends VariantNode<infer TTag, infer V>
+      ? VariantPath<TTag, V>
       : N extends TableNode<infer V> | MapNode<infer V>
-        ? CollectionPath<V>
-        : N extends SingleNode<infer V>
-          ? EntityPath<V>
-          : SchemaPathFor<{}, PathNodeValue<N>>;
+        ? CollectionPath<V, PathNodeValue<N>>
+        : PathMarker<PathNodeValue<N>>;
 type CollectionInfo<T> = T extends {
-  readonly __collection?: {
-    readonly id: infer TId;
-    readonly node: infer TNode extends EntitySchemaNode;
-  };
+  readonly [collectionNode]: infer TNode extends EntitySchemaNode;
 }
-  ? { readonly id: TId; readonly node: TNode }
+  ? { readonly id: string; readonly node: TNode }
   : never;
 type CollectionId<T> =
   CollectionInfo<T> extends { readonly id: infer TId extends string } ? TId : string;
@@ -243,60 +221,127 @@ type PathValueResult<T> = T extends PathMarker<infer TValue> ? TValue : unknown;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
 export const field = <T>(): FieldNode<T> => node({ kind: 'field' });
-export const optional = <T extends DocumentNode>(value: T): OptionalNode<T> =>
-  node({ ...value, optional: true } as OptionalNode<T>);
+type OptionalLeaf =
+  | FieldNode<unknown, boolean>
+  | VariantNode<string, VariantShape>
+  | DictNode<string, unknown>
+  | ListNode<unknown>
+  | TreeNode<unknown>;
+export const optional = <T extends OptionalLeaf>(value: T): OptionalNode<T> => {
+  if (!['field', 'variant', 'dict', 'list', 'tree'].includes(value.kind))
+    throw new TypeError(
+      'Only field, variant, dict, list and tree nodes support optional presence.'
+    );
+  return node({ ...value, optional: true } as OptionalNode<T>);
+};
 export const object = <S extends ObjectShape>(shape: S): ObjectNode<S> =>
   node({ kind: 'object', shape });
 export const variant = <T extends string, V extends VariantShape>(
   tag: T,
   variants: V
 ): VariantNode<T, V> => node({ kind: 'variant', tag, variants });
-export const single = <V extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>(
-  value: V
-): SingleNode<V> => node({ kind: 'single', value });
 export const table = <V extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>(
   value: V
 ): TableNode<V> => node({ kind: 'table', value });
 export const map = <V extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>(
   value: V
 ): MapNode<V> => node({ kind: 'map', value });
-export const record = <TId extends string = string, TValue = unknown>(): RecordNode<TId, TValue> =>
-  node({ kind: 'record' });
 export const dict = <TKey extends string = string, TValue = unknown>(): DictNode<TKey, TValue> =>
   node({ kind: 'dict' });
 export const list = <TItem>(config: DocumentListConfig<TItem>): ListNode<TItem> =>
   ({ kind: 'list', keyOf: config.keyOf }) as ListNode<TItem>;
 export const tree = <TValue = unknown>(): TreeNode<TValue> => node({ kind: 'tree' });
 
-const pathProxy = (address: DocumentAddress): SchemaPath & { readonly address: DocumentAddress } =>
-  new Proxy({ address } as SchemaPath & { readonly address: DocumentAddress }, {
-    get: (_target, property: string | symbol) => {
-      if (property === 'address') return address;
-      if (property === 'item') return (id: string) => pathProxy([...address, id]);
-      if (typeof property === 'symbol') return undefined;
-      return pathProxy([...address, property]);
-    },
-  });
+const paths = new WeakMap<
+  object,
+  {
+    readonly address: DocumentAddress;
+    readonly nodes: readonly DocumentNode[];
+    readonly owner: object;
+  }
+>();
+const collectionSchemas = new WeakMap<
+  object,
+  TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode>
+>();
+export const collectionSchema = (
+  selector: CollectionSelector
+): TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode> => {
+  const node = collectionSchemas.get(selector);
+  if (!node) throw new TypeError('Expected a schema-owned collection selector.');
+  return node;
+};
+
+const pathProxy = (
+  nodes: readonly DocumentNode[],
+  address: DocumentAddress,
+  owner: object
+): object => {
+  const proxy = new Proxy(
+    {},
+    {
+      get: (_target, property: string | symbol) => {
+        if (typeof property !== 'string') return undefined;
+        const collection = nodes.every(node => node.kind === 'table' || node.kind === 'map');
+        if (collection && property === 'item')
+          return (id: string) => {
+            if (typeof id !== 'string') throw new TypeError('Collection keys must be strings.');
+            return pathProxy(
+              nodes.map(node => (node as TableNode<EntitySchemaNode>).value),
+              [...address, id],
+              owner
+            );
+          };
+        const children = nodes.flatMap(node => {
+          if (node.kind === 'object') return node.shape[property] ? [node.shape[property]] : [];
+          if (node.kind !== 'variant') return [];
+          if (property === node.tag) return [field<string>()];
+          return Object.values(node.variants).flatMap(branch =>
+            branch.shape[property] ? [branch.shape[property]] : []
+          );
+        });
+        if (!children.length) throw new TypeError(`Invalid schema path segment: ${property}`);
+        return pathProxy(children, [...address, property], owner);
+      },
+    }
+  );
+  paths.set(proxy, { nodes, address, owner });
+  return proxy;
+};
 
 const select = <S extends ObjectShape>(
   owner: DocumentSchema<S>,
   kind: 'collection' | 'value',
   pick: (path: SchemaPath<S>) => unknown
 ): CollectionSelector | ValueSelector => {
-  const value = pick(pathProxy([]) as unknown as SchemaPath<S>);
-  const selected = value as { readonly address?: DocumentAddress };
-  return Object.freeze({
+  const scope = {};
+  const value = pick(pathProxy([object(owner.shape)], [], scope) as SchemaPath<S>);
+  const selected = typeof value === 'object' && value !== null ? paths.get(value) : undefined;
+  if (!selected || selected.owner !== scope)
+    throw new TypeError('Selector must return a path from its callback.');
+  if (
+    kind === 'collection' &&
+    !selected.nodes.every(node => node.kind === 'table' || node.kind === 'map')
+  )
+    throw new TypeError('Collection selectors require a table or map path.');
+  const result = Object.freeze({
     kind,
     schema: owner,
-    address: Object.freeze([...(selected.address ?? [])]),
+    address: Object.freeze([...selected.address]),
   }) as CollectionSelector | ValueSelector;
+  if (kind === 'collection')
+    collectionSchemas.set(
+      result,
+      selected.nodes[0] as TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode>
+    );
+  return result;
 };
 
 export const schema = <S extends ObjectShape>(shape: S): DocumentSchema<S> => {
   const result: DocumentSchema<S> = {
     kind: 'schema',
     shape,
-    collection: <TPath extends PathMarker<unknown>>(pick: (path: SchemaPath<S>) => TPath) =>
+    collection: <TPath extends CollectionPath>(pick: (path: SchemaPath<S>) => TPath) =>
       select(result, 'collection', pick) as CollectionSelector<
         CollectionId<TPath>,
         CollectionNode<TPath>

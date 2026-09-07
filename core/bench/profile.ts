@@ -126,7 +126,7 @@ const createPipeline = (runtime: DocumentRuntime<typeof documentSchema>) => {
     (_id, entry) => ({ from: entry.from.get(), to: entry.to.get() }),
     { isEqual: (a, b) => a.from === b.from && a.to === b.to }
   );
-  const groupIndex = projection.collection({
+  const groupIndex = projection.collection<number>()({
     sources: { itemIndex },
     build: ({ sources, writer }) => {
       const groups = new Map<string, number>();
@@ -169,25 +169,29 @@ const createPipeline = (runtime: DocumentRuntime<typeof documentSchema>) => {
       };
     },
   });
-  const summary = projection.value({
-    sources: { groupIndex, linkIndex, itemIndex },
-    build: sources => ({
-      value: {
-        groups: sources.groupIndex.ids().length,
-        links: sources.linkIndex.ids().length,
-        items: sources.itemIndex.ids().length,
-      },
-      update: sources => ({
-        kind: 'changed',
+  const summary = projection.value(
+    {
+      sources: { groupIndex, linkIndex, itemIndex },
+      build: sources => ({
         value: {
           groups: sources.groupIndex.ids().length,
           links: sources.linkIndex.ids().length,
           items: sources.itemIndex.ids().length,
         },
+        update: sources => ({
+          kind: 'changed',
+          value: {
+            groups: sources.groupIndex.ids().length,
+            links: sources.linkIndex.ids().length,
+            items: sources.itemIndex.ids().length,
+          },
+        }),
       }),
-    }),
-    isEqual: (a, b) => a.groups === b.groups && a.links === b.links && a.items === b.items,
-  });
+    },
+    {
+      isEqual: (a, b) => a.groups === b.groups && a.links === b.links && a.items === b.items,
+    }
+  );
   return { projection, itemIndex, groupIndex, linkIndex, summary };
 };
 

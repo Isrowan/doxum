@@ -1,13 +1,13 @@
 import { set as setAddress } from '../address';
 import type { ResolvedAddress } from '../address';
-import type { DocumentOperationUnion } from '../operations';
+import type { DocumentOperation } from '../operations';
 import type { MutationOutcome } from './contract';
 import * as issue from './issue';
 import * as tree from './tree';
 import { ownPayload } from '../value/ownership';
 
 type TreeOperation = Extract<
-  DocumentOperationUnion,
+  DocumentOperation,
   {
     type: 'tree.insert' | 'tree.move' | 'tree.remove' | 'tree.set' | 'tree.replace';
   }

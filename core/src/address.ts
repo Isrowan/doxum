@@ -41,12 +41,6 @@ const appendAddressHash = (hash: number, segment: string): number =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const unwrap = (node: DocumentNode | undefined): DocumentNode | undefined => {
-  let current = node;
-  while (current?.kind === 'single') current = current.value;
-  return current;
-};
-
 const variantNode = (
   node: Extract<DocumentNode, { kind: 'variant' }>,
   value: unknown
@@ -66,22 +60,17 @@ type Step = {
 };
 
 const step = (nodeInput: DocumentNode | undefined, value: unknown, segment: string): Step => {
-  let node = unwrap(nodeInput);
+  let node = nodeInput;
   if (!node) return { node: undefined, dynamic: false };
   if (node.kind === 'variant') {
-    node = unwrap(variantNode(node, value));
+    node = variantNode(node, value);
   }
   if (!node) return { node: undefined, dynamic: false };
   if (node.kind === 'object') return { node: node.shape[segment], dynamic: false };
   if (node.kind === 'table' || node.kind === 'map') return { node: node.value, dynamic: true };
   // These nodes use operation-specific keys rather than address segments, but
   // accepting a dynamic step keeps address resolution total for user targets.
-  if (
-    node.kind === 'record' ||
-    node.kind === 'dict' ||
-    node.kind === 'list' ||
-    node.kind === 'tree'
-  )
+  if (node.kind === 'dict' || node.kind === 'list' || node.kind === 'tree')
     return { node, dynamic: true };
   return { node: undefined, dynamic: false };
 };
@@ -143,7 +132,7 @@ export const nodeAt = (
     value = readSegment(value, segment);
     if (!node) return undefined;
   }
-  return unwrap(node);
+  return node;
 };
 
 export const readSegment = (value: unknown, segment: string): unknown => {

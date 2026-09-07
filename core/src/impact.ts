@@ -1,5 +1,5 @@
 import type { CollectionSelector, DocumentAddress, DocumentSchema, ImpactTarget } from './schema';
-import type { DocumentOperationUnion } from './operations';
+import type { DocumentOperation } from './operations';
 import { contains, overlaps } from './address';
 import type { MutationCollectionChange } from './mutation/contract';
 import { profile } from './profile';
@@ -21,7 +21,7 @@ export type DocumentImpact<TSchema extends DocumentSchema> = {
   readonly collection: <TId extends string>(
     selector: CollectionSelector<TId>
   ) => CollectionImpact<TId>;
-  readonly operations: readonly DocumentOperationUnion<TSchema>[];
+  readonly operations: readonly DocumentOperation[];
 };
 
 const emptyCollectionImpact: CollectionImpact<string> = Object.freeze({
@@ -37,7 +37,7 @@ const resetCollectionImpact: CollectionImpact<never> = Object.freeze({
 
 export const createImpact = <TSchema extends DocumentSchema>(input: {
   readonly schema: TSchema;
-  readonly operations: readonly DocumentOperationUnion<TSchema>[];
+  readonly operations: readonly DocumentOperation[];
   readonly paths?: readonly DocumentAddress[];
   readonly collections?: readonly MutationCollectionChange[];
   readonly reset?: boolean;
