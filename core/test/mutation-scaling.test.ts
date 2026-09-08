@@ -47,7 +47,16 @@ describe('mutation scaling and ownership', () => {
     validations = 0;
     expect(
       runtime.apply(
-        { changes: [{ kind: 'order', at: ['rows'], before: ids, after: [...ids].reverse() }] },
+        {
+          changes: [
+            {
+              kind: 'members',
+              at: ['rows'],
+              members: [],
+              order: { before: ids, after: [...ids].reverse() },
+            },
+          ],
+        },
         { expectedRevision: runtime.revision() }
       ).status
     ).toBe('committed');
@@ -84,8 +93,8 @@ describe('mutation scaling and ownership', () => {
             kind: 'members',
             at: ['rows'],
             members: [{ key: 'b', kind: 'updated', before: 999, after: { n: 3 } }],
+            order: { before: [], after: ['b', 'a'] },
           },
-          { kind: 'order', at: ['rows'], before: [], after: ['b', 'a'] },
         ],
       },
       { expectedRevision: 0 }

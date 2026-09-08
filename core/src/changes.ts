@@ -10,12 +10,10 @@ export type Change =
       readonly kind: 'members';
       readonly at: DocumentAddress;
       readonly members: readonly MemberChange[];
-    }
-  | {
-      readonly kind: 'order';
-      readonly at: DocumentAddress;
-      readonly before: readonly string[];
-      readonly after: readonly string[];
+      readonly order?: {
+        readonly before: readonly string[];
+        readonly after: readonly string[];
+      };
     }
   | {
       readonly kind: 'tree';

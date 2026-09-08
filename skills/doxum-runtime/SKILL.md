@@ -19,7 +19,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   and rethrow unchanged. Callback returns carry business values and notices.
 - Commits contain final reversible ChangeSets. History and impact share those facts.
 - ChangeSets group member transitions by container, with explicit added/removed/updated
-  kinds and a separate root reset. Grouping preserves field-level impact.
+  kinds, optional before/after order in the same group, and a separate root reset.
+  Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
 - Paths belong in subscription, impact and collection source callbacks.
 - Projection dependencies are explicit; React selectors track actual reads.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.

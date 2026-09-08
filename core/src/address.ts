@@ -106,7 +106,7 @@ export const resolveAddress = (
 };
 
 export const nodeAt = (
-  schema: ObjectNode,
+  schema: DocumentNode,
   address: DocumentAddress,
   document?: unknown
 ): DocumentNode | undefined => {
@@ -201,6 +201,7 @@ export type ResolvedContainer = {
   readonly at: DocumentAddress;
   readonly node: DocumentNode;
   readonly parent: Record<string, unknown> | unknown[];
+  readonly value: unknown;
   readonly layout: MemberLayout;
 };
 export const resolveContainer = (
@@ -229,7 +230,7 @@ export const resolveContainer = (
     if (!fixed) return undefined;
     layout = fixed;
   }
-  return { owner, generation, at, node, parent, layout };
+  return { owner, generation, at, node, parent, value, layout };
 };
 export const memberKey = (container: ResolvedContainer, key: string): string | number =>
   container.node.kind === 'list'
@@ -243,25 +244,56 @@ type ResolutionPrefix = {
 };
 
 /** One recent path per transaction; structural writes invalidate all retained locations. */
-export const createAddressResolver = (schema: ObjectNode, root: unknown) => {
+export const createAddressResolver = (schema: DocumentNode, root: unknown) => {
   const prefix: ResolutionPrefix[] = [];
   return {
-    resolve: (address: DocumentAddress) => resolveWithPrefix(schema, root, address, prefix),
+    container: (owner: object, generation: number, at: DocumentAddress) => {
+      if (!at.length) return resolveContainer(owner, generation, at, schema, root);
+      const location = resolveWithPrefix(schema, root, at, prefix);
+      if (!location || !Object.hasOwn(location.parent, location.key)) return undefined;
+      return resolveContainer(
+        owner,
+        generation,
+        at,
+        location.node,
+        (location.parent as Record<string | number, unknown>)[location.key]
+      );
+    },
+    read: (address: DocumentAddress) => resolveValue(schema, root, address, prefix),
     invalidate: () => {
       prefix.length = 0;
     },
   };
 };
 
+/** A subtree root is a value, not a fabricated member of an ObjectNode. */
+export const resolveValue = (
+  schema: DocumentNode,
+  root: unknown,
+  address: DocumentAddress,
+  prefix?: ResolutionPrefix[]
+): { node: DocumentNode; value: unknown } | undefined => {
+  if (!address.length) return { node: schema, value: root };
+  const location = resolveWithPrefix(schema, root, address, prefix);
+  return (
+    location && {
+      node: location.node,
+      value: Object.hasOwn(location.parent, location.key)
+        ? (location.parent as Record<string | number, unknown>)[location.key]
+        : undefined,
+    }
+  );
+};
+
 /** Resolves schema and document location in one address traversal. */
 export const resolveLocated = (
-  schema: ObjectNode,
+  schema: DocumentNode,
   root: unknown,
   address: DocumentAddress
 ): ResolvedAddress | undefined => resolveWithPrefix(schema, root, address);
 
 const resolveWithPrefix = (
-  schema: ObjectNode,
+  schema: DocumentNode,
   root: unknown,
   address: DocumentAddress,
   prefix?: ResolutionPrefix[]

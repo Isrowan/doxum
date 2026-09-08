@@ -53,10 +53,10 @@ export const createImpact = <S extends ObjectNode>(
       values = new AddressIndex();
       orders = new AddressIndex();
       for (const change of changes.changes) {
-        if (change.kind === 'members')
+        if (change.kind === 'members') {
           for (const member of change.members) values.add(change.at, true, member.key);
-        else if (change.kind !== 'reset')
-          (change.kind === 'order' ? orders : values).add(change.at, true);
+          if (change.order) orders.add(change.at, true);
+        } else if (change.kind === 'tree') values.add(change.at, true);
       }
     }
     return values;
@@ -96,6 +96,16 @@ export const createImpact = <S extends ObjectNode>(
             }
           } else if (contains(at, change.at)) {
             if (change.at.length === at.length) {
+              if (change.order) {
+                const positions = new Map(change.order.after.map((id, i) => [id, i]));
+                let previous = -1;
+                for (const id of change.order.before) {
+                  const position = positions.get(id);
+                  if (position === undefined) continue;
+                  if (position < previous) orderChanged = true;
+                  previous = position;
+                }
+              }
               for (const member of change.members) {
                 if (member.kind === 'added') added.add(member.key);
                 else if (member.kind === 'removed') removed.add(member.key);
@@ -111,19 +121,7 @@ export const createImpact = <S extends ObjectNode>(
           return result;
         }
         if (!contains(at, change.at)) continue;
-        if (change.at.length === at.length) {
-          if (change.kind === 'order') {
-            const positions = new Map(change.after.map((id, i) => [id, i]));
-            let previous = -1;
-            for (const id of change.before) {
-              const position = positions.get(id);
-              if (position === undefined) continue;
-              if (position < previous) orderChanged = true;
-              previous = position;
-            }
-          }
-          continue;
-        }
+        if (change.at.length === at.length) continue;
         const id = change.at[at.length];
         updated.add(id);
       }

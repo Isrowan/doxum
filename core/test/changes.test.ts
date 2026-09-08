@@ -30,7 +30,16 @@ describe('ChangeSet boundary', () => {
           },
         ],
       },
-      { changes: [{ kind: 'order', at: ['rows'], before: [], after: new Array(1) }] },
+      {
+        changes: [
+          {
+            kind: 'members',
+            at: ['rows'],
+            members: [],
+            order: { before: [], after: new Array(1) },
+          },
+        ],
+      },
     ]) {
       const result = runtime.apply(changes, { expectedRevision: 0 });
       expect(result).toMatchObject({ status: 'rejected', issues: [{ code: 'invalid-changes' }] });
@@ -105,7 +114,11 @@ describe('ChangeSet boundary', () => {
     },
     { changes: [set(['n'], 0, 1), set(['n'], 0, 2)] },
     { changes: [set(['rows'], { a: { n: 1 } }, {}), set(['rows', 'a', 'n'], 1, 2)] },
-    { changes: [{ kind: 'order', at: ['rows'], before: [], after: ['a', 'a'] }] },
+    {
+      changes: [
+        { kind: 'members', at: ['rows'], members: [], order: { before: [], after: ['a', 'a'] } },
+      ],
+    },
     {
       changes: [
         {
@@ -162,11 +175,11 @@ describe('ChangeSet boundary', () => {
     const runtime = createDocument({ schema, initial });
     const changes: ChangeSet = {
       changes: [
-        { kind: 'order', at: ['rows'], before: ['a'], after: ['b', 'a'] },
         {
           kind: 'members',
           at: ['rows'],
           members: [{ key: 'b', kind: 'added', after: { n: 2 } }],
+          order: { before: ['a'], after: ['b', 'a'] },
         },
       ],
     };
@@ -176,7 +189,7 @@ describe('ChangeSet boundary', () => {
     expect(runtime.snapshot()).toEqual(initial);
     expect(
       runtime.apply(
-        { changes: [{ ...changes.changes[0], before: ['a'], after: ['missing'] }] },
+        { changes: [{ ...changes.changes[0], order: { before: ['a'], after: ['missing'] } }] },
         { expectedRevision: runtime.revision() }
       ).status
     ).toBe('rejected');

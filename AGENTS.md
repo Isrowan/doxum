@@ -38,8 +38,12 @@ when a change touches addressing, mutation, impact, notifications, or views.
   rollback and final net changes grouped by owning container; do not keep per-write
   forward/inverse logs or a flat ChangeSet intermediate representation.
   Members publish added/removed/updated transitions; root reset is explicit.
+  An ordered container publishes members and optional before/after order in one
+  group. Apply completes each group in one pass; do not restore global order passes.
   Fixed members use schema slots; coverage indexes store owning groups, not scalar leaves.
   Reuse validated ChangeSet publications by identity under the readonly ownership contract.
+  `mutation/state.ts` shares validated member/order installation between session
+  and recorder restoration. Subtree reconstruction uses its real schema node.
 - Public `apply` requires a matching `expectedRevision`. Record actual local
   before values rather than trusting incoming reverse data. Local root resets
   are reversible; remote commits invalidate local history.

@@ -70,7 +70,10 @@ React useDocumentSelector tracks actual reads and changes dependencies when bran
 ## Changes And Consumers
 
 Commits contain revision/source/changes/impact. ChangeSet groups members by owning
-container, with direct added/removed/updated transitions. Order and touched tree
+container, with direct added/removed/updated transitions and optional before/after
+order in the same group. Order-only groups have empty members; standalone order
+changes and duplicate groups are invalid. Each group is applied completely before
+the next. Touched tree
 nodes retain structural semantics; reset is an explicit whole-document transition.
 Root member groups remain incremental. Net-zero changes do not publish.
 apply(changes, { expectedRevision }) rejects a missing or mismatched local baseline.
@@ -89,7 +92,7 @@ inside a batch see the last publication; no cross-document rollback is provided.
 doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;
 followers replay contiguous durable sequence. Writes become visible before async
 persistence; flush waits for durability. External replace and external remote-marked
-apply are forbidden while attached. Version 4 / format 2 rejects old storage without
+apply are forbidden while attached. Version 5 / format 3 rejects old storage without
 deleting or migrating it. The adapter accepts JSON values only. Change limits count
 logical members and tree nodes, not just outer groups.
 Limits govern new local commits only; existing durable commits remain readable

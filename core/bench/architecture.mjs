@@ -33,6 +33,8 @@ const scenarios = [
   ['table-apply-one', 100000, 1, 0],
   ['list-values', 2000, 2000, 0],
   ['mixed-order', 10000, 10000, 0],
+  ['table-bulk-members', 10000, 1000, 0],
+  ['table-members-apply', 10000, 1000, 0],
 ].filter(
   ([name]) =>
     !process.env.DOXUM_BENCH_FILTER || process.env.DOXUM_BENCH_FILTER.split(',').includes(name)
@@ -72,6 +74,51 @@ if (process.argv.includes('--isolate')) {
 }
 
 function setup(name, count, changed, listeners) {
+  if (name === 'table-bulk-members' || name === 'table-members-apply') {
+    const ids = Array.from({ length: count }, (_, i) => String(i));
+    const schema = object({ rows: table(object({ n: field() })) });
+    const initial = { rows: { ids, byId: Object.fromEntries(ids.map(id => [id, { n: 0 }])) } };
+    const original = ids.slice(0, changed).map(id => ({ id, value: { n: 0 } }));
+    const alternate = original.map(({ id }) => ({ id: `next:${id}`, value: { n: 1 } }));
+    const originalIds = original.map(e => e.id),
+      alternateIds = alternate.map(e => e.id);
+    const edit = (draft, next) => {
+      draft.rows.remove(next ? originalIds : alternateIds);
+      draft.rows.create(next ? alternate : original);
+    };
+    const runtime = createDocument({ schema, initial, history: false });
+    let changes;
+    if (name === 'table-members-apply') {
+      const producer = createDocument({ schema, initial, history: false });
+      changes = [true, false].map(next => {
+        const result = producer.update(d => edit(d, next));
+        assert.equal(result.status, 'committed');
+        return result.commit.changes;
+      });
+      producer.dispose();
+    }
+    let frame = 0;
+    return {
+      tick: () => {
+        const index = frame++ % 2;
+        return changes
+          ? runtime.apply(changes[index], { expectedRevision: runtime.revision() })
+          : runtime.update(d => edit(d, index === 0));
+      },
+      verify: () => {
+        assert.equal(runtime.revision(), warmup + measured);
+        const rows = runtime.snapshot().rows;
+        const expected = ids.slice(changed).concat(frame % 2 ? alternateIds : originalIds);
+        assert.deepEqual(rows.ids, expected);
+        assert.equal(Object.keys(rows.byId).length, count);
+        assert.equal(
+          Object.values(rows.byId).reduce((sum, row) => sum + row.n, 0),
+          frame % 2 ? changed : 0
+        );
+      },
+      dispose: () => runtime.dispose(),
+    };
+  }
   if (name === 'table-apply-one' || name === 'list-values') {
     const ids = Array.from({ length: count }, (_, i) => String(i));
     const runtime =

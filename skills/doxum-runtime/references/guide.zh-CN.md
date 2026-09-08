@@ -63,7 +63,9 @@ React useDocumentSelector 追踪实际读取，并在选择分支改变时更新
 
 commit 包含 revision/source/changes/impact。ChangeSet 按所属容器分组，成员以
 added/removed/updated 携带直接 before/after，不使用 Presence 包装。
-order 与 tree 保留结构语义，reset 显式表达整体根过渡；根成员分组仍是增量变化。
+顺序变化放在同一 members 分组的可选 order.before/after 中；纯排序的 members 为空。
+不接受独立 order 记录或同地址重复分组，apply 逐组完成成员与顺序安装。
+tree 保留拓扑语义，reset 显式表达整体根过渡；根成员分组仍是增量变化。
 净零事务不发布。
 apply(changes, { expectedRevision }) 拒绝缺失或不匹配的本地基线；来包 before
 不作为本地 undo 真值，记录真实旧状态。history 重放完整 ChangeSet，分组原子旅行。
@@ -79,7 +81,7 @@ batch 推迟投影结算与通知，但不推迟文档提交和文档通知；�
 
 doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入，
 follower 连续重放 durable seq。先可见后异步落盘，flush 等待持久化。
-附着期间禁止外部 replace 和外部标记 remote 的 apply。版本 4 / 格式 2 拒绝旧存储，
+附着期间禁止外部 replace 和外部标记 remote 的 apply。版本 5 / 格式 3 拒绝旧存储，
 保留数据且不迁移。适配器仅接收 JSON 值，变化数量限制统计逻辑成员和树节点，不能按外层分组数绕过。
 限额仅约束新产生的本地提交；减小当前限额不影响既有持久化提交的读取。
 整个已发布 ChangeSet 都必须只读，其身份可复用结构校验结果，但不跳过本地 revision、schema 和真实 before 检查。

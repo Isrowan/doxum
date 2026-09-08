@@ -16,7 +16,29 @@ const compareChanges = (a: Change, b: Change): number => {
 
 /** Engine-produced changes and decoded inputs share one immutable publication boundary. */
 export const sealChanges = (changes: Change[]): ChangeSet => {
-  const result = { changes: changes.sort(compareChanges) };
+  changes.sort(compareChanges);
+  // Merge adjacent member/order contributions into one public container record.
+  let length = 0;
+  for (const change of changes) {
+    const previous = changes[length - 1];
+    if (
+      previous?.kind === 'members' &&
+      change.kind === 'members' &&
+      (previous.order || change.order) &&
+      compareChanges(previous, change) === 0
+    ) {
+      if ((previous.members.length && change.members.length) || (previous.order && change.order))
+        throw new Error('Duplicate container publication.');
+      changes[length - 1] = {
+        kind: 'members',
+        at: previous.at,
+        members: previous.members.length ? previous.members : change.members,
+        order: previous.order ?? change.order,
+      };
+    } else changes[length++] = change;
+  }
+  changes.length = length;
+  const result = { changes };
   validated.add(result);
   return result;
 };
@@ -76,9 +98,9 @@ export const decodeChanges = (input: unknown): ChangeSet => {
     const at = entry.at;
     if (
       entry.kind === 'members' &&
-      keys(entry, ['kind', 'at', 'members']) &&
+      keys(entry, ['kind', 'at', 'members', 'order']) &&
       Array.isArray(entry.members) &&
-      entry.members.length
+      (entry.members.length || Object.hasOwn(entry, 'order'))
     ) {
       const seen = new Set<string>();
       const members: MemberChange[] = [];
@@ -88,14 +110,21 @@ export const decodeChanges = (input: unknown): ChangeSet => {
         seen.add(member.key);
         members.push({ ...member, key: member.key });
       }
-      result.push({ kind: 'members', at, members: members.sort((a, b) => lexical(a.key, b.key)) });
-    } else if (
-      entry.kind === 'order' &&
-      keys(entry, ['kind', 'at', 'before', 'after']) &&
-      order(entry.before) &&
-      order(entry.after)
-    ) {
-      result.push({ kind: 'order', at, before: entry.before, after: entry.after });
+      const change: Extract<Change, { kind: 'members' }> = {
+        kind: 'members',
+        at,
+        members: members.sort((a, b) => lexical(a.key, b.key)),
+      };
+      if (Object.hasOwn(entry, 'order')) {
+        if (
+          !isPlainObject(entry.order) ||
+          !keys(entry.order, ['before', 'after']) ||
+          !order(entry.order.before) ||
+          !order(entry.order.after)
+        )
+          return fail(at, 'invalid-changes', 'Malformed container order.');
+        result.push({ ...change, order: { before: entry.order.before, after: entry.order.after } });
+      } else result.push(change);
     } else if (
       entry.kind === 'tree' &&
       keys(entry, ['kind', 'at', 'before', 'after', 'nodes']) &&
@@ -135,6 +164,11 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       if (groups.exact(change.at)?.size)
         return fail(change.at, 'invalid-changes', 'Duplicate member group.');
       groups.add(change.at, true);
+      if (change.order) {
+        if (replacements.hasAncestor(change.at))
+          return fail(change.at, 'invalid-changes', 'Overlapping container order.');
+        orders.add(change.at, true);
+      }
       for (const member of change.members) {
         const at = change.at.concat(member.key);
         if (replacements.overlaps(at) || orders.hasDescendant(at))
@@ -145,10 +179,6 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       if (replacements.overlaps(change.at) || orders.hasDescendant(change.at))
         return fail(change.at, 'invalid-changes', 'Overlapping tree transitions.');
       replacements.add(change.at, true);
-    } else {
-      if (orders.exact(change.at)?.size || replacements.hasAncestor(change.at))
-        return fail(change.at, 'invalid-changes', 'Duplicate or overlapping order.');
-      orders.add(change.at, true);
     }
   }
   const decoded = { changes: sorted };
@@ -161,7 +191,7 @@ export const changeCount = (changes: ChangeSet): number => {
   for (const change of changes.changes)
     count +=
       change.kind === 'members'
-        ? change.members.length
+        ? change.members.length + (change.order ? 1 : 0)
         : change.kind === 'tree'
           ? 1 + change.nodes.length
           : 1;

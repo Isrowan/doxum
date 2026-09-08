@@ -286,29 +286,34 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     child.generation = target.generation;
     return access(child);
   };
+  const collectionValue = (target: Target, node: DocumentNode) => {
+    const current = resolve(target);
+    if (current.node !== node || current.value === undefined)
+      throw new TypeError('The collection method belongs to a replaced schema branch.');
+    return current.value;
+  };
+  const writableCollection = (target: Target, node: DocumentNode): MutationSession => {
+    const session = mutable();
+    collectionValue(target, node);
+    return session;
+  };
   // Collection closures must not allocate a lexical environment for every field read.
   const collectionMethod = (
     target: Target,
     property: string,
     node: Extract<DocumentNode, { kind: 'table' | 'list' | 'tree' }>
   ): unknown => {
+    const at = addressOf(target);
     if (node.kind === 'table' || node.kind === 'list') {
-      const at = addressOf(target);
-      const currentValue = () => {
-        const current = resolve(target);
-        if (current.node !== node || current.value === undefined)
-          throw new TypeError('The collection method belongs to a replaced schema branch.');
-        return current.value;
-      };
       const ids = () => {
-        const current = currentValue();
+        const current = collectionValue(target, node);
         collect(context, at, 'collection');
         return node.kind === 'table'
           ? [...(current as { ids: string[] }).ids]
           : (current as unknown[]).map(node.keyOf);
       };
       const has = (id: string) => {
-        const current = currentValue();
+        const current = collectionValue(target, node);
         collect(context, at, 'collection', id);
         return node.kind === 'table'
           ? Object.hasOwn((current as { byId: object }).byId, id)
@@ -318,8 +323,10 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       if (property === 'has') return has;
       if (property === 'get')
         return (id: string) => {
-          if (!has(id)) return undefined;
-          const location = resolveChild(node, currentValue(), id)!;
+          const current = collectionValue(target, node);
+          collect(context, at, 'collection', id);
+          const location = resolveChild(node, current, id);
+          if (!location || !Object.hasOwn(location.parent, location.key)) return undefined;
           return childAccess(
             target,
             id,
@@ -328,37 +335,40 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
           );
         };
       if (property === 'move')
-        return (id: string, position?: DocumentAnchor) => mutable().move(at, id, position);
+        return (id: string, position?: DocumentAnchor) =>
+          writableCollection(target, node).move(at, id, position);
       if (node.kind === 'table') {
         if (property === 'create')
           return (
             input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
             position?: DocumentAnchor
           ) =>
-            mutable().tableCreate(
+            writableCollection(target, node).tableCreate(
               at,
               Array.isArray(input) ? input : [input as { id: string; value: unknown }],
               position
             );
         if (property === 'remove')
           return (ids: string | readonly string[]) =>
-            mutable().tableRemove(at, typeof ids === 'string' ? [ids] : ids);
+            writableCollection(target, node).tableRemove(at, typeof ids === 'string' ? [ids] : ids);
       } else {
         if (property === 'insert')
           return (value: unknown, position?: DocumentAnchor) =>
-            mutable().listInsert(at, value, position);
-        if (property === 'remove') return (id: string) => mutable().listRemove(at, id);
+            writableCollection(target, node).listInsert(at, value, position);
+        if (property === 'remove')
+          return (id: string) => writableCollection(target, node).listRemove(at, id);
         if (property === 'set')
-          return (id: string, value: unknown) => mutable().listSet(at, id, value);
-        if (property === 'replace') return (value: unknown) => mutable().replace(at, value);
+          return (id: string, value: unknown) =>
+            writableCollection(target, node).listSet(at, id, value);
+        if (property === 'replace')
+          return (value: unknown) => writableCollection(target, node).replace(at, value);
       }
       return undefined;
     }
     if (node.kind === 'tree') {
-      const at = addressOf(target);
       const current = () => {
         collect(context, at);
-        return resolve(target).value as tree.MutableTree;
+        return collectionValue(target, node) as tree.MutableTree;
       };
       if (property === 'rootId') return () => current().rootId;
       if (property === 'get')
@@ -375,16 +385,17 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         };
       if (property === 'insert')
         return (id: string, value: unknown, position?: tree.TreePosition) =>
-          mutable().treeInsert(at, id, value, position);
+          writableCollection(target, node).treeInsert(at, id, value, position);
       if (property === 'set')
-        return (id: string, value: unknown) => mutable().treeSet(at, id, value);
+        return (id: string, value: unknown) =>
+          writableCollection(target, node).treeSet(at, id, value);
       if (property === 'remove')
-        return (id: string) =>
-          mutable().treeEdit(at, (value, capture) => tree.remove(value, id, capture, at));
+        return (id: string) => writableCollection(target, node).treeRemove(at, id);
       if (property === 'move')
         return (id: string, position?: tree.TreePosition) =>
-          mutable().treeEdit(at, (value, capture) => tree.move(value, id, position, capture, at));
-      if (property === 'replace') return (value: unknown) => mutable().replace(at, value);
+          writableCollection(target, node).treeMove(at, id, position);
+      if (property === 'replace')
+        return (value: unknown) => writableCollection(target, node).replace(at, value);
       return undefined;
     }
   };

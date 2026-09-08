@@ -248,7 +248,7 @@ describe('grouped mutation architecture', () => {
           at: [],
           members: [{ key: 'rows', kind: 'updated', before: {}, after: {} }],
         },
-        { kind: 'order', at: ['rows'], before: [], after: [] },
+        { kind: 'members', at: ['rows'], members: [], order: { before: [], after: [] } },
       ],
     },
     {
@@ -355,7 +355,14 @@ describe('exact subscription matching', () => {
                 },
               ]
             : kind === 1
-              ? [{ kind: 'order', at, before: ['a', 'b'], after: ['b', 'a'] }]
+              ? [
+                  {
+                    kind: 'members',
+                    at,
+                    members: [],
+                    order: { before: ['a', 'b'], after: ['b', 'a'] },
+                  },
+                ]
               : kind === 2
                 ? [{ kind: 'tree', at, before: null, after: 'r', nodes: [] }]
                 : [{ kind: 'reset', before: {}, after: {} }],

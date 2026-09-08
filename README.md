@@ -152,6 +152,10 @@ const changes = {
 
 Each container appears in at most one members group. Grouping preserves exact
 field impact; a group at `[]` is an incremental root-member change, not a reset.
+An ordered container's group may also contain `order: { before, after }` with its
+complete key sequences. Order-only groups use `members: []`; a standalone `order`
+change or a second group for the same container is rejected. Apply installs each
+group's members and order together before moving to the next group.
 
 `document.apply(changes, { expectedRevision })` accepts unknown input. The revision
 must match this runtime. The decoder rejects malformed and overlapping facts, then
@@ -218,7 +222,7 @@ runtime. One leader writes synchronously and persists final changes asynchronous
 followers apply the durable sequence in order. `flush()` waits for persistence.
 Durability errors do not roll back an already visible commit.
 
-The storage format is IndexedDB version 4 with format version 2 records. Earlier
+The storage format is IndexedDB version 5 with format version 3 records. Earlier
 databases are rejected without upgrading, deleting or converting their data.
 This JSON adapter rejects non-JSON atomic values. Network collaboration and
 collaborative undo remain separate concerns; see [collaboration design](COLLABORATION_DESIGN.md).

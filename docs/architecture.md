@@ -27,6 +27,12 @@ Resolved containers carry a session identity token, not a reference back to the
 MutationSession and its recorder. Existing atomic collection-member updates keep
 their generation; membership and structural changes invalidate locations.
 
+Collection methods resolve their current value once for reads and enter complete
+session operations for writes. A retained method remains valid across replacement
+under the same schema node. If the address now belongs to another schema branch,
+the old method throws; reading the method again obtains the current branch's method.
+All retained structural accesses and methods expire at callback completion.
+
 Fixed object and variant branch shapes are compiled once per schema shape into
 immutable member layouts. `FixedLayout` contains descriptors with mandatory slots;
 dynamic layouts contain a shared collection-entry descriptor. `ResolvedContainer`
@@ -73,6 +79,12 @@ draft assignment / explicit collection method / decoded ChangeSet
 
 `mutation/session.ts` coordinates writes. `anchor.ts` owns ordered-key semantics;
 `tree.ts` owns topology validation and insert/remove/move/set algorithms.
+Session owns complete table/list/tree operations; scope never composes tree capture
+callbacks. A bulk table operation resolves its container once and reuses its member
+layout. `ResolvedContainer` includes both the container value and its member storage
+(for a table, the latter is `byId`). `mutation/state.ts` owns installation of validated
+members and orders, shared by session and recorder restoration. It stores no second
+document and performs no validation or capture of its own.
 `mutation/issue.ts` creates engine issues. Application `TransactionRejected`
 is classified only at the transaction boundary. Ordinary exceptions are rethrown.
 
@@ -89,6 +101,8 @@ manually invalidates the index. Installing a same-key value preserves the index.
 `mutation/recorder.ts` keeps one first-touch fact per value slot, one initial order
 per changed sequence, and initial states only for touched tree nodes. Structural
 captures absorb descendant facts by reconstructing the initial touched subtree.
+Reconstruction uses the actual subtree schema, including map/list/tree roots; it
+does not disguise a subtree as a root object or create a second canonical state.
 Unrelated entities are not cloned or traversed. List slot identity uses stable
 keys rather than moving array indices.
 
@@ -101,6 +115,9 @@ structural member capture needs group coverage and absorption. An ancestor group
 is checked at the addressed key without scanning its other members. Absorption removes
 covered members and deletes empty groups; current object identity is never used
 as the authority for logical coverage across replacement.
+Fact registration and removal update the fact set, parent identity registry and
+coverage index through one recorder-owned lifecycle. The lazy group-index backfill
+remains explicit, so scalar writes do not pay for structural coverage indexing.
 Published before structures and order baselines transfer from
 the recorder; after structures are copied away from canonical state. Payloads retain
 their original references. Results are readonly by contract and are not frozen.
@@ -132,18 +149,35 @@ invocation or first-touch capture. `Infer`, Read/Draft and raw snapshots expose 
 
 ## Change Boundary
 
-`changes.ts` defines `members`, `order`, `tree` and `reset`. A member transition has
+`changes.ts` defines `members`, `tree` and `reset`. A member transition has
 a key and an `added`, `removed` or `updated` kind with direct before/after values.
 This distinguishes absence from present undefined without Presence objects. Tree
 nodes use the same transition kinds; a tree root is a string or null for an empty
 tree. A reset has complete before/after values and must be the only change.
 A members group's address denotes its container, including `[]` for root members;
-it does not denote replacement of that container. A single reversible ChangeSet
+it does not denote replacement of that container. Its optional `order` contains
+the complete before/after key sequences. A pure order change has `members: []`;
+an empty group without order is invalid. There is exactly one group per address,
+and there is no standalone `order` change. For example:
+
+```ts
+{
+  kind: 'members',
+  at: ['tasks'],
+  members: [{ key: 'b', kind: 'added', after: { title: 'B' } }],
+  order: { before: ['a'], after: ['b', 'a'] },
+}
+```
+
+A single reversible ChangeSet
 is stored on each commit. Member keys and tree node IDs are lexically sorted.
 `mutation/changes.ts` is the only unknown-input decoder; it checks envelope shape,
 duplicates and overlaps using the shared address index and establishes deterministic
 lexicographic address/kind order. No string-path parser or command envelope enters
 executors.
+Recorder publication merges member and order contributions at the same address
+while sealing sorted groups. Unknown input must already have complete groups;
+the decoder rejects split groups instead of silently merging them.
 
 The decoder also owns the identity of validated publications. Recorder output and
 normalized decoded ChangeSets are registered in a private WeakSet; JSON validation,
@@ -153,8 +187,11 @@ always decoded. Revision checks, current schema/value validation and actual-loca
 before capture still run on every apply. The entire published ChangeSet, including
 addresses, members, order arrays and payloads, is readonly by ownership contract.
 
-Application installs values first, tree units next/as encountered, then final
-orders. Table/list membership and tree structure must validate before publication.
+Application makes one pass over the groups. Each members group resolves its
+container, captures the local baseline, installs members, then validates and installs
+its final order. Tree units validate after installing their touched nodes. There
+is no ChangeSet-wide preparation pass, deferred order pass or touched-table registry.
+Table/list membership and tree structure must validate before publication.
 Conflicts are checked at logical member addresses, not group prefixes. Duplicate
 groups/keys and parent replacements overlapping descendants are rejected; an
 ancestor order can coexist with descendant member changes. Actual rollback facts are captured locally, independent of
@@ -227,7 +264,7 @@ There is no compatibility execution path. Reader/writer factories, operation
 envelopes, inverse logs, journal inverse parsing, prepare, dictionary protocols,
 root schema wrappers and public target constructors have been removed.
 The previous flat value/Presence ChangeSet and resolved-slot write protocol have
-also been removed. Local-sync uses IndexedDB version 4 and record format 2. Old
+also been removed. Local-sync uses IndexedDB version 5 and record format 3. Old
 databases are rejected without modification; there is no implicit migration.
 JSON change limits count individual members and `1 + nodes.length` for tree
 changes, with one unit each for order/reset, rather than only outer groups.

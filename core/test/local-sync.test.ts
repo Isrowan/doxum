@@ -121,18 +121,56 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
   throw new Error('Timed out waiting for local sync.');
 };
 describe('local sync', () => {
+  it('persists complete member/order groups for live followers and reopened documents', async () => {
+    const name = database();
+    const leaderRuntime = runtime(),
+      followerRuntime = runtime();
+    const leader = await attachLocalSync({
+      runtime: leaderRuntime,
+      database: name,
+      documentId: 'groups',
+    });
+    const follower = await attachLocalSync({
+      runtime: followerRuntime,
+      database: name,
+      documentId: 'groups',
+    });
+    const result = leaderRuntime.update(d => {
+      d.tasks.create({ id: 'b', value: { title: 'B', complete: false } }, { at: 'start' });
+      d.tasks.get('a')!.complete = true;
+    });
+    if (result.status !== 'committed') throw new Error('commit');
+    expect(result.commit.changes.changes[0]).toMatchObject({
+      kind: 'members',
+      at: ['tasks'],
+      members: [{ key: 'b', kind: 'added' }],
+      order: { before: ['a'], after: ['b', 'a'] },
+    });
+    await leader.flush();
+    await waitFor(() => followerRuntime.revision() === 1);
+    expect(followerRuntime.snapshot()).toEqual(leaderRuntime.snapshot());
+    await follower.dispose();
+    await leader.dispose();
+    const reopened = runtime();
+    const sync = await attachLocalSync({ runtime: reopened, database: name, documentId: 'groups' });
+    expect(reopened.snapshot()).toEqual(leaderRuntime.snapshot());
+    await sync.dispose();
+    reopened.dispose();
+    followerRuntime.dispose();
+    leaderRuntime.dispose();
+  });
   it('rejects an old record inside a current database without changing its payload', async () => {
     const name = database();
     const timeline = await openIndexedDbTimeline(name);
     const original = await timeline.initialize('record', 1, initial);
-    expect(original.formatVersion).toBe(2);
+    expect(original.formatVersion).toBe(3);
     timeline.close();
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name, 4);
+      const request = indexedDB.open(name, 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    const old = { ...original, formatVersion: 1 };
+    const old = { ...original, formatVersion: 2 };
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('documents', 'readwrite');
       tx.objectStore('documents').put(old);
@@ -153,7 +191,7 @@ describe('local sync', () => {
   it('rejects the previous storage format without upgrading or deleting its data', async () => {
     const name = database();
     const old = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name, 3);
+      const request = indexedDB.open(name, 4);
       request.onupgradeneeded = () => request.result.createObjectStore('legacy');
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -170,7 +208,7 @@ describe('local sync', () => {
       attachLocalSync({ runtime: documentRuntime, database: name, documentId: 'old' })
     ).rejects.toThrow('Unsupported Doxum storage format');
     const retained = await new Promise<IDBDatabase>((resolve, reject) => {
-      const r = indexedDB.open(name, 3);
+      const r = indexedDB.open(name, 4);
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error);
     });

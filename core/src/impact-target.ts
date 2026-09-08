@@ -65,10 +65,10 @@ export class SubscriptionIndex<T> {
       if (change.kind === 'reset') {
         values([]);
         members([]);
-      } else if (change.kind === 'order') orders(change.at);
-      else if (change.kind === 'members') {
+      } else if (change.kind === 'members') {
         values(change.at, change.members);
         members(change.at, change.members);
+        if (change.order) orders(change.at);
       } else {
         values(change.at);
         members(change.at);

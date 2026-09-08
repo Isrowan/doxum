@@ -7,8 +7,8 @@ import { json, jsonChanges, type JsonValue } from './json';
 import type { ChangeSet } from '../changes';
 import { isRecord } from '../value/ownership';
 
-const DATABASE_VERSION = 4;
-const FORMAT_VERSION = 2;
+const DATABASE_VERSION = 5;
+const FORMAT_VERSION = 3;
 const DOCUMENTS = 'documents';
 const COMMITS = 'commits';
 
