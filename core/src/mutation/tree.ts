@@ -1,4 +1,3 @@
-import type { DocumentAddress, DocumentNode, DocumentSchema } from '../schema';
 import type { DocumentOperation } from '../operations';
 import { cloneValue, isRecord, ownPayload, sameStructuralValue } from '../value/ownership';
 
@@ -377,50 +376,6 @@ export const validate = (value: unknown): value is MutableTree => {
   }
   return seen.size === ids.length;
 };
-
-const documentTreeError = (
-  node: DocumentNode,
-  value: unknown,
-  address: DocumentAddress
-): DocumentAddress | undefined => {
-  if ('optional' in node && node.optional && value === undefined) return undefined;
-  if (node.kind === 'tree') return validate(value) ? undefined : address;
-  if (node.kind === 'object') {
-    if (!isRecord(value)) return undefined;
-    for (const [key, child] of Object.entries(node.shape)) {
-      const error = documentTreeError(child, value[key], [...address, key]);
-      if (error) return error;
-    }
-    return undefined;
-  }
-  if (node.kind === 'variant') {
-    if (!isRecord(value) || typeof value[node.tag] !== 'string') return undefined;
-    const variant = node.variants[value[node.tag] as keyof typeof node.variants];
-    return variant ? documentTreeError(variant, value, address) : undefined;
-  }
-  if (node.kind === 'table') {
-    if (!isRecord(value) || !isRecord(value.byId)) return undefined;
-    for (const [id, entry] of Object.entries(value.byId)) {
-      const error = documentTreeError(node.value, entry, [...address, id]);
-      if (error) return error;
-    }
-    return undefined;
-  }
-  if (node.kind === 'map') {
-    if (!isRecord(value)) return undefined;
-    for (const [id, entry] of Object.entries(value)) {
-      const error = documentTreeError(node.value, entry, [...address, id]);
-      if (error) return error;
-    }
-  }
-  return undefined;
-};
-
-export const invalidDocument = (
-  schema: DocumentSchema,
-  value: unknown
-): DocumentAddress | undefined =>
-  documentTreeError({ kind: 'object', shape: schema.shape }, value, []);
 
 export const replace = (
   current: MutableTree,

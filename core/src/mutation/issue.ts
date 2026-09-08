@@ -3,6 +3,8 @@ import type { DocumentOperation } from '../operations';
 
 export type MutationIssueCode =
   | 'invalid-address'
+  | 'invalid-value'
+  | 'invalid-key'
   | 'invalid-operation'
   | 'unknown-operation'
   | 'required-field'

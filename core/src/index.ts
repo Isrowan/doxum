@@ -1,4 +1,7 @@
 export { field, optional, object, variant, table, map, dict, list, tree, schema } from './schema';
+export { parse, ParseError } from './schema-value';
+export type { Validator, ParseIssue } from './schema-value';
+export { snapshot } from './access/reader';
 export type {
   DocumentAddress,
   DocumentListConfig,

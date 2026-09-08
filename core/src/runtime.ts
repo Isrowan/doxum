@@ -7,9 +7,9 @@ import { documentWriter } from './access/writer';
 import { createMutationSession, mutateOperations, type MutationSession } from './mutation/session';
 import type { MutationBatch } from './mutation/contract';
 import * as issue from './mutation/issue';
-import * as tree from './mutation/tree';
 import { commandFootprint } from './mutation/footprint';
 import { cloneValue, deepEqual } from './value/ownership';
+import { checkValue, ParseError, snapshotValue } from './schema-value';
 import { profile } from './profile';
 import { DocumentDisposedError, DocumentReentrancyError } from './runtime/contract';
 import type {
@@ -60,11 +60,9 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
   readonly initial: Infer<TSchema>;
   readonly history?: { readonly capacity?: number } | false;
 }): DocumentRuntime<TSchema> => {
-  const initialTreeError = tree.invalidDocument(input.schema, input.initial);
-  if (initialTreeError)
-    throw new TypeError(
-      `Initial document contains an invalid tree at '${initialTreeError.join('.')}'.`
-    );
+  const rootNode = { kind: 'object', shape: input.schema.shape } as const;
+  const initialError = checkValue(rootNode, input.initial);
+  if (initialError) throw new ParseError(initialError);
   profile.clone.initialDocument();
   const state = {
     schema: input.schema,
@@ -95,10 +93,22 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
         () => state.document,
         () => active
       ),
-      write: documentWriter(input.schema, operation => {
-        if (!active) throw new Error('Document writer is no longer active.');
-        const rejected = session.apply(operation);
-        if (rejected) throw new RejectedUpdate([rejected]);
+      write: documentWriter(input.schema, {
+        set: (address, value) => {
+          if (!active) throw new Error('Document writer is no longer active.');
+          const rejected = session.set(address, value);
+          if (rejected) throw new RejectedUpdate([rejected]);
+        },
+        apply: operation => {
+          if (!active) throw new Error('Document writer is no longer active.');
+          const rejected = session.apply(operation);
+          if (rejected) throw new RejectedUpdate([rejected]);
+        },
+        update: (address, transform) => {
+          if (!active) throw new Error('Document writer is no longer active.');
+          const rejected = session.update(address, transform);
+          if (rejected) throw new RejectedUpdate([rejected]);
+        },
       }),
       reject: diagnostic => {
         throw new RejectedUpdate(
@@ -304,12 +314,22 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     replace: (document, options) => {
       const source = options?.source ?? 'system';
       assertWritable({ kind: 'replace', source });
-      const invalidTree = tree.invalidDocument(input.schema, document);
-      if (invalidTree)
+      let invalid: ReturnType<typeof checkValue>;
+      busy = true;
+      try {
+        invalid = checkValue(rootNode, document);
+      } finally {
+        busy = false;
+      }
+      if (invalid)
         return {
           status: 'rejected',
           issues: [
-            issue.at(invalidTree, 'invalid-tree', 'Document replacement contains an invalid tree.'),
+            issue.at(
+              invalid.address,
+              invalid.code === 'invalid-tree' ? 'invalid-tree' : 'invalid-value',
+              invalid.message
+            ),
           ],
           revision,
         };
@@ -326,7 +346,7 @@ export const createDocument = <TSchema extends DocumentSchema>(input: {
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();
-      return cloneValue(state.document, 'snapshot');
+      return snapshotValue(rootNode, state.document) as Infer<TSchema>;
     },
     subscribe: ((
       targetOrListener:

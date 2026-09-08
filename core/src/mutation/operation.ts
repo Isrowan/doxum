@@ -1,9 +1,11 @@
 import type { DocumentAddress } from '../schema';
-import type { DocumentAnchor, DocumentOperation } from '../operations';
+import type { DocumentAnchor, DocumentOperation, FieldSetOperation } from '../operations';
 import { profile } from '../profile';
 import { isRecord, isPlainObject, isStablePayload, snapshotPayload } from '../value/ownership';
 import type { MutationIssue } from './issue';
 import * as issue from './issue';
+import type { ResolvedAddress } from '../address';
+import { checkValue, checkScalar, checkKey, type ParseIssue } from '../schema-value';
 
 export type OperationDecode =
   | { readonly status: 'decoded'; readonly operation: DocumentOperation }
@@ -43,6 +45,46 @@ const decoded = (operation: DocumentOperation): OperationDecode => ({
   status: 'decoded',
   operation,
 });
+
+// Typed authoring already has separate address/value arguments; external envelopes still use decode.
+export const fieldSet = (at: DocumentAddress, value: unknown): FieldSetOperation => {
+  profile.mutation.normalized();
+  return Object.freeze({ type: 'field.set', at: ownAddress(at), value });
+};
+
+export const fieldClear = (
+  at: DocumentAddress
+): Extract<DocumentOperation, { type: 'field.clear' }> => {
+  profile.mutation.normalized();
+  return Object.freeze({ type: 'field.clear', at: ownAddress(at) });
+};
+
+export const validateField = (
+  at: DocumentAddress,
+  target: ResolvedAddress | undefined,
+  value: unknown,
+  clear: boolean
+): MutationIssue | undefined => {
+  const type = clear ? 'field.clear' : 'field.set';
+  if (!target || target.node.kind !== 'field')
+    return issue.at(at, 'invalid-address', 'Operation does not match a field location.', type);
+  if (clear && !target.node.optional)
+    return issue.at(at, 'required-field', 'Only optional fields can be cleared.', type);
+  let failure: ParseIssue | undefined;
+  for (let collection = target.collection; collection; collection = collection.parent) {
+    if (collection.node.key) failure = checkKey(collection.node.key, collection.id, at);
+    if (failure) break;
+  }
+  if (!failure && !clear) failure = checkValue(target.node, value, at);
+  return failure
+    ? issue.at(
+        failure.address,
+        failure.code === 'missing-validator' ? 'invalid-value' : failure.code,
+        failure.message,
+        type
+      )
+    : undefined;
+};
 const rejected = (code: MutationIssue['code'], message: string): OperationDecode => ({
   status: 'rejected',
   issue: issue.input(code, message),
@@ -138,6 +180,103 @@ export const decodeBatch = (input: unknown): OperationBatchDecode =>
         issue: issue.input('invalid-operation', 'Operation batch must be an array.'),
       };
 
+/** Validate only incoming payloads and keys against the already resolved schema target. */
+export const validate = (
+  operation: DocumentOperation,
+  target: ResolvedAddress | undefined
+): MutationIssue | undefined => {
+  if (operation.type === 'field.set' || operation.type === 'field.clear')
+    return validateField(
+      operation.at,
+      target,
+      operation.type === 'field.set' ? operation.value : undefined,
+      operation.type === 'field.clear'
+    );
+  if (!target) return undefined;
+  let failure: ParseIssue | undefined;
+  for (let collection = target.collection; collection; collection = collection.parent) {
+    if (collection.node.key) failure = checkKey(collection.node.key, collection.id, operation.at);
+    if (failure) break;
+  }
+  const node = target.node;
+  if (!failure) {
+    if (operation.type === 'variant.replace' && node.kind === 'variant')
+      failure =
+        operation.value === undefined
+          ? {
+              address: operation.at,
+              code: 'invalid-value',
+              message: 'Variant replacement requires a present branch.',
+            }
+          : checkValue(node, operation.value, operation.at);
+    else if (
+      (node.kind === 'table' || node.kind === 'map') &&
+      operation.type.startsWith('entity.')
+    ) {
+      if (operation.type === 'entity.create') {
+        for (const entry of operation.entries) {
+          failure =
+            checkKey(node.key, entry.id, operation.at) ??
+            (entry.value === undefined
+              ? {
+                  address: [...operation.at, entry.id],
+                  code: 'invalid-value',
+                  message: 'An entity value is required.',
+                }
+              : checkValue(node.value, entry.value, [...operation.at, entry.id]));
+          if (failure) break;
+        }
+      } else if (operation.type === 'entity.remove') {
+        for (const id of operation.ids) {
+          failure = checkKey(node.key, id, operation.at);
+          if (failure) break;
+        }
+      } else if (operation.type === 'entity.move')
+        failure = checkKey(node.key, operation.id, operation.at);
+      if (!failure && 'anchor' in operation && operation.anchor && !('at' in operation.anchor))
+        failure = checkKey(
+          node.key,
+          'before' in operation.anchor ? operation.anchor.before : operation.anchor.after,
+          operation.at
+        );
+    } else if (node.kind === 'dict') {
+      if (operation.type === 'dict.set' || operation.type === 'dict.delete')
+        failure = checkKey(node.key, operation.key, operation.at);
+      if (!failure && operation.type === 'dict.set')
+        failure = checkScalar(
+          node.validator,
+          operation.value,
+          [...operation.at, operation.key],
+          false
+        );
+      if (operation.type === 'dict.replace')
+        failure = checkValue(node, operation.value, operation.at);
+    } else if (node.kind === 'list') {
+      if (operation.type === 'list.insert')
+        failure = checkScalar(node.validator, operation.value, operation.at, false);
+      if (operation.type === 'list.replace')
+        failure = checkValue(node, operation.value, operation.at);
+    } else if (node.kind === 'tree') {
+      if (
+        (operation.type === 'tree.insert' &&
+          Object.prototype.hasOwnProperty.call(operation, 'value')) ||
+        operation.type === 'tree.set'
+      )
+        failure = checkScalar(node.validator, operation.value, operation.at, false);
+      if (operation.type === 'tree.replace')
+        failure = checkValue(node, operation.value, operation.at);
+    }
+  }
+  return failure
+    ? issue.at(
+        failure.address,
+        failure.code === 'missing-validator' ? 'invalid-value' : failure.code,
+        failure.message,
+        operation.type
+      )
+    : undefined;
+};
+
 const ownAddress = (value: DocumentAddress): DocumentAddress => {
   if (Object.isFrozen(value)) return value;
   profile.address.arrayCopied();
@@ -213,6 +352,11 @@ export const requiresPayloadCopy = (operation: DocumentOperation): boolean => {
 };
 
 export const inverse = (operation: DocumentOperation): DocumentOperation => {
+  if (
+    operation.type === 'field.clear' ||
+    (operation.type === 'field.set' && !structuralPayload(operation.value))
+  )
+    return Object.freeze(operation);
   const copy = { ...operation } as DocumentOperation & {
     anchor?: DocumentAnchor;
     keys?: readonly string[];

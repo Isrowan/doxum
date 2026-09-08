@@ -8,6 +8,7 @@ import type {
   ObserverError,
 } from './contract';
 import * as target from '../impact-target';
+import { AddressIndex } from '../address';
 
 export type ProjectionAttachment<TSchema extends DocumentSchema> = {
   capture(commit: DocumentCommit<TSchema>): void;
@@ -31,15 +32,14 @@ type FilteredEntry<TSchema extends DocumentSchema> = {
 export type RuntimeNotification<TSchema extends DocumentSchema> = {
   readonly root: Set<RootEntry<TSchema>>;
   readonly filtered: Set<FilteredEntry<TSchema>>;
-  readonly buckets: Map<BucketKey, Set<FilteredEntry<TSchema>>>;
+  readonly index: AddressIndex<FilteredEntry<TSchema>>;
+  readonly cleanups: Set<() => void>;
   readonly processors: ProcessorEntry<TSchema>[];
   readonly candidates: Set<FilteredEntry<TSchema>>;
   readonly rootSnapshot: RootEntry<TSchema>[];
   notifying: boolean;
 };
 
-const ROOT_BUCKET = Symbol('document-root');
-type BucketKey = string | typeof ROOT_BUCKET;
 const notifications = new WeakMap<object, RuntimeNotification<DocumentSchema>>();
 const readableOwners = new WeakMap<object, DocumentReadable<DocumentSchema>>();
 
@@ -53,15 +53,14 @@ export const documentReadableOwner = (
   readable: object
 ): DocumentReadable<DocumentSchema> | undefined => readableOwners.get(readable);
 
-const key = (value: ImpactTarget<unknown>): BucketKey => target.bucket(value) ?? ROOT_BUCKET;
-
 export const createNotification = <TSchema extends DocumentSchema>(
   runtime: DocumentReadable<TSchema>
 ): RuntimeNotification<TSchema> => {
   const notification: RuntimeNotification<TSchema> = {
     root: new Set(),
     filtered: new Set(),
-    buckets: new Map(),
+    index: new AddressIndex(),
+    cleanups: new Set(),
     processors: [],
     candidates: new Set(),
     rootSnapshot: [],
@@ -115,6 +114,10 @@ export const subscribeRoot = <TSchema extends DocumentSchema>(
   return () => {
     entry.active = false;
     if (!notification.notifying) notification.root.delete(entry);
+    else
+      notification.cleanups.add(() => {
+        notification.root.delete(entry);
+      });
   };
 };
 
@@ -129,22 +132,17 @@ export const subscribeTargets = <TSchema extends DocumentSchema>(
     active: true,
   };
   notification.filtered.add(entry);
-  const keys = new Set(targets.map(key));
-  keys.forEach(key => {
-    const bucket = notification.buckets.get(key) ?? new Set();
-    bucket.add(entry);
-    notification.buckets.set(key, bucket);
-  });
+  const addresses = targets.map(target.indexedAddress);
+  addresses.forEach(address => notification.index.add(address, entry));
+  const remove = () => {
+    notification.filtered.delete(entry);
+    addresses.forEach(address => notification.index.delete(address, entry));
+  };
   return () => {
     if (!entry.active) return;
     entry.active = false;
-    if (notification.notifying) return;
-    notification.filtered.delete(entry);
-    keys.forEach(key => {
-      const bucket = notification.buckets.get(key);
-      bucket?.delete(entry);
-      if (bucket?.size === 0) notification.buckets.delete(key);
-    });
+    if (notification.notifying) notification.cleanups.add(remove);
+    else remove();
   };
 };
 
@@ -197,11 +195,10 @@ export const notify = <TSchema extends DocumentSchema>(
     candidates.clear();
     if (commit.impact.kind === 'reset') {
       notification.filtered.forEach(entry => candidates.add(entry));
-    } else {
+    } else if (notification.filtered.size) {
+      const collect = notification.index.query(entry => candidates.add(entry));
       for (const operation of commit.operations) {
-        const key = operation.at[0] ?? ROOT_BUCKET;
-        notification.buckets.get(key)?.forEach(entry => candidates.add(entry));
-        notification.buckets.get(ROOT_BUCKET)?.forEach(entry => candidates.add(entry));
+        collect(operation.at);
       }
     }
     candidates.forEach(entry => {
@@ -217,18 +214,8 @@ export const notify = <TSchema extends DocumentSchema>(
     for (const entry of notification.processors)
       if (entry.active) notification.processors[writeIndex++] = entry;
     notification.processors.length = writeIndex;
-    notification.root.forEach(entry => {
-      if (!entry.active) notification.root.delete(entry);
-    });
-    notification.filtered.forEach(entry => {
-      if (!entry.active) notification.filtered.delete(entry);
-    });
-    notification.buckets.forEach((bucket, key) => {
-      bucket.forEach(entry => {
-        if (!entry.active) bucket.delete(entry);
-      });
-      if (bucket.size === 0) notification.buckets.delete(key);
-    });
+    notification.cleanups.forEach(cleanup => cleanup());
+    notification.cleanups.clear();
   }
   return Object.freeze(errors);
 };
@@ -239,7 +226,8 @@ export const disposeNotification = <TSchema extends DocumentSchema>(
   const attachments = notification.processors.slice();
   notification.root.clear();
   notification.filtered.clear();
-  notification.buckets.clear();
+  notification.index.clear();
+  notification.cleanups.clear();
   notification.processors.length = 0;
   notification.candidates.clear();
   notification.rootSnapshot.length = 0;

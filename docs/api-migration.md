@@ -1,5 +1,10 @@
 # Public API Consolidation
 
+The subsequent [value boundary and performance changes](value-boundaries.md)
+add subtree snapshots, synchronous schema parsing, domain collection keys and
+atomic field updaters. Initial/replacement structures and configured validators
+are now enforced at their runtime boundaries.
+
 This is a direct migration to the final API. It changes Doxum internals,
 examples, tests and package exports; application repositories are outside this
 change. Canonical writes still belong exclusively to createDocument, and

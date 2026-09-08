@@ -1,4 +1,5 @@
 import type { DocumentAddress, DocumentNode, DocumentSchema, ObjectShape } from './schema';
+import { schemaRoot } from './schema';
 import { profile } from './profile';
 
 /** The only resolved address representation used inside the runtime. */
@@ -49,30 +50,23 @@ const variantNode = (
   return node.variants[String(tag ?? Object.keys(node.variants)[0] ?? '')];
 };
 
-const schemaRoot = (schema: DocumentSchema): DocumentNode => ({
-  kind: 'object',
-  shape: schema.shape,
-});
-
-type Step = {
-  readonly node: DocumentNode | undefined;
-  readonly dynamic: boolean;
-};
-
-const step = (nodeInput: DocumentNode | undefined, value: unknown, segment: string): Step => {
+const step = (
+  nodeInput: DocumentNode | undefined,
+  value: unknown,
+  segment: string
+): DocumentNode | undefined => {
   let node = nodeInput;
-  if (!node) return { node: undefined, dynamic: false };
+  if (!node) return undefined;
   if (node.kind === 'variant') {
     node = variantNode(node, value);
   }
-  if (!node) return { node: undefined, dynamic: false };
-  if (node.kind === 'object') return { node: node.shape[segment], dynamic: false };
-  if (node.kind === 'table' || node.kind === 'map') return { node: node.value, dynamic: true };
+  if (!node) return undefined;
+  if (node.kind === 'object') return node.shape[segment];
+  if (node.kind === 'table' || node.kind === 'map') return node.value;
   // These nodes use operation-specific keys rather than address segments, but
   // accepting a dynamic step keeps address resolution total for user targets.
-  if (node.kind === 'dict' || node.kind === 'list' || node.kind === 'tree')
-    return { node, dynamic: true };
-  return { node: undefined, dynamic: false };
+  if (node.kind === 'dict' || node.kind === 'list' || node.kind === 'tree') return node;
+  return undefined;
 };
 
 const pathFor = (
@@ -88,18 +82,24 @@ const pathFor = (
     profile.address.schemaStep();
     profile.address.documentStep();
     const resolved = step(node, value, segment);
-    if (!resolved.node) return undefined;
-    const next = resolved.dynamic
-      ? (trie.dynamic ??= registryNode())
-      : (() => {
-          const existing = trie.static.get(segment);
-          if (existing) return existing;
-          const created = registryNode();
-          trie.static.set(segment, created);
-          return created;
-        })();
+    if (!resolved) return undefined;
+    const next =
+      node &&
+      (node.kind === 'table' ||
+        node.kind === 'map' ||
+        node.kind === 'dict' ||
+        node.kind === 'list' ||
+        node.kind === 'tree')
+        ? (trie.dynamic ??= registryNode())
+        : (() => {
+            const existing = trie.static.get(segment);
+            if (existing) return existing;
+            const created = registryNode();
+            trie.static.set(segment, created);
+            return created;
+          })();
     trie = next;
-    node = resolved.node;
+    node = resolved;
     value = readSegment(value, segment);
   }
   if (trie.path === undefined) trie.path = registry.nextPath++;
@@ -128,7 +128,7 @@ export const nodeAt = (
   let value = document;
   for (const segment of address) {
     const resolved = step(node, value, segment);
-    node = resolved.node;
+    node = resolved;
     value = readSegment(value, segment);
     if (!node) return undefined;
   }
@@ -164,6 +164,7 @@ type ResolvedCollection = {
   readonly address: DocumentAddress;
   readonly addressHash: number;
   readonly id: string;
+  readonly node: Extract<DocumentNode, { kind: 'table' | 'map' }>;
   readonly parent?: ResolvedCollection;
 };
 
@@ -173,51 +174,107 @@ export type ResolvedAddress = Located & {
   readonly collection?: ResolvedCollection;
 };
 
+type ResolutionPrefix = {
+  segment: string;
+  node: DocumentNode;
+  value: unknown;
+  hash: number;
+  collection: ResolvedCollection | undefined;
+};
+
+/** One recent path per transaction; structural writes invalidate all retained locations. */
+export const createAddressResolver = (schema: DocumentSchema, root: unknown) => {
+  const prefix: ResolutionPrefix[] = [];
+  return {
+    resolve: (address: DocumentAddress) => resolveWithPrefix(schema, root, address, prefix),
+    invalidate: () => {
+      prefix.length = 0;
+    },
+  };
+};
+
 /** Resolves schema and document location in one address traversal. */
 export const resolveLocated = (
   schema: DocumentSchema,
   root: unknown,
   address: DocumentAddress
+): ResolvedAddress | undefined => resolveWithPrefix(schema, root, address);
+
+const resolveWithPrefix = (
+  schema: DocumentSchema,
+  root: unknown,
+  address: DocumentAddress,
+  prefix?: ResolutionPrefix[]
 ): ResolvedAddress | undefined => {
   if (address.length === 0) return undefined;
   let node: DocumentNode | undefined = schemaRoot(schema);
   let current: unknown = root;
   let collection: ResolvedCollection | undefined;
   let addressHash = 2_166_136_261;
-  for (let index = 0; index < address.length - 1; index += 1) {
+  let start = 0;
+  if (prefix) {
+    while (
+      start < prefix.length &&
+      start < address.length - 1 &&
+      prefix[start].segment === address[start]
+    )
+      start++;
+    prefix.length = start;
+    if (start) {
+      const retained = prefix[start - 1];
+      node = retained.node;
+      current = retained.value;
+      addressHash = retained.hash;
+      collection = retained.collection;
+    }
+  }
+  let cacheable = true;
+  for (let index = start; index < address.length - 1; index += 1) {
     profile.address.schemaStep();
     profile.address.documentStep();
     const resolved = step(node, current, address[index]);
-    if (!resolved.node) return undefined;
+    if (!resolved) return undefined;
+    if (node?.kind !== 'object' && node?.kind !== 'table' && node?.kind !== 'map')
+      cacheable = false;
     if (node?.kind === 'table' || node?.kind === 'map')
       collection = {
         address: address.slice(0, index),
         addressHash,
         id: address[index],
+        node,
         ...(collection ? { parent: collection } : {}),
       };
     addressHash = appendAddressHash(addressHash, address[index]);
-    node = resolved.node;
+    node = resolved;
     current = readSegment(current, address[index]);
+    if (prefix && cacheable)
+      prefix.push({
+        segment: address[index],
+        node: resolved,
+        value: current,
+        hash: addressHash,
+        collection,
+      });
     if (!node) return undefined;
   }
   profile.address.schemaStep();
   profile.address.documentStep();
   const last = address[address.length - 1];
   const resolved = step(node, current, last);
-  if (!resolved.node || (!isRecord(current) && !Array.isArray(current))) return undefined;
+  if (!resolved || (!isRecord(current) && !Array.isArray(current))) return undefined;
   if (node?.kind === 'table' || node?.kind === 'map')
     collection = {
       address: address.slice(0, -1),
       addressHash,
       id: last,
+      node,
       ...(collection ? { parent: collection } : {}),
     };
   addressHash = appendAddressHash(addressHash, last);
   if (isRecord(current) && 'byId' in current && isRecord(current.byId) && last in current.byId)
     return {
       addressHash,
-      node: resolved.node,
+      node: resolved,
       parent: current.byId,
       key: last,
       value: current.byId[last],
@@ -225,7 +282,7 @@ export const resolveLocated = (
     };
   return {
     addressHash,
-    node: resolved.node,
+    node: resolved,
     parent: current,
     key: Array.isArray(current) && /^\d+$/.test(last) ? Number(last) : last,
     value: readSegment(current, last),
@@ -296,3 +353,116 @@ export const same = (a: AddressRef, b: AddressRef): boolean => {
 };
 
 export type { DocumentAddress } from './schema';
+
+type AddressIndexNode<T> = {
+  readonly children: Map<string, AddressIndexNode<T>>;
+  readonly values: Set<T>;
+};
+
+/** An index over canonical address segments, shared by impact and subscriptions. */
+export class AddressIndex<T> {
+  private readonly root: AddressIndexNode<T> = { children: new Map(), values: new Set() };
+
+  add(address: DocumentAddress, value: T): void {
+    let node = this.root;
+    for (const segment of address) {
+      let child = node.children.get(segment);
+      if (!child) {
+        child = { children: new Map(), values: new Set() };
+        node.children.set(segment, child);
+      }
+      node = child;
+    }
+    node.values.add(value);
+  }
+
+  delete(address: DocumentAddress, value: T): void {
+    const parents: AddressIndexNode<T>[] = [];
+    let node = this.root;
+    for (const segment of address) {
+      const child = node.children.get(segment);
+      if (!child) return;
+      parents.push(node);
+      node = child;
+    }
+    node.values.delete(value);
+    for (let i = address.length - 1; i >= 0 && !node.values.size && !node.children.size; i--) {
+      node = parents[i];
+      node.children.delete(address[i]);
+    }
+  }
+
+  exact(address: DocumentAddress): ReadonlySet<T> | undefined {
+    let node = this.root;
+    for (const segment of address) {
+      const child = node.children.get(segment);
+      if (!child) return undefined;
+      node = child;
+    }
+    return node.values;
+  }
+
+  hasAncestor(address: DocumentAddress, strict = false): boolean {
+    let node = this.root;
+    for (let i = 0; i < address.length; i++) {
+      if (node.values.size) return true;
+      const child = node.children.get(address[i]);
+      if (!child) return false;
+      node = child;
+    }
+    return !strict && node.values.size > 0;
+  }
+
+  overlaps(address: DocumentAddress): boolean {
+    let node = this.root;
+    for (const segment of address) {
+      if (node.values.size) return true;
+      const child = node.children.get(segment);
+      if (!child) return false;
+      node = child;
+    }
+    return node.values.size > 0 || node.children.size > 0;
+  }
+
+  hasDescendant(address: DocumentAddress): boolean {
+    let node = this.root;
+    for (const segment of address) {
+      const child = node.children.get(segment);
+      if (!child) return false;
+      node = child;
+    }
+    return node.values.size > 0 || node.children.size > 0;
+  }
+
+  query(visit: (value: T) => void): (address: DocumentAddress) => void {
+    const visited = new Set<AddressIndexNode<T>>();
+    const subtrees = new Set<AddressIndexNode<T>>();
+    const values = (node: AddressIndexNode<T>) => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      node.values.forEach(visit);
+    };
+    const descend = (current: AddressIndexNode<T>): void => {
+      if (subtrees.has(current)) return;
+      subtrees.add(current);
+      values(current);
+      current.children.forEach(descend);
+    };
+    return address => {
+      let node = this.root;
+      for (const segment of address) {
+        if (subtrees.has(node)) return;
+        values(node);
+        const child = node.children.get(segment);
+        if (!child) return;
+        node = child;
+      }
+      descend(node);
+    };
+  }
+
+  clear(): void {
+    this.root.values.clear();
+    this.root.children.clear();
+  }
+}

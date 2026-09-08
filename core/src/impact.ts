@@ -1,6 +1,6 @@
 import type { CollectionSelector, DocumentAddress, DocumentSchema, ImpactTarget } from './schema';
 import type { DocumentOperation } from './operations';
-import { contains, overlaps } from './address';
+import { AddressIndex, contains } from './address';
 import type { MutationCollectionChange } from './mutation/contract';
 import { profile } from './profile';
 import * as target from './impact-target';
@@ -38,103 +38,84 @@ const resetCollectionImpact: CollectionImpact<never> = Object.freeze({
 export const createImpact = <TSchema extends DocumentSchema>(input: {
   readonly schema: TSchema;
   readonly operations: readonly DocumentOperation[];
-  readonly paths?: readonly DocumentAddress[];
+  readonly paths: readonly DocumentAddress[];
   readonly collections?: readonly MutationCollectionChange[];
   readonly reset?: boolean;
 }): DocumentImpact<TSchema> => {
   const kind = input.reset ? 'reset' : 'incremental';
-  const paths = input.paths ?? input.operations.map(operation => operation.at);
-  let pathBuckets: Map<string | undefined, DocumentAddress[]> | undefined;
-  const somePath = (
-    address: DocumentAddress,
-    test: (changed: DocumentAddress) => boolean
-  ): boolean => {
-    if (address.length === 0 || paths.length <= 8) return paths.some(test);
-    if (!pathBuckets) {
-      pathBuckets = new Map();
-      for (const changed of paths) {
-        const first = changed[0];
-        const bucket = pathBuckets.get(first) ?? [];
-        bucket.push(changed);
-        pathBuckets.set(first, bucket);
+  let values: AddressIndex<true> | undefined;
+  let orders: AddressIndex<true> | undefined;
+  let collections: AddressIndex<MutationCollectionChange> | undefined;
+  const changes = input.collections ?? [];
+  const paths = input.paths;
+  const getCollections = () => {
+    if (collections) return collections;
+    const index = new AddressIndex<MutationCollectionChange>();
+    for (const change of changes) index.add(change.address, change);
+    return (collections = index);
+  };
+  const getValues = () => {
+    if (values) return values;
+    const index = new AddressIndex<true>();
+    const collectionIndex = getCollections();
+    for (const path of paths) {
+      const collection = collectionIndex.exact(path)?.values().next().value;
+      if (!collection) index.add(path, true);
+      else {
+        for (const id of collection.added) index.add([...path, id], true);
+        for (const id of collection.removed) index.add([...path, id], true);
+        for (const id of collection.updated) index.add([...path, id], true);
       }
     }
-    const root = pathBuckets.get(undefined);
-    if (root?.some(test)) return true;
-    return pathBuckets.get(address[0])?.some(test) ?? false;
+    return (values = index);
   };
-  const pathsAffect = (address: DocumentAddress): boolean =>
-    address.length === 0
-      ? paths.length > 0
-      : somePath(address, changed => overlaps(changed, address));
-  let collectionCache:
-    | {
-        readonly address: DocumentAddress;
-        readonly value: CollectionImpact<unknown>;
-      }[]
-    | undefined;
-  const findCollection = (address: DocumentAddress) =>
-    input.collections?.find(
-      entry =>
-        entry.address.length === address.length &&
-        entry.address.every((segment, index) => segment === address[index])
-    );
+  const getOrders = () => {
+    if (orders) return orders;
+    const index = new AddressIndex<true>();
+    for (const change of changes) if (change.orderChanged) index.add(change.address, true);
+    return (orders = index);
+  };
+  const collectionCache = new AddressIndex<CollectionImpact<string>>();
   return {
     kind,
     operations: input.operations,
     affects: value => {
       profile.impact.affects();
-      if (kind === 'reset') return true;
       if (!target.belongs(value, input.schema)) return false;
-      const address = target.address(value);
-      if (pathsAffect(address)) return true;
-      if (value.kind === 'collection') {
-        const collectionAddress = target.address(value);
-        const collection = findCollection(collectionAddress);
-        if (!collection) return false;
-        const id = target.id(value);
-        if (id !== undefined)
-          return (
-            collection.added.has(id) || collection.removed.has(id) || collection.updated.has(id)
-          );
-        return (
-          collection.added.size > 0 ||
-          collection.removed.size > 0 ||
-          collection.updated.size > 0 ||
-          collection.orderChanged
-        );
-      }
-      return false;
+      if (kind === 'reset') return true;
+      const valueIndex = getValues();
+      const address = target.indexedAddress(value);
+      return valueIndex.overlaps(address) || getOrders().hasDescendant(address);
     },
     collection: <TId extends string>(selector: CollectionSelector<TId>): CollectionImpact<TId> => {
       if (selector.schema !== input.schema)
         throw new Error('Collection selector belongs to another schema.');
       if (kind === 'reset') return resetCollectionImpact as CollectionImpact<TId>;
-      const cached = collectionCache?.find(
-        entry =>
-          entry.address.length === selector.address.length &&
-          entry.address.every((segment, index) => segment === selector.address[index])
-      )?.value;
+      const cached = collectionCache.exact(selector.address)?.values().next().value;
       if (cached) return cached as CollectionImpact<TId>;
-      const exact = findCollection(selector.address);
-      const subtreeReset = somePath(
-        selector.address,
-        changed => contains(changed, selector.address) && changed.length < selector.address.length
-      );
+      const collectionIndex = getCollections();
+      const exact = collectionIndex.exact(selector.address)?.values().next().value;
+      // Only ancestor changes can reset this collection. Descendant field paths
+      // do not require a value index just to read collection membership changes.
+      const subtreeReset = paths.some(path => {
+        if (path.length >= selector.address.length || !contains(path, selector.address))
+          return false;
+        const membership = collectionIndex.exact(path)?.values().next().value;
+        if (!membership) return true;
+        const id = selector.address[path.length];
+        return (
+          path.length + 1 < selector.address.length &&
+          (membership.added.has(id) || membership.removed.has(id) || membership.updated.has(id))
+        );
+      });
       if (subtreeReset) {
         const reset = { kind: 'reset' } as const;
-        (collectionCache ??= []).push({
-          address: selector.address,
-          value: reset,
-        });
+        collectionCache.add(selector.address, reset);
         return reset;
       }
       if (!exact) {
         const empty = emptyCollectionImpact as CollectionImpact<TId>;
-        (collectionCache ??= []).push({
-          address: selector.address,
-          value: empty as CollectionImpact<unknown>,
-        });
+        collectionCache.add(selector.address, empty as CollectionImpact<string>);
         return empty;
       }
       const incremental = {
@@ -144,10 +125,7 @@ export const createImpact = <TSchema extends DocumentSchema>(input: {
         updated: exact.updated as ReadonlySet<TId>,
         orderChanged: exact.orderChanged,
       };
-      (collectionCache ??= []).push({
-        address: selector.address,
-        value: incremental as CollectionImpact<unknown>,
-      });
+      collectionCache.add(selector.address, incremental as CollectionImpact<string>);
       return incremental;
     },
   };

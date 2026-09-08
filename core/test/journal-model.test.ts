@@ -444,18 +444,11 @@ describe('inverse-driven change journal model', () => {
         .status
     ).toBe('rejected');
 
-    const malformed = createDocument({
-      schema: modelSchema,
-      initial: { items: { ids: 'not-an-array', byId: {} } } as never,
-    });
-    const rejected = malformed.apply([
-      {
-        type: 'entity.create',
-        at: ['items'],
-        entries: [{ id: 'a', value: { value: 1 } }],
-      },
-    ]);
-    expect(rejected.status).toBe('rejected');
-    expect(malformed.revision()).toBe(0);
+    expect(() =>
+      createDocument({
+        schema: modelSchema,
+        initial: { items: { ids: 'not-an-array', byId: {} } } as never,
+      })
+    ).toThrow('Table ids');
   });
 });

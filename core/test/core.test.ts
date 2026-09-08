@@ -70,16 +70,16 @@ describe('mutable Doxum runtime', () => {
     expectTypeOf<ItemWriter['attrs']['clear']>().toEqualTypeOf<() => void>();
 
     type Reader = DocumentReader<typeof documentSchema>;
-    expectTypeOf<Reader['items']>().toEqualTypeOf<CollectionReader<string, typeof entry>>();
+    expectTypeOf<Reader['items']>().toMatchTypeOf<CollectionReader<string, typeof entry>>();
     expectTypeOf<Reader['items']['get']>().toEqualTypeOf<
       (id: string) => ReaderOfNode<typeof entry> | undefined
     >();
     type EntryReader = ReaderOfNode<typeof entry>;
-    expectTypeOf<EntryReader['title']>().toEqualTypeOf<FieldReader<string>>();
-    expectTypeOf<EntryReader['note']>().toEqualTypeOf<FieldReader<string | undefined>>();
-    expectTypeOf<EntryReader['outline']>().toEqualTypeOf<TreeReader<string>>();
-    expectTypeOf<EntryReader['tags']>().toEqualTypeOf<ListReader<string>>();
-    expectTypeOf<EntryReader['attrs']>().toEqualTypeOf<DictionaryReader<string, number>>();
+    expectTypeOf<EntryReader['title']>().toMatchTypeOf<FieldReader<string>>();
+    expectTypeOf<EntryReader['note']>().toMatchTypeOf<FieldReader<string | undefined>>();
+    expectTypeOf<EntryReader['outline']>().toMatchTypeOf<TreeReader<string>>();
+    expectTypeOf<EntryReader['tags']>().toMatchTypeOf<ListReader<string>>();
+    expectTypeOf<EntryReader['attrs']>().toMatchTypeOf<DictionaryReader<string, number>>();
   });
 
   it('infers selector and collection types from schema paths', () => {
@@ -509,7 +509,7 @@ describe('mutable Doxum runtime', () => {
           },
         },
       })
-    ).toThrow('invalid tree');
+    ).toThrow('Invalid tree');
   });
   it('initializes, clears, and undoes optional structured leaves', () => {
     const optionalSchema = schema({

@@ -70,6 +70,40 @@ creating another writable source of truth.
 
 ## Schema And Addressing
 
+Schema value validation is owned by `core/src/schema-value.ts`. Its traversal
+checks required members, variant tags, collection indices, list keys and scalar
+validators; tree graph invariants delegate to mutation/tree and ordered key
+interpretation delegates to mutation/anchor. Public parse requires validators
+for encountered opaque values. Typed runtime boundaries allow type-only scalar
+nodes but always check structural shape and configured validators. Mutation
+payload validation runs in mutation/operation against the resolved target before
+execution. Initial/replacement values use the same traversal. The former
+tree-only document traversal is removed.
+
+Validators are synchronous and value-preserving. They receive detached input;
+exceptions, validation issues, asynchronous results and transformations are
+rejected. The schema holds their types, not a second schema maintained by
+callers. Map/table key validators carry a string subtype through access,
+selectors, collection impacts, candidate keys and mapped projections.
+
+Each reader carries a private location and an inferred snapshot marker.
+snapshot(reader) validates the active scope, records the subtree dependency
+when tracking is enabled and immediately copies the selected value. No business
+field names are reserved. Snapshot output survives scope expiration and rollback;
+it does not promise stable references across calls. Document snapshot uses the
+same schema-aware copy protocol, including field copiers. Plain structures,
+Date, RegExp, Map, Set, ArrayBuffer and typed views are supported; opaque objects
+need an explicit field copier. Mutable payloads supplied through ordinary fields
+remain governed by the existing ownership contract.
+
+Object reader/writer accessors are compiled once per schema node and instantiate
+children lazily per scope. They do not retain canonical object locations across
+transactions. Field update resolves the current location once and executes its
+result through the common mutation executor. The callback receives detached
+input and cannot perform nested writes. Typed field setters construct their
+normalized envelope through mutation/operation; external apply envelopes still
+pass decode and normalize. Forward/inverse publication and rollback stay shared.
+
 A `DocumentSchema` has two roles:
 
 1. It derives the TypeScript document, reader, and writer shapes.
@@ -120,6 +154,16 @@ local invariants.
 
 ## Mutation Protocol
 
+Subscriptions use an address-segment index owned by the existing address module.
+The impact owner builds a lazy per-commit index over net changes. Collection
+membership paths expand to changed entity IDs; order changes are indexed
+separately and do not invalidate unrelated entity-specific targets. Ancestor
+replacement and document reset retain their broad invalidation semantics.
+Notification queries collect and deduplicate related subscriptions, and only
+pending cancellations need cleanup after delivery. Target interpretation remains
+in impact-target. Processor settlement, observer errors and explicit projection
+batch semantics are unchanged.
+
 `runtime.update` creates a short-lived reader and writer. Writers emit typed
 operations into one mutation session; they do not write canonical state
 directly. `runtime.prepare` runs the same typed mutation pipeline but always
@@ -143,6 +187,31 @@ The change journal compares the document state observed before and after each
 logical subject. It removes net-zero changes and emits a coalesced set of
 paths and collection changes. This makes an update that creates and removes
 the same entry report `unchanged` without publishing a commit.
+
+Typed field writes and decoded external field operations converge on the same
+session field entry. It validates keys and payloads before checking equality;
+unchanged typed writes allocate no operation, inverse, or journal subject.
+Only changed writes publish operations through mutation/operation and execute
+through the shared field executor. Updaters retain detached-input semantics.
+
+The address resolver retains only the most recent object/collection prefix in
+one transaction. Sibling fields reuse parent resolution; every changed
+non-field operation invalidates the prefix. Field values are always read afresh.
+No writer or canonical location is cached across transactions. Writer child
+accessors cache in indexed slots, and field methods bind only on first access.
+
+Pure field journals index first observations by container and key and compare
+those locations at finish. The first structural operation promotes existing
+subjects into the address tree; subsequent comparisons use current document
+addresses. Promotion discards the field lookup and preserves parent absorption
+and net-zero detection. The duplicate journal hash index is removed. Inverses
+use one reverse-order log, including reversed multi-operation groups, so undo,
+rollback, and prepare retain their original ordering without group arrays.
+
+Collection impact reads inspect ancestor changes without constructing a field
+index. Field overlap and order indexes are built only when queried. Impact
+always consumes journal paths rather than deriving another change set from the
+operation stream.
 
 Operations crossing a structural ownership boundary have separate guarantees:
 

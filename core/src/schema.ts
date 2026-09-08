@@ -1,3 +1,4 @@
+import type { Validator } from './schema-value';
 export type DocumentAddress = readonly string[];
 
 export type DocumentListConfig<TItem> = {
@@ -19,6 +20,8 @@ type BaseNode<K extends string> = {
 };
 export type FieldNode<T, Optional extends boolean = false> = BaseNode<'field'> & {
   readonly __value?: T;
+  readonly validator?: Validator<T>;
+  snapshot?(value: T): T;
 } & (Optional extends true ? { readonly optional: true } : { readonly optional?: false });
 /** A node with optional presence. The marker replaces, rather than intersects, a field marker. */
 export type OptionalNode<TNode extends DocumentNode> =
@@ -41,24 +44,34 @@ export type VariantNode<
   readonly tag: TTag;
   readonly variants: TVariants;
 };
-export type TableNode<TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
-  BaseNode<'table'> & {
-    readonly value: TValue;
-  };
-export type MapNode<TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
-  BaseNode<'map'> & {
-    readonly value: TValue;
-  };
+export type TableNode<
+  TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>,
+  TKey extends string = string,
+> = BaseNode<'table'> & {
+  readonly value: TValue;
+  readonly key?: Validator<TKey>;
+};
+export type MapNode<
+  TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>,
+  TKey extends string = string,
+> = BaseNode<'map'> & {
+  readonly value: TValue;
+  readonly key?: Validator<TKey>;
+};
 export type DictNode<TKey extends string, TValue> = BaseNode<'dict'> & {
   readonly __key?: TKey;
   readonly __value?: TValue;
+  readonly key?: Validator<TKey>;
+  readonly validator?: Validator<TValue>;
 };
 export type ListNode<TItem> = BaseNode<'list'> & {
   readonly __item?: TItem;
   keyOf(item: TItem): string;
+  readonly validator?: Validator<TItem>;
 };
 export type TreeNode<TValue> = BaseNode<'tree'> & {
   readonly __value?: TValue;
+  readonly validator?: Validator<TValue>;
 };
 
 export type DocumentNode =
@@ -94,13 +107,13 @@ type NodeValue<N> =
         ? {
             [K in keyof V & string]: SchemaObject<{ readonly [P in T]: K } & NodeValue<V[K]>>;
           }[keyof V & string]
-        : N extends TableNode<infer V>
+        : N extends TableNode<infer V, infer K>
           ? {
-              readonly ids: readonly string[];
-              readonly byId: Readonly<Record<string, NodeValue<V>>>;
+              readonly ids: readonly K[];
+              readonly byId: Readonly<Record<K, NodeValue<V>>>;
             }
-          : N extends MapNode<infer V>
-            ? Readonly<Record<string, NodeValue<V>>>
+          : N extends MapNode<infer V, infer K>
+            ? Readonly<Record<K, NodeValue<V>>>
             : N extends DictNode<infer K, infer T>
               ? Readonly<Partial<Record<K, T>>>
               : N extends ListNode<infer I>
@@ -149,6 +162,7 @@ export type ImpactTarget<T = unknown> =
   | CollectionSelector<string>;
 declare const pathValue: unique symbol;
 declare const collectionNode: unique symbol;
+declare const collectionKey: unique symbol;
 type PathMarker<TValue> = { readonly [pathValue]: TValue };
 
 type SchemaPathFor<S extends ObjectShape = ObjectShape, TValue = unknown> = {
@@ -191,9 +205,11 @@ type EntityPath<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantS
 export type CollectionPath<
   N extends EntitySchemaNode = EntitySchemaNode,
   TValue = unknown,
+  K extends string = string,
 > = PathMarker<TValue> & {
-  readonly item: (id: string) => EntityPath<N>;
+  item(id: K): EntityPath<N>;
   readonly [collectionNode]: N;
+  readonly [collectionKey]: K;
 };
 
 type PathValue<N extends DocumentNode> =
@@ -201,24 +217,38 @@ type PathValue<N extends DocumentNode> =
     ? SchemaPathFor<S, Infer<N>>
     : N extends VariantNode<infer TTag, infer V>
       ? VariantPath<TTag, V, Infer<N>>
-      : N extends TableNode<infer V> | MapNode<infer V>
-        ? CollectionPath<V, Infer<N>>
+      : N extends TableNode<infer V, infer K> | MapNode<infer V, infer K>
+        ? CollectionPath<V, Infer<N>, K>
         : PathMarker<Infer<N>>;
 type CollectionInfo<T> = T extends {
   readonly [collectionNode]: infer TNode extends EntitySchemaNode;
+  readonly [collectionKey]: infer K extends string;
 }
-  ? { readonly id: string; readonly node: TNode }
+  ? { readonly id: K; readonly node: TNode }
   : never;
-type CollectionId<T> =
+export type CollectionId<T> =
   CollectionInfo<T> extends { readonly id: infer TId extends string } ? TId : string;
 export type CollectionNode<T> =
   CollectionInfo<T> extends { readonly node: infer TNode extends EntitySchemaNode }
     ? TNode
     : EntitySchemaNode;
+export type CollectionValue<T> = PathValueResult<T>;
 type PathValueResult<T> = T extends PathMarker<infer TValue> ? TValue : unknown;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
-export const field = <T>(): FieldNode<T> => node({ kind: 'field' });
+const roots = new WeakMap<object, ObjectNode<ObjectShape>>();
+export const schemaRoot = (schema: DocumentSchema): ObjectNode<ObjectShape> => {
+  let root = roots.get(schema);
+  if (!root) {
+    root = object(schema.shape);
+    roots.set(schema, root);
+  }
+  return root;
+};
+export const field = <T>(
+  validator?: Validator<T>,
+  options?: { snapshot(value: T): T }
+): FieldNode<T> => node({ kind: 'field', ...(validator ? { validator } : {}), ...options });
 type OptionalLeaf =
   | FieldNode<unknown, boolean>
   | VariantNode<string, VariantShape>
@@ -238,17 +268,24 @@ export const variant = <T extends string, V extends VariantShape>(
   tag: T,
   variants: V
 ): VariantNode<T, V> => node({ kind: 'variant', tag, variants });
-export const table = <V extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>(
-  value: V
-): TableNode<V> => node({ kind: 'table', value });
-export const map = <V extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>(
-  value: V
-): MapNode<V> => node({ kind: 'map', value });
-export const dict = <TKey extends string = string, TValue = unknown>(): DictNode<TKey, TValue> =>
-  node({ kind: 'dict' });
-export const list = <TItem>(config: DocumentListConfig<TItem>): ListNode<TItem> =>
-  ({ kind: 'list', keyOf: config.keyOf }) as ListNode<TItem>;
-export const tree = <TValue = unknown>(): TreeNode<TValue> => node({ kind: 'tree' });
+export const table = <V extends EntitySchemaNode, K extends string = string>(
+  value: V,
+  options?: { readonly key: Validator<K> }
+): TableNode<V, K> => node({ kind: 'table', value, ...options });
+export const map = <V extends EntitySchemaNode, K extends string = string>(
+  value: V,
+  options?: { readonly key: Validator<K> }
+): MapNode<V, K> => node({ kind: 'map', value, ...options });
+export const dict = <TKey extends string = string, TValue = unknown>(options?: {
+  readonly key?: Validator<TKey>;
+  readonly value?: Validator<TValue>;
+}): DictNode<TKey, TValue> => node({ kind: 'dict', key: options?.key, validator: options?.value });
+export const list = <TItem>(
+  config: DocumentListConfig<TItem> & { readonly value?: Validator<TItem> }
+): ListNode<TItem> =>
+  ({ kind: 'list', keyOf: config.keyOf, validator: config.value }) as ListNode<TItem>;
+export const tree = <TValue = unknown>(validator?: Validator<TValue>): TreeNode<TValue> =>
+  node({ kind: 'tree', validator });
 
 const paths = new WeakMap<
   object,

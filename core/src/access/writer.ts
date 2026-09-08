@@ -1,4 +1,4 @@
-import { object } from '../schema';
+import { schemaRoot } from '../schema';
 import type {
   DictNode,
   DocumentAddress,
@@ -15,25 +15,27 @@ import type {
   VariantNode,
 } from '../schema';
 import type { DocumentAnchor, DocumentOperation } from '../operations';
+import type { Synchronous } from '../runtime/contract';
 
 export type FieldWriter<T, Optional extends boolean = false> = {
   readonly set: (value: T) => void;
+  readonly update: (transform: (value: T) => Synchronous<T>) => void;
 } & (Optional extends true ? { readonly clear: () => void } : {});
 export type DictionaryWriter<TKey extends string, TValue> = {
   readonly set: (key: TKey, value: TValue) => void;
   readonly delete: (key: TKey) => void;
   readonly replace: (value: Readonly<Partial<Record<TKey, TValue>>>) => void;
 };
-export type CollectionWriter<TId, TNode extends EntitySchemaNode> = {
+export type CollectionWriter<TId extends string, TNode extends EntitySchemaNode> = {
   readonly create: (
     entry:
       | { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }
       | readonly { readonly id: TId; readonly value: Exclude<Infer<TNode>, undefined> }[],
-    anchor?: DocumentAnchor
+    anchor?: DocumentAnchor<TId>
   ) => void;
   readonly item: (id: TId) => WriterOfNode<TNode>;
   readonly remove: (id: TId | readonly TId[]) => void;
-  readonly move: (id: TId, anchor?: DocumentAnchor) => void;
+  readonly move: (id: TId, anchor?: DocumentAnchor<TId>) => void;
 };
 export type MapWriter<TId, TNode extends EntitySchemaNode> = {
   readonly create: (
@@ -80,10 +82,10 @@ export type WriterOfNode<TNode extends DocumentNode> = TNode extends {
           TNode,
           { readonly replace: (value: Exclude<Infer<TNode>, undefined>) => void }
         >
-      : TNode extends TableNode<infer TValue>
-        ? CollectionWriter<string, TValue>
-        : TNode extends MapNode<infer TValue>
-          ? MapWriter<string, TValue>
+      : TNode extends TableNode<infer TValue, infer K>
+        ? CollectionWriter<K, TValue>
+        : TNode extends MapNode<infer TValue, infer K>
+          ? MapWriter<K, TValue>
           : TNode extends DictNode<infer TKey, infer TValue>
             ? OptionalClear<TNode, DictionaryWriter<TKey, TValue>>
             : TNode extends ListNode<infer TItem>
@@ -95,23 +97,56 @@ export type DocumentWriter<TSchema extends DocumentSchema> = WriterOfNode<
   ObjectNode<TSchema['shape']>
 >;
 
-export type OperationSink = (operation: DocumentOperation) => void;
+export type WriterSession = {
+  apply(operation: DocumentOperation): void;
+  set(address: DocumentAddress, value: unknown): void;
+  update(address: DocumentAddress, transform: (value: unknown) => unknown): void;
+};
 
-const schemaRoot = (schema: DocumentSchema): DocumentNode => object(schema.shape);
+const emit = (sink: WriterSession, operation: DocumentOperation): void => sink.apply(operation);
 
-const emit = (sink: OperationSink, operation: DocumentOperation): void => sink(operation);
+class FieldAccess {
+  private setter?: (value: unknown) => void;
+  private updater?: (transform: (value: unknown) => unknown) => void;
+  constructor(
+    readonly address: DocumentAddress,
+    readonly session: WriterSession
+  ) {}
+  get set() {
+    return (this.setter ??= (value: unknown) => this.session.set(this.address, value));
+  }
+  get update() {
+    return (this.updater ??= (transform: (value: unknown) => unknown) =>
+      this.session.update(this.address, transform));
+  }
+}
+class OptionalFieldAccess extends FieldAccess {
+  readonly clear = (): void => {
+    this.session.apply({ type: 'field.clear', at: this.address });
+  };
+}
+const writerAddress = Symbol('writer-address');
+const writerSession = Symbol('writer-session');
+const writerChildren = Symbol('writer-children');
+class ObjectAccess {
+  readonly [writerChildren]: unknown[] = [];
+  readonly [writerAddress]: DocumentAddress;
+  readonly [writerSession]: WriterSession;
+  constructor(address: DocumentAddress, session: WriterSession) {
+    this[writerAddress] = address;
+    this[writerSession] = session;
+  }
+}
+const objectWriters = new WeakMap<object, typeof ObjectAccess>();
 
 export const writerFor = (
   node: DocumentNode,
   inputAddress: DocumentAddress,
-  sink: OperationSink
+  sink: WriterSession
 ): unknown => {
   const address = Object.freeze(inputAddress);
   if (node.kind === 'field')
-    return {
-      set: (value: unknown) => emit(sink, { type: 'field.set', at: address, value }),
-      clear: node.optional ? () => emit(sink, { type: 'field.clear', at: address }) : undefined,
-    };
+    return node.optional ? new OptionalFieldAccess(address, sink) : new FieldAccess(address, sink);
   if (node.kind === 'dict')
     return {
       set: (key: string, value: unknown) =>
@@ -247,23 +282,26 @@ export const writerFor = (
       ...(node.optional ? { clear: () => emit(sink, { type: 'value.clear', at: address }) } : {}),
     };
 
-  let children: Map<string, unknown> | undefined;
-  return new Proxy(
-    {},
-    {
-      get: (_target, property: string | symbol) => {
-        if (typeof property !== 'string' || !node.shape[property]) return undefined;
-        const cached = children?.get(property);
-        if (cached) return cached;
-        const writer = writerFor(node.shape[property], [...address, property], sink);
-        (children ??= new Map()).set(property, writer);
-        return writer;
-      },
-    }
-  );
+  let Access = objectWriters.get(node);
+  if (!Access) {
+    Access = class extends ObjectAccess {};
+    for (const [index, key] of Object.keys(node.shape).entries())
+      Object.defineProperty(Access.prototype, key, {
+        configurable: true,
+        get(this: ObjectAccess) {
+          return (this[writerChildren][index] ??= writerFor(
+            node.shape[key],
+            [...this[writerAddress], key],
+            this[writerSession]
+          ));
+        },
+      });
+    objectWriters.set(node, Access);
+  }
+  return new Access(address, sink);
 };
 
 export const documentWriter = <TSchema extends DocumentSchema>(
   schema: TSchema,
-  sink: OperationSink
+  sink: WriterSession
 ): DocumentWriter<TSchema> => writerFor(schemaRoot(schema), [], sink) as DocumentWriter<TSchema>;

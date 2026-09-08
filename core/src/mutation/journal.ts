@@ -29,6 +29,7 @@ type SubjectBase = {
 type ValueSubject = SubjectBase & {
   readonly kind: 'value';
   readonly before: Presence;
+  readonly location?: ResolvedAddress;
 };
 
 type VariantSubject = SubjectBase & {
@@ -105,6 +106,7 @@ type JournalFinish =
     };
 
 type ChangeJournal = {
+  readonly field: (resolved: ResolvedAddress, address: DocumentAddress, existed: boolean) => void;
   readonly record: (
     resolved: ResolvedAddress,
     operation: DocumentOperation,
@@ -114,11 +116,11 @@ type ChangeJournal = {
 };
 
 type AddressIndexNode = {
-  readonly children: Map<string, AddressIndexNode>;
+  children?: Map<string, AddressIndexNode>;
   subject?: ChangeSubject;
 };
 
-const indexNode = (): AddressIndexNode => ({ children: new Map() });
+const indexNode = (): AddressIndexNode => ({});
 const hasOwn = (value: object, key: string | number): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -157,7 +159,7 @@ const ownsDescendant = (subject: ChangeSubject, address: DocumentAddress): boole
 const nodeAt = (root: AddressIndexNode, address: DocumentAddress): AddressIndexNode | undefined => {
   let node: AddressIndexNode | undefined = root;
   for (const segment of address) {
-    node = node.children.get(segment);
+    node = node.children?.get(segment);
     if (!node) return undefined;
   }
   return node;
@@ -172,7 +174,7 @@ const indexedSubjects = (root: AddressIndexNode, address: DocumentAddress): Chan
     const node = stack.pop();
     if (!node) break;
     if (node.subject) subjects.push(node.subject);
-    for (const child of node.children.values()) stack.push(child);
+    node.children?.forEach(child => stack.push(child));
   }
   return subjects;
 };
@@ -479,42 +481,45 @@ const treeOperation = (
 export const createChangeJournal = (root: unknown): ChangeJournal => {
   const active = new Set<ChangeSubject>();
   const index = indexNode();
-  const buckets = new Map<number, ChangeSubject[]>();
+  let indexed = false;
+  let fields: WeakMap<object, Map<string | number, ValueSubject>> | undefined = new WeakMap();
 
-  const add = <TSubject extends ChangeSubject>(subject: TSubject): TSubject => {
-    active.add(subject);
-    const candidates = buckets.get(subject.addressHash);
-    if (candidates) candidates.push(subject);
-    else buckets.set(subject.addressHash, [subject]);
+  const indexSubject = (subject: ChangeSubject): void => {
     let node = index;
     for (const segment of subject.address) {
-      const existing = node.children.get(segment);
+      const existing = node.children?.get(segment);
       if (existing) node = existing;
       else {
         const created = indexNode();
-        node.children.set(segment, created);
+        (node.children ??= new Map()).set(segment, created);
         node = created;
       }
     }
     if (node.subject)
       throw new Error(`Change journal already owns '${subject.address.join('.')}'.`);
     node.subject = subject;
+  };
+
+  const ensureIndex = (): void => {
+    if (indexed) return;
+    indexed = true;
+    fields = undefined;
+    for (const subject of active) indexSubject(subject);
+  };
+
+  const add = <TSubject extends ChangeSubject>(subject: TSubject): TSubject => {
+    active.add(subject);
+    if (indexed) indexSubject(subject);
     profile.journal.subject();
     return subject;
   };
 
   const remove = (subject: ChangeSubject): void => {
     if (!active.delete(subject)) return;
-    const candidates = buckets.get(subject.addressHash);
-    if (candidates) {
-      const position = candidates.indexOf(subject);
-      if (position >= 0) candidates.splice(position, 1);
-      if (candidates.length === 0) buckets.delete(subject.addressHash);
-    }
     const nodes: AddressIndexNode[] = [index];
     let node = index;
     for (const segment of subject.address) {
-      const child = node.children.get(segment);
+      const child = node.children?.get(segment);
       if (!child) return;
       nodes.push(child);
       node = child;
@@ -522,59 +527,27 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     if (node.subject === subject) delete node.subject;
     for (let position = subject.address.length - 1; position >= 0; position -= 1) {
       const child = nodes[position + 1];
-      if (child.subject || child.children.size > 0) break;
-      nodes[position].children.delete(subject.address[position]);
+      if (child.subject || child.children?.size) break;
+      nodes[position].children?.delete(subject.address[position]);
     }
   };
 
-  function find(
-    kind: 'value',
-    address: DocumentAddress,
-    addressHash: number
-  ): ValueSubject | undefined;
-  function find(
-    kind: 'variant',
-    address: DocumentAddress,
-    addressHash: number
-  ): VariantSubject | undefined;
-  function find(
-    kind: 'dict',
-    address: DocumentAddress,
-    addressHash: number
-  ): DictSubject | undefined;
-  function find(
-    kind: 'entity',
-    address: DocumentAddress,
-    addressHash: number
-  ): EntitySubject | undefined;
-  function find(
-    kind: 'list',
-    address: DocumentAddress,
-    addressHash: number
-  ): ListSubject | undefined;
-  function find(
-    kind: 'tree',
-    address: DocumentAddress,
-    addressHash: number
-  ): TreeSubject | undefined;
-  function find(
-    kind: ChangeSubject['kind'],
-    address: DocumentAddress,
-    addressHash: number
-  ): ChangeSubject | undefined {
-    const candidates = buckets.get(addressHash) ?? [];
-    for (const subject of candidates) {
-      profile.journal.comparison();
-      if (subject.kind === kind && sameAddress(subject.address, address)) return subject;
-    }
-    return undefined;
+  function find(kind: 'value', address: DocumentAddress): ValueSubject | undefined;
+  function find(kind: 'variant', address: DocumentAddress): VariantSubject | undefined;
+  function find(kind: 'dict', address: DocumentAddress): DictSubject | undefined;
+  function find(kind: 'entity', address: DocumentAddress): EntitySubject | undefined;
+  function find(kind: 'list', address: DocumentAddress): ListSubject | undefined;
+  function find(kind: 'tree', address: DocumentAddress): TreeSubject | undefined;
+  function find(kind: ChangeSubject['kind'], address: DocumentAddress): ChangeSubject | undefined {
+    const subject = nodeAt(index, address)?.subject;
+    return subject?.kind === kind ? subject : undefined;
   }
 
   const ownerOf = (address: DocumentAddress): ChangeSubject | undefined => {
     let node = index;
     for (let position = 0; position < address.length; position += 1) {
       if (node.subject && ownsDescendant(node.subject, address)) return node.subject;
-      const child = node.children.get(address[position]);
+      const child = node.children?.get(address[position]);
       if (!child) return undefined;
       node = child;
     }
@@ -608,7 +581,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     >,
     inverse: readonly DocumentOperation[]
   ): void => {
-    if (find('value', operation.at, resolved.addressHash)) return;
+    if (find('value', operation.at)) return;
     const first = inverse[0];
     if (
       first?.type !== 'field.set' &&
@@ -630,12 +603,45 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     });
   };
 
+  const recordField = (
+    resolved: ResolvedAddress,
+    address: DocumentAddress,
+    existed: boolean
+  ): void => {
+    profile.batch.journalRecord();
+    if (indexed) {
+      if (ownerOf(address) || find('value', address)) return;
+    } else {
+      let entries = fields!.get(resolved.parent);
+      if (entries?.has(resolved.key)) return;
+      if (!entries) fields!.set(resolved.parent, (entries = new Map()));
+      const subject: ValueSubject = {
+        address,
+        addressHash: resolved.addressHash,
+        collection: resolved.collection,
+        kind: 'value',
+        before: existed ? present(resolved.value) : absent,
+        location: resolved,
+      };
+      entries.set(resolved.key, subject);
+      add(subject);
+      return;
+    }
+    add<ValueSubject>({
+      address,
+      addressHash: resolved.addressHash,
+      collection: resolved.collection,
+      kind: 'value',
+      before: existed ? present(resolved.value) : absent,
+    });
+  };
+
   const recordVariant = (
     resolved: ResolvedAddress,
     operation: Extract<DocumentOperation, { readonly type: 'variant.replace' | 'value.clear' }>,
     inverse: readonly DocumentOperation[]
   ): void => {
-    if (find('variant', operation.at, resolved.addressHash)) return;
+    if (find('variant', operation.at)) return;
     const first = inverse[0];
     if (first?.type !== 'variant.replace' && first?.type !== 'value.clear')
       return inverseMismatch(operation);
@@ -657,7 +663,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     const first = inverse[0];
     if (!first) return inverseMismatch(operation);
     const subject =
-      find('dict', operation.at, resolved.addressHash) ??
+      find('dict', operation.at) ??
       add<DictSubject>({
         ...base(resolved, operation),
         kind: 'dict',
@@ -690,7 +696,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     if (resolved.node.kind !== 'list') return inverseMismatch(operation);
     const first = inverse[0];
     if (!first) return inverseMismatch(operation);
-    let subject = find('list', operation.at, resolved.addressHash);
+    let subject = find('list', operation.at);
     if (!subject) {
       if (first.type === 'value.clear') {
         add<ListSubject>({
@@ -760,7 +766,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     if (resolution.status === 'invalid') return inverseMismatch(operation);
     const collection = resolution.collection;
     const subject =
-      find('entity', operation.at, resolved.addressHash) ??
+      find('entity', operation.at) ??
       add<EntitySubject>({
         ...base(resolved, operation),
         kind: 'entity',
@@ -818,7 +824,7 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
       inverse[0].type === 'value.clear' &&
       operation.type === 'tree.replace'
     ) {
-      const subject = find('tree', operation.at, resolved.addressHash);
+      const subject = find('tree', operation.at);
       if (subject) subject.state = { mode: 'whole', value: undefined };
       else
         add<TreeSubject>({
@@ -832,25 +838,27 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
     const inverses = inverse.filter(treeOperation);
     if (inverses.length === 0 || inverses.length !== inverse.length)
       return inverseMismatch(operation);
-    const subject = find('tree', operation.at, resolved.addressHash);
+    const subject = find('tree', operation.at);
     const state = tree.recordChange(subject?.state, current, operation, inverses);
     if (subject) subject.state = state;
     else add<TreeSubject>({ ...base(resolved, operation), kind: 'tree', state });
   };
 
   return {
+    field: recordField,
     record: (resolved, operation, inverse) => {
+      if (operation.type === 'field.set' || operation.type === 'field.clear') {
+        recordField(resolved, operation.at, inverse[0]?.type !== 'field.clear');
+        return;
+      }
+      ensureIndex();
       profile.batch.journalRecord();
       if (ownerOf(operation.at)) return;
       if (operation.type === 'value.clear' && resolved.node.kind === 'variant') {
         recordVariant(resolved, operation, inverse);
         return;
       }
-      if (
-        operation.type === 'field.set' ||
-        operation.type === 'field.clear' ||
-        operation.type === 'value.clear'
-      ) {
+      if (operation.type === 'value.clear') {
         recordValue(resolved, operation, inverse);
         return;
       }
@@ -897,6 +905,16 @@ export const createChangeJournal = (root: unknown): ChangeJournal => {
           if (!analysis.changed) continue;
           entityChanges.set(subject, analysis);
           changed.push(subject);
+        } else if (!indexed && subject.kind === 'value' && subject.location) {
+          const { parent, key } = subject.location;
+          const exists = hasOwn(parent, key);
+          if (
+            subject.before.status === 'absent'
+              ? exists
+              : !exists ||
+                !Object.is(subject.before.value, (parent as Record<string | number, unknown>)[key])
+          )
+            changed.push(subject);
         } else if (subjectChanged(root, subject)) changed.push(subject);
       }
       if (changed.length === 0) return { status: 'unchanged' };

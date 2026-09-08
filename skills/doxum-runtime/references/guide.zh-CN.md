@@ -58,6 +58,14 @@ const runtime = createDocument({
 
 ## 通过 reader 读取
 
+需要完整子树时，在 select、transaction、React selector 或 projection 映射中调用
+`snapshot(read.subtree)`，返回对应 Infer 的即时独立值，不是惰性 reader。只读少量字段仍使用细粒度 reader。
+类实例和函数需要字段快照复制器。`field(validator)` 从验证器推导并校验标量，
+`parse(nodeOrSchema, unknown)` 解析外部数据；验证器必须同步且不转换值，仅有类型参数的字段无法验证 unknown。
+集合的 `{ key: validator }` 保留领域字符串键，贯穿访问、selector、impact 和 projection。
+字段 writer 的 `update(value => next)` 使用原有事务、回滚、history 和通知；回调不得嵌套写入或返回 Promise。
+完整契约见源码仓库 README 和 docs/value-boundaries.md。
+
 用 `import type { Infer } from 'doxum'` 命名 schema 推导的值类型：节点使用
 `Infer<typeof task>`，整份文档使用 `Infer<typeof taskSchema>`。生成的对象与 variant
 分支是展平的结构，属性和判别字段均为 readonly。可选节点包含 undefined，对象中的可选成员

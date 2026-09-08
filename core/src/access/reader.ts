@@ -1,4 +1,4 @@
-import { object } from '../schema';
+import { schemaRoot } from '../schema';
 import type {
   DictNode,
   DocumentAddress,
@@ -19,6 +19,48 @@ import { cloneValue, isRecord } from '../value/ownership';
 import { profile } from '../profile';
 import type { DependencyTracker } from './dependency';
 import * as anchor from '../mutation/anchor';
+import { snapshotValue } from '../schema-value';
+
+declare const snapshotType: unique symbol;
+export type SnapshotReader<T> = { readonly [snapshotType]: T };
+const readerLocation = Symbol('reader-location');
+const readerNode = Symbol('reader-node');
+const readerContext = Symbol('reader-context');
+const readerAddress = Symbol('reader-address');
+class ReaderLocation {
+  readonly [readerNode]: DocumentNode;
+  readonly [readerContext]: ReaderContext;
+  readonly [readerAddress]: DocumentAddress;
+  constructor(node: DocumentNode, context: ReaderContext, address: DocumentAddress) {
+    this[readerNode] = node;
+    this[readerContext] = context;
+    this[readerAddress] = address;
+  }
+  get [readerLocation](): ReaderLocation {
+    return this;
+  }
+}
+class FieldAccess extends ReaderLocation {
+  readonly get = (): unknown => {
+    collectValue(this[readerContext], this[readerAddress]);
+    return readAt(this[readerContext], this[readerAddress]);
+  };
+}
+
+/** Capture a detached value now, using the reader's current transaction or selection scope. */
+export const snapshot = <T>(reader: SnapshotReader<T>): T => {
+  const location = (reader as SnapshotReader<T> & { [readerLocation]?: ReaderLocation })[
+    readerLocation
+  ];
+  if (!(location instanceof ReaderLocation))
+    throw new TypeError('snapshot requires a Doxum reader.');
+  const node = location[readerNode],
+    context = location[readerContext],
+    address = location[readerAddress];
+  collectValue(context, address);
+  profile.reader.structuralSnapshot();
+  return snapshotValue(node, readAt(context, address)) as T;
+};
 
 export type FieldReader<T> = { readonly get: () => T };
 export type DictionaryReader<K extends string, V> = {
@@ -47,7 +89,9 @@ export type TreeReader<T> = {
   readonly children: (id: string) => readonly string[];
 };
 
-export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
+export type ReaderOfNode<TNode extends DocumentNode> = ReaderAccess<TNode> &
+  SnapshotReader<Infer<TNode>>;
+type ReaderAccess<TNode extends DocumentNode> = TNode extends {
   kind: 'field';
 }
   ? FieldReader<Infer<TNode>>
@@ -55,10 +99,10 @@ export type ReaderOfNode<TNode extends DocumentNode> = TNode extends {
     ? { readonly [K in keyof TShape]: ReaderOfNode<TShape[K]> }
     : TNode extends VariantNode<string, infer _TVariants>
       ? FieldReader<Infer<TNode>>
-      : TNode extends TableNode<infer TValue>
-        ? CollectionReader<string, TValue>
-        : TNode extends MapNode<infer TValue>
-          ? CollectionReader<string, TValue>
+      : TNode extends TableNode<infer TValue, infer K>
+        ? CollectionReader<K, TValue>
+        : TNode extends MapNode<infer TValue, infer K>
+          ? CollectionReader<K, TValue>
           : TNode extends DictNode<infer TKey, infer TValue>
             ? DictionaryReader<TKey, TValue>
             : TNode extends ListNode<infer TItem>
@@ -75,8 +119,6 @@ export type ReaderContext = {
   readonly active: () => boolean;
   readonly dependencies?: DependencyTracker;
 };
-
-const schemaRoot = (schema: DocumentSchema): DocumentNode => object(schema.shape);
 
 const assertActive = (context: ReaderContext): void => {
   if (!context.active()) throw new Error('Document reader is no longer active.');
@@ -106,15 +148,38 @@ export const readerFor = (
   context: ReaderContext,
   address: DocumentAddress = []
 ): unknown => {
-  if (node.kind === 'field')
-    return {
-      get: () => {
-        collectValue(context, address);
-        return readAt(context, address);
-      },
-    };
+  return createReader(node, context, address);
+};
+
+const createReader = (
+  node: DocumentNode,
+  context: ReaderContext,
+  address: DocumentAddress
+): object => {
+  if (node.kind === 'field') return new FieldAccess(node, context, address);
+  if (node.kind === 'object') {
+    let Access = objectReaders.get(node);
+    if (!Access) {
+      Access = class extends ReaderLocation {};
+      for (const key of Object.keys(node.shape))
+        Object.defineProperty(Access.prototype, key, {
+          configurable: true,
+          get(this: ReaderLocation) {
+            const reader = readerFor(node.shape[key], this[readerContext], [
+              ...this[readerAddress],
+              key,
+            ]);
+            Object.defineProperty(this, key, { value: reader, enumerable: true });
+            return reader;
+          },
+        });
+      objectReaders.set(node, Access);
+    }
+    return new Access(node, context, address);
+  }
+  const location = new ReaderLocation(node, context, address);
   if (node.kind === 'dict')
-    return {
+    return Object.assign(location, {
       get: (key: string) => {
         collectValue(context, address);
         const value = readAt(context, address);
@@ -140,9 +205,9 @@ export const readerFor = (
         profile.reader.structuralSnapshot();
         return cloneValue(readAt(context, address) ?? {}, 'reader');
       },
-    };
+    });
   if (node.kind === 'list')
-    return {
+    return Object.assign(location, {
       get: (key: string) => {
         collectValue(context, address);
         const value = readAt(context, address);
@@ -171,9 +236,9 @@ export const readerFor = (
         profile.reader.structuralSnapshot();
         return cloneValue(Array.isArray(value) ? value[index] : undefined, 'reader');
       },
-    };
+    });
   if (node.kind === 'tree')
-    return {
+    return Object.assign(location, {
       rootId: () => {
         collectValue(context, address);
         const value = readAt(context, address);
@@ -211,10 +276,10 @@ export const readerFor = (
         const entry = isRecord(value) && isRecord(value.nodes) ? value.nodes[id] : undefined;
         return isRecord(entry) && Array.isArray(entry.children) ? [...entry.children] : [];
       },
-    };
+    });
   if (node.kind === 'table' || node.kind === 'map') {
     let items: Map<string, unknown> | undefined;
-    return {
+    return Object.assign(location, {
       ids: () => {
         collectCollection(context, address);
         const value = readAt(context, address);
@@ -246,33 +311,20 @@ export const readerFor = (
         (items ??= new Map()).set(id, reader);
         return reader;
       },
-    };
+    });
   }
   if (node.kind === 'variant')
-    return {
+    return Object.assign(location, {
       get: () => {
         collectValue(context, address);
         return cloneValue(readAt(context, address), 'reader');
       },
-    };
+    });
 
-  let children: Map<string, unknown> | undefined;
-  return new Proxy(
-    {},
-    {
-      get: (_target, property: string | symbol) => {
-        if (typeof property === 'symbol') return undefined;
-        const child = node.shape[property];
-        if (!child) return undefined;
-        const cached = children?.get(property);
-        if (cached) return cached;
-        const reader = readerFor(child, context, [...address, property]);
-        (children ??= new Map()).set(property, reader);
-        return reader;
-      },
-    }
-  );
+  throw new Error('Unknown reader schema node.');
 };
+
+const objectReaders = new WeakMap<object, typeof ReaderLocation>();
 
 export const documentReader = <TSchema extends DocumentSchema>(
   schema: TSchema,

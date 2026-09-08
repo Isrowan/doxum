@@ -1,7 +1,7 @@
 import type { DocumentAddress } from './schema';
 
-export type DocumentAnchor =
-  { readonly before: string } | { readonly after: string } | { readonly at: 'start' | 'end' };
+export type DocumentAnchor<K extends string = string> =
+  { readonly before: K } | { readonly after: K } | { readonly at: 'start' | 'end' };
 
 type OperationBase = { readonly at: DocumentAddress };
 export type FieldSetOperation = OperationBase & {

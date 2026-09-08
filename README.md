@@ -133,6 +133,34 @@ exact alias presentation in editor hovers.
 
 ## Read And Subscribe
 
+Use `snapshot(reader)` to capture an entire subtree as its `Infer` value:
+
+```ts
+import { select, snapshot } from 'doxum';
+
+const tasks = select(runtime, read => snapshot(read.tasks));
+const titles = select(runtime, read => read.tasks.ids());
+
+runtime.update(tx => {
+  tx.write.tasks.item('task-1').completed.update(done => !done);
+});
+```
+
+Snapshots are immediate, detached values. They include earlier writes in the
+current transaction and do not follow later writes or rollback. The reader
+must still be in its active scope. Snapshotting costs proportionally to the
+selected subtree; retain fine-grained readers for field-level hot paths.
+Plain structures and mutable builtins such as Date, Map and Set are copied.
+Opaque classes and functions require `field(validator, { snapshot: copy })`;
+use `undefined` as the validator for a trusted, type-only field with a copier.
+The copier must return an independent value. This does not change the existing
+immutable-payload contract of ordinary field `get()`.
+
+Field `update(value => next)` runs synchronously inside the transaction, sees
+its latest value, and records an ordinary `field.set`. Object inputs are
+detached before calling the updater. Return the next value; nested writes and
+asynchronous callbacks are rejected. Use `clear()` to remove an optional field.
+
 Use `select` for a one-off typed read. Use schema selectors and `subscribe`
 when a non-React consumer needs only relevant commits.
 
@@ -155,6 +183,48 @@ stop();
 Each committed update produces a revision, forward operations, inverse
 operations, and a `DocumentImpact`. Collection impacts distinguish added,
 removed, updated, and reordered entries.
+
+## Parse Values And Domain Keys
+
+```ts
+import { field, map, object, parse, schema, type Infer } from 'doxum';
+
+type PersonId = string & { readonly personId: unique symbol };
+const personId = (input: unknown): PersonId => {
+  if (typeof input !== 'string' || !input.startsWith('person:')) {
+    throw new TypeError('Expected a person ID.');
+  }
+  return input as PersonId;
+};
+const finiteNumber = (input: unknown): number => {
+  if (typeof input !== 'number' || !Number.isFinite(input)) {
+    throw new TypeError('Expected a finite number.');
+  }
+  return input;
+};
+const person = object({ age: field(finiteNumber) });
+const peopleSchema = schema({ people: map(person, { key: personId }) });
+type People = Infer<typeof peopleSchema>;
+const initial = parse(peopleSchema, {
+  people: { 'person:1': { age: 30 } },
+});
+```
+
+`parse(nodeOrSchema, unknown)` returns a detached inferred value or throws
+`ParseError` with addressed issues. Validators can be synchronous functions
+or Standard Schema v1 validators. They must preserve values; perform coercion
+and transformations before parsing. Async validators are rejected. An encountered
+opaque `field<T>()` without a validator cannot validate unknown input and is
+rejected by parse; it remains available for trusted, typed runtime values.
+Dict accepts `{ key, value }` validators, list accepts a `value` validator
+alongside `keyOf`, and tree accepts a value validator.
+
+Runtime initialization, replacement and incoming mutation payloads use the same
+structural rules and configured validators. Incremental writes validate only
+the incoming values and keys. Invalid writes reject and roll back the transaction.
+Map/table key validators infer the domain key through readers, writers, anchors,
+selectors, impacts and projection chains. Serialized operations retain string
+keys, validated against the target schema. Keys default to string when omitted.
 
 ## History And Operations
 
@@ -360,6 +430,11 @@ pnpm run build
 pnpm run bench
 pnpm run profile
 ```
+
+The nested frame benchmarks cover field updates, unchanged updates, collection
+impact reads, and field matching. Typed writers share transaction-local parent
+resolution and skip operation allocation for unchanged values after validation.
+All paths retain synchronous rollback, inverse operations, and exact impact.
 
 See [the architecture guide](docs/architecture.md) for the runtime pipeline and
 [AGENTS.md](AGENTS.md) for contribution rules.

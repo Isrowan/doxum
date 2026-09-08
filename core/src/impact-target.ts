@@ -20,4 +20,7 @@ export const same = (left: ImpactTarget<unknown>, right: ImpactTarget<unknown>):
   return left.kind !== 'collection' || id(left) === id(right);
 };
 
-export const bucket = (target: ImpactTarget<unknown>): string | undefined => address(target)[0];
+export const indexedAddress = (target: ImpactTarget<unknown>): DocumentAddress => {
+  const key = id(target);
+  return key === undefined ? address(target) : [...address(target), key];
+};

@@ -1,7 +1,15 @@
 import React, { StrictMode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, schema, table } from 'doxum';
+import {
+  createDocument,
+  createProjectionRuntime,
+  field,
+  object,
+  schema,
+  table,
+  snapshot,
+} from 'doxum';
 import { useDocumentSelector, useReadable } from '../src';
 import { renderToString } from 'react-dom/server';
 
@@ -13,6 +21,48 @@ const text = (value: unknown) => React.createElement('span', null, String(value)
 const valueOf = (renderer: ReactTestRenderer) => renderer.root.findByType('span').children.join('');
 
 describe('doxum/react', () => {
+  it('tracks subtree snapshots and entity membership across dynamic selection', () => {
+    const model = schema({
+      selected: field<string>(),
+      rows: table(object({ n: field<number>() })),
+    });
+    const runtime = createDocument({
+      schema: model,
+      initial: { selected: 'a', rows: { ids: ['a', 'b'], byId: { a: { n: 1 }, b: { n: 2 } } } },
+    });
+    let renders = 0;
+    function Probe() {
+      renders++;
+      const row = useDocumentSelector(runtime, read => {
+        const item = read.rows.get(read.selected.get());
+        return item ? snapshot(item) : undefined;
+      });
+      return text(row?.n ?? 'missing');
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Probe));
+    });
+    const baseline = renders;
+    act(() => {
+      runtime.update(tx => tx.write.rows.item('b').n.update(n => n + 1));
+    });
+    expect(renders).toBe(baseline);
+    act(() => {
+      runtime.update(tx => tx.write.selected.set('b'));
+    });
+    expect(valueOf(renderer)).toBe('3');
+    act(() => {
+      runtime.update(tx => tx.write.rows.remove('b'));
+    });
+    expect(valueOf(renderer)).toBe('missing');
+    act(() => {
+      runtime.history.undo();
+    });
+    expect(valueOf(renderer)).toBe('3');
+    act(() => renderer.unmount());
+    runtime.dispose();
+  });
   it('caches allocating inline selectors and refreshes selector props without a document commit', () => {
     const runtime = createDocument({ schema: documentSchema, initial: { title: 'one', count: 0 } });
     let renders = 0;

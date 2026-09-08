@@ -73,6 +73,19 @@ guidance.
 
 ## Read through readers
 
+Use `snapshot(read.subtree)` inside select, transactions, React selectors or
+projection mapping when the complete inferred subtree value is needed. It is
+an immediate independent value, not a live reader; field readers remain cheaper
+for small selections. Snapshotting classes/functions requires a field copier.
+Use `field(validator)` to infer and enforce a scalar type, and
+`parse(nodeOrSchema, unknown)` for external data. Validators are synchronous and
+value-preserving; a type-only field cannot validate unknown input. Collection
+`{ key: validator }` options retain domain string types through access and
+projections. Field writers support `update(value => next)` with ordinary
+transaction rollback, history and notifications; callbacks cannot write or be
+async. Consult README and docs/value-boundaries.md in the source repository for
+the complete contracts.
+
 Use `import type { Infer } from 'doxum'` to name schema-derived values:
 `Infer<typeof task>` for a node and `Infer<typeof taskSchema>` for a document.
 Generated object types and variant branches are flat, with readonly fields

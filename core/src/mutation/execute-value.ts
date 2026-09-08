@@ -21,6 +21,12 @@ const rejected = (
   issue: issue.from(operation, code, message),
 });
 
+/** Field writes share this executor after validation and change detection. */
+export const executeField = (target: ResolvedAddress, value: unknown, clear: boolean): void => {
+  if (clear) delete (target.parent as Record<string | number, unknown>)[target.key];
+  else (target.parent as Record<string | number, unknown>)[target.key] = value;
+};
+
 export const executeValue = (
   target: ResolvedAddress,
   operation: ValueOperation,
@@ -39,14 +45,14 @@ export const executeValue = (
         at: operation.at,
         value: target.value,
       };
-      delete (target.parent as Record<string | number, unknown>)[target.key];
+      executeField(target, undefined, true);
       return { status: 'changed', inverse: [inverse] };
     }
     if (existed && Object.is(target.value, operation.value)) return { status: 'unchanged' };
     const inverse: DocumentOperation = existed
       ? { type: 'field.set', at: operation.at, value: target.value }
       : { type: 'field.clear', at: operation.at };
-    (target.parent as Record<string | number, unknown>)[target.key] = operation.value;
+    executeField(target, operation.value, false);
     return { status: 'changed', inverse: [inverse] };
   }
 
