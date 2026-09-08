@@ -19,6 +19,7 @@ const counters = () => ({
     orderItems: 0,
     treeNodes: 0,
     sealed: 0,
+    indexedGroups: 0,
   },
   access: { scopes: 0, proxies: 0, snapshots: 0, addresses: 0, resolutions: 0 },
   address: {
@@ -27,6 +28,8 @@ const counters = () => ({
     prefixComparisons: 0,
     segmentsCompared: 0,
     arraysCopied: 0,
+    listIndexes: 0,
+    listItems: 0,
   },
   impact: { affectsChecks: 0, indexes: 0 },
   collectionView: { mappedItems: 0, idsScanned: 0, arraysCopied: 0 },
@@ -66,6 +69,12 @@ export const profile = {
     },
   },
   address: {
+    listIndex: (items: number) => {
+      if (active) {
+        active.address.listIndexes++;
+        active.address.listItems += items;
+      }
+    },
     schemaStep: () => {
       if (active) active.address.schemaSteps++;
     },

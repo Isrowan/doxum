@@ -1,4 +1,5 @@
 import type { DocumentAddress, DocumentNode, Infer } from './schema';
+import { compiledShape } from './address';
 import { isPlainObject, isRecord } from './value/ownership';
 import { validate as validTree } from './mutation/tree';
 import * as anchor from './mutation/anchor';
@@ -107,23 +108,31 @@ export const checkValue = (
 ): ParseIssue | undefined => {
   if (node.optional && value === undefined) return undefined;
   if (node.kind === 'field') return checkScalar(node.validator, value, address, strict);
-  if (node.kind === 'object') {
+  if (node.kind === 'object' || node.kind === 'variant') {
     if (!isPlainObject(value)) return issue(address, 'Expected an object.');
-    for (const key of Object.keys(node.shape)) {
-      const child = node.shape[key];
+    if (node.kind === 'variant') {
+      const tag = value[node.tag];
+      if (
+        !Object.hasOwn(value, node.tag) ||
+        typeof tag !== 'string' ||
+        !Object.hasOwn(node.variants, tag)
+      )
+        return issue([...address, node.tag], 'Unknown variant tag.');
+    }
+    const { members } = compiledShape(node, value)!;
+    for (const key of Reflect.ownKeys(value)) {
+      if (node.kind === 'variant' && key === node.tag) continue;
+      if (typeof key !== 'string' || !members.has(key))
+        return issue([...address, String(key)], 'Property is not declared in the object schema.');
+    }
+    for (const [key, member] of members) {
+      const child = member.node;
       if (!Object.prototype.hasOwnProperty.call(value, key) && !child.optional)
         return issue([...address, key], 'Required property is missing.');
       const failure = checkValue(child, value[key], [...address, key], strict);
       if (failure) return failure;
     }
     return undefined;
-  }
-  if (node.kind === 'variant') {
-    if (!isPlainObject(value)) return issue(address, 'Expected a variant object.');
-    const tag = value[node.tag];
-    if (typeof tag !== 'string' || !Object.prototype.hasOwnProperty.call(node.variants, tag))
-      return issue([...address, node.tag], 'Unknown variant tag.');
-    return checkValue(node.variants[tag], value, address, strict);
   }
   if (node.kind === 'table' || node.kind === 'map') {
     if (!isPlainObject(value)) return issue(address, 'Expected a collection object.');
@@ -185,20 +194,20 @@ export const checkValue = (
 export const copyValue = (node: DocumentNode, value: unknown): unknown => {
   if (value === undefined || node.kind === 'field') return value;
   profile.copy.structure();
-  if (node.kind === 'variant' && isRecord(value))
-    return copyValue(node.variants[String(value[node.tag])], value);
-  if (node.kind === 'object' && isRecord(value)) {
+  if ((node.kind === 'object' || node.kind === 'variant') && isRecord(value)) {
     const result = Object.create(Object.getPrototypeOf(value));
-    for (const key of Reflect.ownKeys(value))
+    const { members } = compiledShape(node, value)!;
+    for (const key of Object.getOwnPropertyNames(value)) {
       Object.defineProperty(result, key, {
         value:
-          typeof key === 'string' && Object.hasOwn(node.shape, key)
-            ? copyValue(node.shape[key], value[key])
-            : (value as Record<PropertyKey, unknown>)[key],
+          node.kind === 'variant' && key === node.tag
+            ? value[key]
+            : copyValue(members.get(key)!.node, value[key]),
         writable: true,
         enumerable: Object.getOwnPropertyDescriptor(value, key)?.enumerable,
         configurable: true,
       });
+    }
     return result;
   }
   if ((node.kind === 'table' || node.kind === 'map') && isRecord(value)) {
@@ -224,11 +233,14 @@ export const copyValue = (node: DocumentNode, value: unknown): unknown => {
 export const equalValue = (node: DocumentNode, left: unknown, right: unknown): boolean => {
   if (Object.is(left, right)) return true;
   if (node.kind === 'field' || left === undefined || right === undefined) return false;
-  if (node.kind === 'variant' && isRecord(left) && isRecord(right))
-    return (
-      left[node.tag] === right[node.tag] &&
-      equalValue(node.variants[String(left[node.tag])], left, right)
-    );
+  if ((node.kind === 'object' || node.kind === 'variant') && isRecord(left) && isRecord(right)) {
+    if (node.kind === 'variant' && left[node.tag] !== right[node.tag]) return false;
+    for (const [key, member] of compiledShape(node, left)!.members) {
+      if (Object.hasOwn(left, key) !== Object.hasOwn(right, key)) return false;
+      if (!equalValue(member.node, left[key], right[key])) return false;
+    }
+    return true;
+  }
   if (node.kind === 'list' && Array.isArray(left) && Array.isArray(right))
     return (
       left.length === right.length && left.every((v, i) => equalValue(node.value, v, right[i]))
@@ -257,24 +269,11 @@ export const equalValue = (node: DocumentNode, left: unknown, right: unknown): b
       )
     );
   }
-  if ((node.kind === 'object' || node.kind === 'map') && isRecord(left) && isRecord(right)) {
-    const keys = Reflect.ownKeys(left);
+  if (node.kind === 'map' && isRecord(left) && isRecord(right)) {
+    const keys = Object.keys(left);
     return (
-      keys.length === Reflect.ownKeys(right).length &&
-      keys.every(key => {
-        if (!Object.hasOwn(right, key)) return false;
-        const child =
-          typeof key === 'string'
-            ? node.kind === 'map'
-              ? node.value
-              : Object.hasOwn(node.shape, key)
-                ? node.shape[key]
-                : undefined
-            : undefined;
-        const a = (left as Record<PropertyKey, unknown>)[key],
-          b = (right as Record<PropertyKey, unknown>)[key];
-        return child ? equalValue(child, a, b) : Object.is(a, b);
-      })
+      keys.length === Object.keys(right).length &&
+      keys.every(key => Object.hasOwn(right, key) && equalValue(node.value, left[key], right[key]))
     );
   }
   return false;

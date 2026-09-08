@@ -2,8 +2,24 @@ import type { Change, ChangeSet, MemberChange, ValueTransition } from '../change
 import { isPlainObject } from '../value/ownership';
 import { AddressIndex } from '../address';
 import { fail } from './issue';
-import { compareChanges } from './recorder';
 import { validNode } from './tree';
+
+const validated = new WeakSet<ChangeSet>();
+
+const compareChanges = (a: Change, b: Change): number => {
+  if (a.kind === 'reset' || b.kind === 'reset')
+    return a.kind === b.kind ? 0 : a.kind === 'reset' ? -1 : 1;
+  const length = Math.min(a.at.length, b.at.length);
+  for (let i = 0; i < length; i++) if (a.at[i] !== b.at[i]) return lexical(a.at[i], b.at[i]);
+  return a.at.length - b.at.length || lexical(a.kind, b.kind);
+};
+
+/** Engine-produced changes and decoded inputs share one immutable publication boundary. */
+export const sealChanges = (changes: Change[]): ChangeSet => {
+  const result = { changes: changes.sort(compareChanges) };
+  validated.add(result);
+  return result;
+};
 
 const keys = (value: Record<string, unknown>, expected: readonly string[]) =>
   Object.keys(value).every(key => expected.includes(key));
@@ -34,6 +50,8 @@ const lexical = (a: string, b: string) => (a < b ? -1 : a === b ? 0 : 1);
 
 /** The sole unknown ChangeSet boundary, including normalized logical-address conflicts. */
 export const decodeChanges = (input: unknown): ChangeSet => {
+  if (typeof input === 'object' && input !== null && validated.has(input as ChangeSet))
+    return input as ChangeSet;
   if (!isPlainObject(input) || !keys(input, ['changes']) || !Array.isArray(input.changes))
     return fail([], 'invalid-changes', 'Expected a ChangeSet.');
   const result: Change[] = [];
@@ -51,7 +69,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
           'invalid-changes',
           'A reset must be the only change and contain both values.'
         );
-      return { changes: [{ kind: 'reset', before: entry.before, after: entry.after }] };
+      return sealChanges([{ kind: 'reset', before: entry.before, after: entry.after }]);
     }
     if (!strings(entry.at))
       return fail([], 'invalid-changes', 'Change addresses must contain strings.');
@@ -133,7 +151,9 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       orders.add(change.at, true);
     }
   }
-  return { changes: sorted };
+  const decoded = { changes: sorted };
+  validated.add(decoded);
+  return decoded;
 };
 
 export const changeCount = (changes: ChangeSet): number => {

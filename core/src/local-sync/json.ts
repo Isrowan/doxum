@@ -1,5 +1,6 @@
 import { isPlainObject } from '../value/ownership';
 import { changeCount, decodeChanges } from '../mutation/changes';
+import type { ChangeSet } from '../changes';
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue =
@@ -55,7 +56,7 @@ const resolveLimits = (input: JsonChangeLimits | undefined): ResolvedJsonLimits 
 
 const validate = (
   value: unknown,
-  path: readonly string[],
+  path: string[],
   limits: ResolvedJsonLimits | undefined,
   depth: number,
   ancestors: WeakSet<object>
@@ -76,8 +77,11 @@ const validate = (
       throw new LocalSyncDataError(`${describePath(path)} contains a cycle.`);
     ancestors.add(value);
     try {
-      for (let index = 0; index < value.length; index += 1)
-        validate(value[index], [...path, String(index)], limits, depth + 1, ancestors);
+      for (let index = 0; index < value.length; index += 1) {
+        path.push(String(index));
+        validate(value[index], path, limits, depth + 1, ancestors);
+        path.pop();
+      }
     } finally {
       ancestors.delete(value);
     }
@@ -88,8 +92,11 @@ const validate = (
       throw new LocalSyncDataError(`${describePath(path)} contains a cycle.`);
     ancestors.add(value);
     try {
-      for (const [key, entry] of Object.entries(value))
-        validate(entry, [...path, key], limits, depth + 1, ancestors);
+      for (const key of Object.keys(value)) {
+        path.push(key);
+        validate(value[key], path, limits, depth + 1, ancestors);
+        path.pop();
+      }
     } finally {
       ancestors.delete(value);
     }
@@ -101,24 +108,21 @@ const validate = (
 export const json = (value: unknown, label: string): JsonValue =>
   validate(value, [label], undefined, 0, new WeakSet());
 
-export const jsonArray = (
-  value: unknown,
-  label: string,
-  input?: JsonChangeLimits
-): readonly JsonValue[] => {
-  const limits = resolveLimits(input);
-  const parsed = validate(value, [label], limits, 0, new WeakSet());
-  if (!Array.isArray(parsed)) throw new LocalSyncDataError(`${label} must be a JSON array.`);
-  let count: number;
+export const jsonChanges = (value: unknown, label: string, input?: JsonChangeLimits): ChangeSet => {
+  const limits = input === undefined ? undefined : resolveLimits(input);
+  let changes: ChangeSet;
   try {
-    count = changeCount(decodeChanges({ changes: parsed }));
+    changes = decodeChanges(value);
   } catch {
     throw new LocalSyncDataError(`${label} contains an invalid ChangeSet.`);
   }
-  if (count > limits.maxChanges)
+  if (limits && changeCount(changes) > limits.maxChanges)
     throw new LocalSyncDataError(`${label} exceeds the maximum change count.`);
-  const serialized = JSON.stringify(parsed);
-  if (new TextEncoder().encode(serialized).byteLength > limits.maxBytes)
-    throw new LocalSyncDataError(`${label} exceeds the maximum ChangeSet size.`);
-  return parsed;
+  validate(changes.changes, [label], limits, 0, new WeakSet());
+  if (limits) {
+    const serialized = JSON.stringify(changes.changes);
+    if (new TextEncoder().encode(serialized).byteLength > limits.maxBytes)
+      throw new LocalSyncDataError(`${label} exceeds the maximum ChangeSet size.`);
+  }
+  return changes;
 };

@@ -6,7 +6,7 @@ import { createImpact, affectsTarget } from '../src/impact';
 import { SubscriptionIndex } from '../src/impact-target';
 import { subscribeDependencies } from '../src/integration';
 import { MutationSession } from '../src/mutation/session';
-import { jsonArray } from '../src/local-sync/json';
+import { jsonChanges } from '../src/local-sync/json';
 
 describe('grouped mutation architecture', () => {
   it('retains a stable collection impact result for an explicit root reset', () => {
@@ -33,7 +33,7 @@ describe('grouped mutation architecture', () => {
     expect(counters.recorder).toMatchObject({ facts: 1, groups: 1, transitions: 1 });
     const a = new MutationSession({ schema, document: { values: { a: 0 } } });
     const b = new MutationSession({ schema, document: { values: { a: 0 } } });
-    expect(() => b.setMember(a.resolve(['values']), 'a', 1)).toThrow('another mutation session');
+    expect(() => b.assignMember(a.resolve(['values']), 'a', 1)).toThrow('another mutation session');
     expect(b.state.document).toEqual({ values: { a: 0 } });
   });
   it('publishes identical lexical member groups regardless of write order', () => {
@@ -212,9 +212,9 @@ describe('grouped mutation architecture', () => {
     expect(runtime.snapshot()).toEqual(initial);
     const state = { schema, document: structuredClone(initial) };
     const session = new MutationSession(state);
-    session.set(['rows', 'a', 'x'], 9);
-    session.set([], { ...initial, z: 10 }, true, true);
-    session.set(['rows', 'a', 'y'], 99);
+    session.replace(['rows', 'a', 'x'], 9);
+    session.replace([], { ...initial, z: 10 });
+    session.replace(['rows', 'a', 'y'], 99);
     session.rollback();
     expect(state.document).toEqual(initial);
   });
@@ -274,33 +274,39 @@ describe('grouped mutation architecture', () => {
         ],
       },
     ];
-    expect(() => jsonArray(members, 'changes', { maxChanges: 1 })).toThrow('count');
-    expect(jsonArray(members, 'changes', { maxChanges: 2 })).toBe(members);
+    expect(() => jsonChanges({ changes: members }, 'changes', { maxChanges: 1 })).toThrow('count');
+    expect(jsonChanges({ changes: members }, 'changes', { maxChanges: 2 }).changes).toEqual(
+      members
+    );
     expect(() =>
-      jsonArray(
-        [
-          {
-            kind: 'tree',
-            at: ['outline'],
-            before: null,
-            after: 'r',
-            nodes: [{ id: 'r', kind: 'added', after: { children: [] } }],
-          },
-        ],
+      jsonChanges(
+        {
+          changes: [
+            {
+              kind: 'tree',
+              at: ['outline'],
+              before: null,
+              after: 'r',
+              nodes: [{ id: 'r', kind: 'added', after: { children: [] } }],
+            },
+          ],
+        },
         'changes',
         { maxChanges: 1 }
       )
     ).toThrow('count');
     expect(() =>
-      jsonArray(
-        [
-          {
-            kind: 'value',
-            at: ['a'],
-            before: { present: false },
-            after: { present: true, value: 1 },
-          },
-        ],
+      jsonChanges(
+        {
+          changes: [
+            {
+              kind: 'value',
+              at: ['a'],
+              before: { present: false },
+              after: { present: true, value: 1 },
+            },
+          ],
+        },
         'changes'
       )
     ).toThrow('invalid ChangeSet');

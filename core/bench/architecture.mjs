@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 
 // A saved build uses exactly the same public workloads, including its own apply format.
 const modulePath = process.env.DOXUM_BENCH_MODULE;
-const { createDocument, field, object, map, list, tree } = await import(
+const { createDocument, field, object, map, table, list, tree } = await import(
   modulePath ? pathToFileURL(resolve(modulePath)).href : 'doxum'
 );
 const allocation = process.argv.includes('--allocation');
@@ -30,6 +30,9 @@ const scenarios = [
   ['tree', 1000, 1, 0],
   ['repeated', 1, 100000, 0],
   ['unchanged', 1, 100000, 0],
+  ['table-apply-one', 100000, 1, 0],
+  ['list-values', 2000, 2000, 0],
+  ['mixed-order', 10000, 10000, 0],
 ].filter(
   ([name]) =>
     !process.env.DOXUM_BENCH_FILTER || process.env.DOXUM_BENCH_FILTER.split(',').includes(name)
@@ -69,13 +72,66 @@ if (process.argv.includes('--isolate')) {
 }
 
 function setup(name, count, changed, listeners) {
+  if (name === 'table-apply-one' || name === 'list-values') {
+    const ids = Array.from({ length: count }, (_, i) => String(i));
+    const runtime =
+      name === 'table-apply-one'
+        ? createDocument({
+            schema: object({ rows: table(object({ n: field() })) }),
+            initial: { rows: { ids, byId: Object.fromEntries(ids.map(id => [id, { n: 0 }])) } },
+            history: false,
+          })
+        : createDocument({
+            schema: object({ rows: list(field(), { keyOf: v => v.id }) }),
+            initial: { rows: ids.map(id => ({ id, n: 0 })) },
+            history: false,
+          });
+    let frame = 0;
+    return {
+      tick: () =>
+        name === 'table-apply-one'
+          ? runtime.apply(
+              {
+                changes: [
+                  {
+                    kind: 'members',
+                    at: ['rows'],
+                    members: [
+                      { key: '0', kind: 'updated', before: { n: frame }, after: { n: ++frame } },
+                    ],
+                  },
+                ],
+              },
+              { expectedRevision: runtime.revision() }
+            )
+          : runtime.update(d => {
+              frame++;
+              for (const id of ids) d.rows.set(id, { id, n: frame });
+            }),
+      verify: () => {
+        assert.equal(runtime.revision(), warmup + measured);
+        const rows = runtime.snapshot().rows;
+        if (name === 'table-apply-one') assert.equal(rows.byId['0'].n, frame);
+        else
+          assert.equal(
+            rows.reduce((sum, row) => sum + row.n, 0),
+            count * frame
+          );
+      },
+      dispose: () => runtime.dispose(),
+    };
+  }
   const position = object({ x: field(), y: field() });
   const entity = object({
     position: name === 'deep' ? object({ a: object({ b: position }) }) : position,
   });
-  const schema = object({ entities: map(entity) });
+  const schema = object({
+    entities: map(entity),
+    ...(name === 'mixed-order' ? { order: list(field(), { keyOf: v => v }) } : {}),
+  });
   const ids = Array.from({ length: count }, (_, i) => String(i));
   const initial = {
+    ...(name === 'mixed-order' ? { order: ['a', 'b'] } : {}),
     entities: Object.fromEntries(
       ids.map(id => [
         id,
@@ -127,6 +183,7 @@ function setup(name, count, changed, listeners) {
             }
           }
         }
+        if (name === 'mixed-order') d.order.move(frame % 2 ? 'b' : 'a');
         frame++;
       });
   }
@@ -182,6 +239,7 @@ function setup(name, count, changed, listeners) {
           'single-field',
           'history',
           'deep',
+          'mixed-order',
         ].includes(name)
       ) {
         const snapshot = runtime.snapshot();

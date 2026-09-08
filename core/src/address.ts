@@ -124,7 +124,7 @@ export const nodeAt = (
 export const readSegment = (value: unknown, segment: string, node?: DocumentNode): unknown => {
   if (!isRecord(value) && !Array.isArray(value)) return undefined;
   if (node?.kind === 'list' && Array.isArray(value))
-    return value.find(item => node.keyOf(item) === segment);
+    return value[anchor.indexedKeys(value, node.keyOf).index(segment)];
   if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId)) {
     return Object.hasOwn(value.byId, segment) ? value.byId[segment] : undefined;
   }
@@ -152,26 +152,46 @@ export type ResolvedAddress = {
   readonly parentNode: DocumentNode;
 };
 
-type CompiledMember = { readonly node: DocumentNode; readonly field: boolean };
-const compiledObjects = new WeakMap<object, ReadonlyMap<string, CompiledMember>>();
-export const compiledMembers = (
-  node: DocumentNode,
-  value: unknown
-): ReadonlyMap<string, CompiledMember> | undefined => {
+type MemberDefinition = {
+  readonly node: DocumentNode;
+  readonly field: boolean;
+};
+export type FixedMember = MemberDefinition & {
+  readonly kind: 'fixed';
+  readonly key: string;
+  readonly slot: number;
+};
+type CollectionMember = MemberDefinition & { readonly kind: 'entry' };
+export type CompiledMember = FixedMember | CollectionMember;
+export type FixedLayout = {
+  readonly kind: 'fixed';
+  readonly members: ReadonlyMap<string, FixedMember>;
+};
+type DynamicLayout = { readonly kind: 'dynamic'; readonly entry: CollectionMember };
+export type MemberLayout = FixedLayout | DynamicLayout;
+const compiledObjects = new WeakMap<object, FixedLayout>();
+const compiledEntries = new WeakMap<DocumentNode, DynamicLayout>();
+export const compiledShape = (node: DocumentNode, value: unknown): FixedLayout | undefined => {
   const branch = node.kind === 'variant' ? variantNode(node, value) : node;
   if (branch?.kind !== 'object') return undefined;
   const shape: ObjectShape = branch.shape;
-  let members = compiledObjects.get(shape);
-  if (!members) {
-    const compiled = new Map<string, CompiledMember>();
-    for (const key of Object.keys(shape)) {
+  let layout = compiledObjects.get(shape);
+  if (!layout) {
+    const compiled = new Map<string, FixedMember>();
+    for (const key of Object.keys(shape).sort()) {
       profile.address.schemaStep();
-      compiled.set(key, { node: shape[key], field: shape[key].kind === 'field' });
+      compiled.set(key, {
+        kind: 'fixed',
+        key,
+        node: shape[key],
+        field: shape[key].kind === 'field',
+        slot: compiled.size,
+      });
     }
-    members = compiled;
-    compiledObjects.set(shape, members);
+    layout = { kind: 'fixed', members: compiled };
+    compiledObjects.set(shape, layout);
   }
-  return members;
+  return layout;
 };
 
 /** Immutable location facts, valid only for the resolving session generation. */
@@ -181,7 +201,7 @@ export type ResolvedContainer = {
   readonly at: DocumentAddress;
   readonly node: DocumentNode;
   readonly parent: Record<string, unknown> | unknown[];
-  readonly members: ReadonlyMap<string, CompiledMember> | undefined;
+  readonly layout: MemberLayout;
 };
 export const resolveContainer = (
   owner: object,
@@ -193,17 +213,27 @@ export const resolveContainer = (
   if (!node || (!isRecord(value) && !Array.isArray(value))) return undefined;
   const parent = node.kind === 'table' && isRecord(value) ? value.byId : value;
   if (!isRecord(parent) && !Array.isArray(parent)) return undefined;
-  return { owner, generation, at, node, parent, members: compiledMembers(node, value) };
-};
-export const memberNode = (container: ResolvedContainer, key: string): DocumentNode | undefined => {
-  const node = container.node;
-  return node.kind === 'map' || node.kind === 'table' || node.kind === 'list'
-    ? node.value
-    : container.members?.get(key)?.node;
+  let layout: MemberLayout;
+  if (node.kind === 'map' || node.kind === 'table' || node.kind === 'list') {
+    let dynamic = compiledEntries.get(node);
+    if (!dynamic) {
+      dynamic = {
+        kind: 'dynamic',
+        entry: { kind: 'entry', node: node.value, field: node.value.kind === 'field' },
+      };
+      compiledEntries.set(node, dynamic);
+    }
+    layout = dynamic;
+  } else {
+    const fixed = compiledShape(node, value);
+    if (!fixed) return undefined;
+    layout = fixed;
+  }
+  return { owner, generation, at, node, parent, layout };
 };
 export const memberKey = (container: ResolvedContainer, key: string): string | number =>
   container.node.kind === 'list'
-    ? anchor.keys(container.parent as unknown[], container.node.keyOf).index(key)
+    ? anchor.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
     : key;
 
 type ResolutionPrefix = {
@@ -299,7 +329,7 @@ export const resolveChild = (
     parent: current,
     key:
       node?.kind === 'list' && Array.isArray(current)
-        ? current.findIndex(item => node.keyOf(item) === last)
+        ? anchor.indexedKeys(current, node.keyOf).index(last)
         : last,
   };
 };

@@ -74,6 +74,7 @@ export type AttachLocalSyncOptions<TSchema extends ObjectNode> = {
   readonly database: string;
   readonly documentId: string;
   readonly schemaVersion?: number;
+  /** Admission limits for new local commits; durable replay does not reapply them. */
   readonly changeLimits?: JsonChangeLimits;
   readonly onError?: (error: unknown) => void;
 };

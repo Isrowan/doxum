@@ -20,7 +20,8 @@ import {
   read as readAddress,
   resolveChild,
   resolveLocated,
-  compiledMembers,
+  compiledShape,
+  type FixedMember,
   resolveContainer,
   type ResolvedContainer,
 } from '../address';
@@ -28,6 +29,7 @@ import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
 import type { MutationSession } from '../mutation/session';
 import * as tree from '../mutation/tree';
+import * as anchor from '../mutation/anchor';
 import { profile } from '../profile';
 
 declare const scopeValue: unique symbol;
@@ -173,8 +175,11 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     node: DocumentNode | undefined;
     value: unknown;
     generation: number;
-    children?: Map<string, Target>;
-    proxy?: object;
+    children:
+      | { kind: 'fixed'; schema: DocumentNode; slots: (Target | undefined)[] }
+      | { kind: 'dynamic'; keys: Map<string, Target> }
+      | undefined;
+    proxy: object | undefined;
     container?: ResolvedContainer;
   };
   const addressOf = (target: Target): DocumentAddress => {
@@ -233,31 +238,52 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     target.proxy = proxy;
     return proxy;
   };
-  const childAccess = (target: Target, key: string, node: DocumentNode, value: unknown) => {
+  const createTarget = (
+    at: DocumentAddress | undefined,
+    parent: Target | undefined,
+    key: string
+  ): Target => ({
+    at,
+    parent,
+    key,
+    node: undefined,
+    value: undefined,
+    generation: -1,
+    children: undefined,
+    proxy: undefined,
+  });
+  const childAccess = (
+    target: Target,
+    member: string | FixedMember,
+    node: DocumentNode,
+    value: unknown
+  ) => {
+    const key = typeof member === 'string' ? member : member.key;
     if (node.kind === 'field' || value === undefined) {
       if (context.dependencies) collect(context, childAt(target, key));
       return value;
     }
-    const children = (target.children ??= new Map());
-    let child = children.get(key);
-    if (child?.generation === target.generation) return child.proxy;
-    if (!child) {
-      child = {
-        at: undefined,
-        parent: target,
-        key,
-        node,
-        value,
-        generation: target.generation,
-        children: undefined,
-        proxy: undefined,
-      };
-      children.set(key, child);
+    let children = target.children;
+    let child: Target;
+    if (typeof member !== 'string') {
+      if (children?.kind !== 'fixed' || children.schema !== target.node)
+        children = {
+          kind: 'fixed',
+          schema: target.node!,
+          slots: new Array(compiledShape(target.node!, target.value)!.members.size),
+        };
+      child = children.slots[member.slot] ??= createTarget(undefined, target, key);
     } else {
-      child.node = node;
-      child.value = value;
-      child.generation = target.generation;
+      if (children?.kind !== 'dynamic') children = { kind: 'dynamic', keys: new Map() };
+      const retained = children.keys.get(key);
+      child = retained ?? createTarget(undefined, target, key);
+      if (!retained) children.keys.set(key, child);
     }
+    target.children = children;
+    if (child.generation === target.generation) return child.proxy;
+    child.node = node;
+    child.value = value;
+    child.generation = target.generation;
     return access(child);
   };
   // Collection closures must not allocate a lexical environment for every field read.
@@ -286,7 +312,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         collect(context, at, 'collection', id);
         return node.kind === 'table'
           ? Object.hasOwn((current as { byId: object }).byId, id)
-          : (current as unknown[]).some(item => node.keyOf(item) === id);
+          : anchor.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
       };
       if (property === 'ids') return ids;
       if (property === 'has') return has;
@@ -324,7 +350,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         if (property === 'remove') return (id: string) => mutable().listRemove(at, id);
         if (property === 'set')
           return (id: string, value: unknown) => mutable().listSet(at, id, value);
-        if (property === 'replace') return (value: unknown) => mutable().set(at, value, true, true);
+        if (property === 'replace') return (value: unknown) => mutable().replace(at, value);
       }
       return undefined;
     }
@@ -358,7 +384,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       if (property === 'move')
         return (id: string, position?: tree.TreePosition) =>
           mutable().treeEdit(at, (value, capture) => tree.move(value, id, position, capture, at));
-      if (property === 'replace') return (value: unknown) => mutable().set(at, value, true, true);
+      if (property === 'replace') return (value: unknown) => mutable().replace(at, value);
       return undefined;
     }
   };
@@ -388,7 +414,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         collect(context, childAt(target, property));
         return (value as Record<string, unknown>)[property];
       }
-      const member = compiledMembers(node, value)?.get(property);
+      const member = compiledShape(node, value)?.members.get(property);
       if (!member) return undefined;
       if (member.field) {
         if (context.dependencies) collect(context, childAt(target, property));
@@ -396,7 +422,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       }
       return childAccess(
         target,
-        property,
+        node.kind === 'object' ? member : property,
         member.node,
         (value as Record<string, unknown>)[property]
       );
@@ -412,7 +438,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         throw new TypeError('Invalid structural assignment.');
       if (node.kind === 'variant' && node.tag === property)
         throw new TypeError('Variant discriminants are read-only.');
-      session.setMember(writableContainer(target, session), property, value);
+      session.assignMember(writableContainer(target, session), property, value);
       return true;
     },
     deleteProperty: (target, property) => {
@@ -458,16 +484,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       throw new TypeError('Document access cannot be frozen.');
     },
   };
-  const root = resolve({
-    at: initial,
-    parent: undefined,
-    key: '',
-    node: undefined,
-    value: undefined,
-    generation: -1,
-    children: undefined,
-    proxy: undefined,
-  });
+  const root = resolve(createTarget(initial, undefined, ''));
   if (!root.node || root.node.kind === 'field' || root.value === undefined) {
     if (context.dependencies) collect(context, initial);
     return root.value;

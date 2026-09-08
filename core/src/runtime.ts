@@ -198,7 +198,7 @@ export const createDocument = <S extends ObjectNode>(input: {
       const session = new MutationSession(state);
       let committed = false;
       try {
-        session.set([], value, true, true);
+        session.replace([], value);
         const changes = session.finish();
         if (!changes.changes.length) return { status: 'unchanged', revision };
         committed = true;

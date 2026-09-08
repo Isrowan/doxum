@@ -34,6 +34,70 @@ export const keys = (values: readonly unknown[], keyOf: (value: unknown) => stri
   },
 });
 
+const listIndexes = new WeakMap<
+  readonly unknown[],
+  { keyOf: (value: unknown) => string; order: KeyOrder }
+>();
+
+/** Canonical lists keep their key positions until a structural write invalidates them. */
+export const indexedKeys = (
+  values: readonly unknown[],
+  keyOf: (value: unknown) => string
+): KeyOrder => {
+  const cached = listIndexes.get(values);
+  if (cached?.keyOf === keyOf) return cached.order;
+  let positions: Map<string, number> | undefined;
+  const order: KeyOrder = {
+    length: values.length,
+    at: index => (index >= 0 && index < values.length ? keyOf(values[index]) : undefined),
+    index: key => {
+      if (!positions) {
+        positions = new Map();
+        for (let i = 0; i < values.length; i++) positions.set(keyOf(values[i]), i);
+        profile.address.listIndex(values.length);
+      }
+      return positions.get(key) ?? -1;
+    },
+  };
+  listIndexes.set(values, { keyOf, order });
+  return order;
+};
+
+/** Structural sequence writes own invalidation, including rollback writes. */
+export const insert = (values: unknown[], index: number, value: unknown): void => {
+  values.splice(index, 0, value);
+  listIndexes.delete(values);
+};
+
+export const remove = (values: unknown[], index: number): void => {
+  values.splice(index, 1);
+  listIndexes.delete(values);
+};
+
+export const move = (values: unknown[], from: number, to: number): void => {
+  const [value] = values.splice(from, 1);
+  values.splice(to, 0, value);
+  listIndexes.delete(values);
+};
+
+export const install = (
+  values: unknown[],
+  keyOf: (value: unknown) => string,
+  order: readonly string[]
+): void => {
+  const byKey = new Map<string, unknown>();
+  for (const value of values) byKey.set(keyOf(value), value);
+  values.length = order.length;
+  for (let index = 0; index < order.length; index++) values[index] = byKey.get(order[index]);
+  listIndexes.delete(values);
+};
+
+export const matches = (order: readonly string[], members: readonly string[]): boolean => {
+  if (order.length !== members.length) return false;
+  const ids = new Set(order);
+  return ids.size === order.length && members.every(id => ids.has(id));
+};
+
 export const index = (keys: Keys, anchor?: DocumentAnchor): number => {
   if (!anchor) return length(keys);
   if ('at' in anchor) return anchor.at === 'start' ? 0 : length(keys);

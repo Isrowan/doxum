@@ -38,6 +38,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
   rollback and final net changes grouped by owning container; do not keep per-write
   forward/inverse logs or a flat ChangeSet intermediate representation.
   Members publish added/removed/updated transitions; root reset is explicit.
+  Fixed members use schema slots; coverage indexes store owning groups, not scalar leaves.
+  Reuse validated ChangeSet publications by identity under the readonly ownership contract.
 - Public `apply` requires a matching `expectedRevision`. Record actual local
   before values rather than trusting incoming reverse data. Local root resets
   are reversible; remote commits invalidate local history.
@@ -50,12 +52,18 @@ when a change touches addressing, mutation, impact, notifications, or views.
   links; validate replacement and import boundaries before writing them.
 - `mutation/anchor.ts` owns ordered-key and Anchor semantics. Table, list, and
   recorder code must call it rather than recreate key/index calculations.
+  Canonical list key indexes are derived caches; structural writes and rollback
+  use anchor sequence operations that own invalidation. Do not expose a separate
+  manual cache-invalidation protocol. Pure value replay must not revalidate unrelated collection values.
 - `impact-target.ts` owns `ImpactTarget` address, schema ownership, identity,
   equality, bucketing, and exact subscription matching. Notifications must not
   construct commit impact indexes to filter candidates. Core and React must not inspect selector target
   shapes locally.
 - Schema resolution is authoritative for changes and selectors. Do not add
   alternate string-path parsers or separate address models.
+  Fixed and dynamic member layouts are discriminated schema facts; fixed members
+  always have slots. Object/variant input is closed to undeclared own properties;
+  use maps for dynamic keys and fields for arbitrary payloads.
 - `access/scope.ts` owns Read/Draft access. Structural scopes expire at callback
   completion; atomic field interiors are readonly under the ownership contract.
   `assign` accepts plain Infer replacements through the same mutation session.
@@ -93,6 +101,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
 - Public behavior is exported deliberately from package entry points. Keep
   internal runtime plumbing unexported unless it forms a stable external
   contract.
+- Local-sync change limits govern admission of new local commits, not durable
+  replay. Previously admitted records must remain readable under smaller current limits.
 - Keep package-specific dependencies in that package. Shared build and test
   tooling belongs in the root `package.json`.
 - Keep `format`, `format:check`, and `lint` passing. The root lint policy is

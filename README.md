@@ -34,7 +34,11 @@ document.update(draft => {
 The root object is the schema identity. Multiple runtimes can share its definition;
 their data, revisions and subscriptions remain independent. Definitions are immutable.
 
-`object()` exposes editable structure. `field<T>()` is atomic: replace the whole
+`object()` exposes editable structure with a closed schema: undeclared own properties,
+including symbols and non-enumerable properties, are rejected at input boundaries.
+A variant allows its discriminant and the active branch's declared members.
+Use `map()` for dynamic keys and `field<T>()` for arbitrary payload objects.
+`field<T>()` is atomic: replace the whole
 value, including objects, arrays, Maps and Dates. Atomic payloads are shared by
 reference across inputs, reads, snapshots, commits and history. They are deeply
 readonly in `Infer`/`Read`/`Draft`: never mutate them through any alias, even after
@@ -156,6 +160,11 @@ values support reverse replay but are not trusted as local undo data; the runtim
 captures its actual old state. Revision is a local baseline, not a distributed
 conflict-resolution protocol.
 
+Published ChangeSets are readonly in their entirety, including envelope objects,
+addresses, transitions and order arrays. The runtime reuses validation of its own
+publications and normalized storage input by identity; fresh unknown input still
+passes through the decoder and every apply validates against current local state.
+
 `history.undo()` and `redo()` replay the same changes by direction. A history group
 holds complete commits and travels atomically with one notification:
 
@@ -214,6 +223,9 @@ databases are rejected without upgrading, deleting or converting their data.
 This JSON adapter rejects non-JSON atomic values. Network collaboration and
 collaborative undo remain separate concerns; see [collaboration design](COLLABORATION_DESIGN.md).
 Change count limits count individual members and tree nodes, not just outer groups.
+`changeLimits` applies to newly authored local commits. Previously persisted
+commits remain readable by followers and after reopening with smaller limits;
+their JSON and ChangeSet structure are still validated.
 
 ## Development
 

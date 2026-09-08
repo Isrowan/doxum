@@ -32,6 +32,8 @@ document.subscribe(
 
 object 暴露可编辑成员；field 是原子值，包括对象和数组。Infer 与作用域内原子值深只读；
 输入、快照、commit 和 history 共享 payload 引用，删除后也不能通过任何别名修改它。
+object/variant 结构只接受 schema 声明的自身属性及 variant 判别字段；额外的字符串、Symbol 和不可枚举属性都会被拒绝。
+动态键使用 map，任意对象内部数据使用 field；这个限制不检查 field 的 payload 内部。
 snapshot 只复制 schema 结构；snapshot(rawPayload) 返回原始只读引用。
 发布数据不做运行时冻结，不再支持字段 copier。需要可修改副本或序列化时由应用边界显式处理。
 
@@ -79,3 +81,5 @@ doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入�
 follower 连续重放 durable seq。先可见后异步落盘，flush 等待持久化。
 附着期间禁止外部 replace 和外部标记 remote 的 apply。版本 4 / 格式 2 拒绝旧存储，
 保留数据且不迁移。适配器仅接收 JSON 值，变化数量限制统计逻辑成员和树节点，不能按外层分组数绕过。
+限额仅约束新产生的本地提交；减小当前限额不影响既有持久化提交的读取。
+整个已发布 ChangeSet 都必须只读，其身份可复用结构校验结果，但不跳过本地 revision、schema 和真实 before 检查。

@@ -5,8 +5,8 @@ import {
   nodeAt,
   read,
   resolveContainer,
-  memberNode,
   memberKey,
+  type CompiledMember,
   type ResolvedContainer,
 } from '../address';
 import { checkKey, checkValue, copyValue } from '../schema-value';
@@ -56,9 +56,8 @@ export class MutationSession {
       fail(at, 'invalid-address', 'Container does not exist.')
     );
   }
-  set(at: DocumentAddress, value: unknown, present = true, replacement = false): void {
+  replace(at: DocumentAddress, value: unknown): void {
     if (!at.length) {
-      if (!present) return fail(at, 'required-field', 'The root cannot be removed.');
       this.validate(this.state.schema, value, at);
       if (Object.is(this.state.document, value)) return;
       this.recorder.reset();
@@ -66,61 +65,88 @@ export class MutationSession {
       this.invalidate();
       return;
     }
-    this.writeMember(this.resolve(at.slice(0, -1)), at[at.length - 1], value, present, replacement);
+    this.writeMember(this.resolve(at.slice(0, -1)), at[at.length - 1], value, 'set');
   }
-  setMember(container: ResolvedContainer, key: string, value: unknown): void {
-    this.writeMember(container, key, value, true, false);
-  }
-  removeMember(container: ResolvedContainer, key: string): void {
-    this.writeMember(container, key, undefined, false, true);
-  }
-  private writeMember(
-    container: ResolvedContainer,
-    key: string,
-    value: unknown,
-    present: boolean,
-    replacement: boolean
-  ): void {
-    if (container.owner !== this.identity)
-      return fail(
-        container.at,
-        'invalid-address',
-        'Container belongs to another mutation session.'
-      );
-    if (container.generation !== this.generation) container = this.resolve(container.at);
-    const parentNode = container.node;
-    const node = memberNode(container, key);
-    if (!node) return fail(container.at.concat(key), 'invalid-address', 'Address does not exist.');
-    if (parentNode.kind === 'variant' && parentNode.tag === key)
-      return fail(
-        container.at.concat(key),
-        'invalid-value',
-        'Variant discriminants are read-only.'
-      );
-    const entry =
-      parentNode.kind === 'map' || parentNode.kind === 'table' || parentNode.kind === 'list';
+  assignMember(container: ResolvedContainer, key: string, value: unknown): void {
+    container = this.current(container);
+    const member = this.definition(container, key);
     if (
-      !replacement &&
-      !entry &&
-      node.kind !== 'field' &&
-      node.kind !== 'variant' &&
-      !node.optional
+      container.layout.kind === 'fixed' &&
+      member.node.kind !== 'field' &&
+      member.node.kind !== 'variant' &&
+      !member.node.optional
     )
       return fail(
         container.at.concat(key),
         'invalid-value',
         'Replace fields, variants, or collection entries; edit object members individually.'
       );
+    this.writeLocatedMember(container, key, member, memberKey(container, key), value, 'set');
+  }
+  removeMember(container: ResolvedContainer, key: string): void {
+    this.writeMember(container, key, undefined, 'remove');
+  }
+  private current(container: ResolvedContainer): ResolvedContainer {
+    if (container.owner !== this.identity)
+      return fail(
+        container.at,
+        'invalid-address',
+        'Container belongs to another mutation session.'
+      );
+    return container.generation === this.generation ? container : this.resolve(container.at);
+  }
+  private definition(container: ResolvedContainer, key: string): CompiledMember {
+    const layout = container.layout;
+    const member = layout.kind === 'dynamic' ? layout.entry : layout.members.get(key);
+    if (!member)
+      return fail(container.at.concat(key), 'invalid-address', 'Address does not exist.');
+    return member;
+  }
+  private writeMember(
+    container: ResolvedContainer,
+    key: string,
+    value: unknown,
+    operation: 'set' | 'remove'
+  ): boolean {
+    container = this.current(container);
+    const member = this.definition(container, key);
+    return this.writeLocatedMember(
+      container,
+      key,
+      member,
+      memberKey(container, key),
+      value,
+      operation
+    );
+  }
+  /** Location and definition are resolved once by the calling operation. */
+  private writeLocatedMember(
+    container: ResolvedContainer,
+    key: string,
+    member: CompiledMember,
+    physicalKey: string | number,
+    value: unknown,
+    operation: 'set' | 'remove'
+  ): boolean {
+    const parentNode = container.node;
+    const node = member.node;
+    const present = operation === 'set';
+    if (parentNode.kind === 'variant' && parentNode.tag === key)
+      return fail(
+        container.at.concat(key),
+        'invalid-value',
+        'Variant discriminants are read-only.'
+      );
+    const entry = container.layout.kind === 'dynamic';
     if (!present && !node.optional && !entry)
       return fail(
         container.at.concat(key),
         'required-field',
         'A required value cannot be removed.'
       );
-    const physicalKey = memberKey(container, key);
     const existed = Object.hasOwn(container.parent, physicalKey);
     const previous = (container.parent as Record<string | number, unknown>)[physicalKey];
-    if (existed === present && (!present || Object.is(previous, value))) return;
+    if (existed === present && (!present || Object.is(previous, value))) return false;
     if (parentNode.kind === 'map' || parentNode.kind === 'table') {
       const issue = checkKey(parentNode.key, key, []);
       if (issue)
@@ -139,10 +165,14 @@ export class MutationSession {
           'Replacing an item must retain its addressed key.'
         );
     }
-    this.recorder.member(container, key, node, physicalKey);
+    const membershipChanged = entry && existed !== present;
+    if (membershipChanged && (parentNode.kind === 'list' || parentNode.kind === 'table'))
+      this.recorder.order(container.at);
+    this.recorder.member(container, key, member, physicalKey);
     const next = present ? (node.kind === 'field' ? value : copyValue(node, value)) : undefined;
     installMember(container.parent, physicalKey, present, next);
-    if (node.kind !== 'field' || (entry && existed !== present)) this.invalidate();
+    if (node.kind !== 'field' || membershipChanged) this.invalidate();
+    return membershipChanged;
   }
   private invalidate(): void {
     this.generation++;
@@ -177,7 +207,7 @@ export class MutationSession {
     if (!entries.length) return;
     this.recorder.order(at);
     const index = anchor.index(table.ids, position);
-    for (const entry of entries) this.set([...at, entry.id], entry.value);
+    for (const entry of entries) this.replace([...at, entry.id], entry.value);
     const length = table.ids.length;
     table.ids.length += entries.length;
     table.ids.copyWithin(index + entries.length, index, length);
@@ -193,7 +223,7 @@ export class MutationSession {
     if (!ids.length) return;
     this.recorder.order(at);
     const removed = new Set(ids);
-    for (const id of removed) this.set([...at, id], undefined, false);
+    for (const id of removed) this.removeMember(this.resolve(at), id);
     table.ids = table.ids.filter(id => !removed.has(id));
   }
   move(at: DocumentAddress, id: string, position?: DocumentAnchor): void {
@@ -209,8 +239,7 @@ export class MutationSession {
     const next = anchor.afterRemove(keys, index, position);
     if (next === index) return;
     this.recorder.order(at);
-    const [item] = items.splice(index, 1);
-    items.splice(next, 0, item);
+    anchor.move(items, index, next);
     this.invalidate();
   }
   listInsert(at: DocumentAddress, value: unknown, position?: DocumentAnchor): void {
@@ -224,25 +253,34 @@ export class MutationSession {
     if (keys.index(id) >= 0) return fail(at, 'duplicate-list-item', 'List key already exists.');
     if (!anchor.valid(keys, position)) return fail(at, 'invalid-anchor', 'Unknown list anchor.');
     this.recorder.order(at);
-    this.recorder.member(this.resolve(at), id, node.value);
-    items.splice(anchor.index(keys, position), 0, value);
+    const container = this.resolve(at);
+    this.recorder.member(container, id, this.definition(container, id), -1);
+    anchor.insert(items, anchor.index(keys, position), value);
     this.invalidate();
   }
   listSet(at: DocumentAddress, id: string, value: unknown): void {
     const { node, value: items } = this.container(at);
     if (node.kind !== 'list') return fail(at, 'invalid-list-key', 'Expected a list.');
-    if (anchor.keys(items as unknown[], node.keyOf).index(id) < 0)
-      return fail(at, 'missing-list-item', 'List key does not exist.');
-    if (node.keyOf(value) !== id)
-      return fail(at, 'invalid-list-key', 'Replacing an item must retain its key.');
-    this.set([...at, id], value);
+    const index = anchor.indexedKeys(items as unknown[], node.keyOf).index(id);
+    if (index < 0) return fail(at, 'missing-list-item', 'List key does not exist.');
+    const container = this.resolve(at);
+    this.writeLocatedMember(container, id, this.definition(container, id), index, value, 'set');
   }
   listRemove(at: DocumentAddress, id: string): void {
     const { node, value } = this.container(at);
-    if (node.kind !== 'list' || anchor.keys(value as unknown[], node.keyOf).index(id) < 0)
-      return fail(at, 'missing-list-item', 'List key does not exist.');
+    if (node.kind !== 'list') return fail(at, 'missing-list-item', 'List key does not exist.');
+    const index = anchor.keys(value as unknown[], node.keyOf).index(id);
+    if (index < 0) return fail(at, 'missing-list-item', 'List key does not exist.');
     this.recorder.order(at);
-    this.set([...at, id], undefined, false);
+    const container = this.resolve(at);
+    this.writeLocatedMember(
+      container,
+      id,
+      this.definition(container, id),
+      index,
+      undefined,
+      'remove'
+    );
   }
   treeEdit(
     at: DocumentAddress,
@@ -285,13 +323,9 @@ export class MutationSession {
     for (const change of changes.changes) {
       if (change.kind === 'order') continue;
       if (change.kind === 'reset') {
-        this.set([], change[side], true, true);
+        this.replace([], change[side]);
       } else if (change.kind === 'members') {
         const container = this.resolve(change.at);
-        if (container.node.kind === 'list' || container.node.kind === 'table') {
-          this.recorder.order(change.at);
-          containers.set(JSON.stringify(change.at), change.at);
-        }
         for (const member of change.members) {
           const present = side === 'after' ? member.kind !== 'removed' : member.kind !== 'added';
           const value =
@@ -302,7 +336,14 @@ export class MutationSession {
               : member.kind !== 'added'
                 ? member.before
                 : undefined;
-          this.writeMember(container, member.key, value, present, true);
+          const membershipChanged = this.writeMember(
+            container,
+            member.key,
+            value,
+            present ? 'set' : 'remove'
+          );
+          if (membershipChanged && container.node.kind === 'table')
+            containers.set(JSON.stringify(change.at), change.at);
         }
       } else {
         this.treeEdit(change.at, (current, capture) => {
@@ -342,23 +383,24 @@ export class MutationSession {
           node?.kind === 'table'
             ? Object.keys((current as { byId: object }).byId)
             : orderOf(this.state, change.at);
-        const next = change[side],
-          nextKeys = new Set(next);
-        if (keys.length !== next.length || keys.some(id => !nextKeys.has(id)))
+        const next = change[side];
+        if (!anchor.matches(next, keys))
           return fail(
             change.at,
             'invalid-changes',
             'Order must contain exactly the resulting keys.'
           );
         installOrder(this.state, change.at, next);
-        containers.set(JSON.stringify(change.at), change.at);
+        containers.delete(JSON.stringify(change.at));
       }
-    for (const at of containers.values())
-      this.validate(
-        nodeAt(this.state.schema, at, this.state.document)!,
-        read(this.state.document, at, this.state.schema),
-        at
-      );
+    for (const at of containers.values()) {
+      const table = read(this.state.document, at, this.state.schema) as {
+        ids: string[];
+        byId: object;
+      };
+      if (!anchor.matches(table.ids, Object.keys(table.byId)))
+        return fail(at, 'invalid-changes', 'Table membership changes require a matching order.');
+    }
     this.invalidate();
   }
   finish(): ChangeSet {

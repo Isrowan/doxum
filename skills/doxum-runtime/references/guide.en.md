@@ -33,7 +33,10 @@ restore all work and rethrow unchanged. False/undefined returns are business val
 
 Object exposes editable members; field is atomic, including arrays and objects.
 Atomic values are deeply readonly in Infer and scoped access. Inputs, snapshots,
-commits and history share payload references. Never mutate them through any alias,
+commits and history share payload references. Object/variant structure accepts only
+declared own properties (plus the variant discriminant); extra string, symbol and
+non-enumerable properties are rejected. Use maps for dynamic keys and fields for
+arbitrary payload objects. Never mutate payloads through any alias,
 even after removal. Snapshot copies schema structure only; snapshot(rawPayload)
 returns its original readonly reference. Published data is not frozen. Field copiers
 are not supported; mutable exports and serialization belong to application boundaries.
@@ -89,3 +92,7 @@ persistence; flush waits for durability. External replace and external remote-ma
 apply are forbidden while attached. Version 4 / format 2 rejects old storage without
 deleting or migrating it. The adapter accepts JSON values only. Change limits count
 logical members and tree nodes, not just outer groups.
+Limits govern new local commits only; existing durable commits remain readable
+under smaller current limits. Treat the whole published ChangeSet as readonly:
+its identity carries reusable structural validation, not authority to skip local
+revision, schema or actual-before checks.

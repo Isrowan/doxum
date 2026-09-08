@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-import { createDocument, createProjectionRuntime, field, object, select, table } from '../src';
+import { createDocument, createProjectionRuntime, field, map, object, select, table } from '../src';
 import {
   attachLocalSync,
   LocalSyncDataError,
@@ -393,5 +393,50 @@ describe('local sync', () => {
     await waitFor(() => localSync.state.current().status === 'error');
     await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
     await localSync.dispose();
+  });
+  it('replays previously admitted commits under smaller current write limits', async () => {
+    const schema = object({ values: map(field<number>()) });
+    const databaseName = database();
+    const leader = createDocument({ schema, initial: { values: {} } });
+    const sync = await attachLocalSync({
+      runtime: leader,
+      database: databaseName,
+      documentId: 'document',
+      changeLimits: { maxChanges: 2000 },
+    });
+    expect(
+      leader.update(d => {
+        for (let i = 0; i < 1500; i++) d.values[String(i)] = i;
+      }).status
+    ).toBe('committed');
+    await sync.flush();
+    const follower = createDocument({ schema, initial: { values: {} } });
+    const followerSync = await attachLocalSync({
+      runtime: follower,
+      database: databaseName,
+      documentId: 'document',
+      changeLimits: { maxChanges: 1 },
+    });
+    expect(follower.snapshot()).toEqual(leader.snapshot());
+    await followerSync.dispose();
+    await sync.dispose();
+    const reopened = createDocument({ schema, initial: { values: {} } });
+    const reopenedSync = await attachLocalSync({
+      runtime: reopened,
+      database: databaseName,
+      documentId: 'document',
+      changeLimits: { maxChanges: 1 },
+    });
+    expect(reopened.snapshot()).toEqual(leader.snapshot());
+    expect(
+      reopened.update(d => {
+        d.values['0'] = -1;
+      }).status
+    ).toBe('committed');
+    await reopenedSync.flush();
+    await reopenedSync.dispose();
+    reopened.dispose();
+    follower.dispose();
+    leader.dispose();
   });
 });

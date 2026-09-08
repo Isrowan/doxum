@@ -15,7 +15,8 @@ import {
   type LocalSync,
   type LocalSyncState,
 } from './contract';
-import { json, jsonArray, type JsonValue } from './json';
+import { json, jsonChanges } from './json';
+import type { ChangeSet } from '../changes';
 import { openIndexedDbTimeline, type StoredCommit } from './timeline';
 
 type LockOptions = {
@@ -180,10 +181,11 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
       if (commit.seq !== headSeq + 1)
         throw new LocalSyncConsistencyError('Local commit log contains a sequence gap.');
       const result = runRuntime(() =>
-        runtime.apply(
-          { changes: commit.changes },
-          { expectedRevision: runtime.revision(), source: 'remote', history: false }
-        )
+        runtime.apply(commit.changes, {
+          expectedRevision: runtime.revision(),
+          source: 'remote',
+          history: false,
+        })
       );
       if (result.status !== 'committed')
         throw new LocalSyncConsistencyError('A stored local ChangeSet could not be applied.');
@@ -227,7 +229,7 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
       return next;
     };
 
-    const persist = async (changes: readonly JsonValue[]): Promise<void> => {
+    const persist = async (changes: ChangeSet): Promise<void> => {
       const storedCommit = await timeline.append({
         documentId,
         expectedHeadSeq: headSeq,
@@ -246,10 +248,10 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
 
     const record = (commit: DocumentCommit<TSchema>): void => {
       try {
-        const changes = jsonArray(
-          commit.changes.changes,
+        const changes = jsonChanges(
+          commit.changes,
           'local commit changes',
-          input.changeLimits
+          input.changeLimits ?? {}
         );
         void enqueue(() => persist(changes)).catch(() => undefined);
       } catch (error) {

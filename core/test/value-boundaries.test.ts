@@ -29,6 +29,120 @@ const text = (value: unknown): string => {
 };
 
 describe('schema validation and snapshots', () => {
+  it('rejects undeclared object properties at construction, parse and root replacement', () => {
+    const schema = object({ n: field(number) });
+    const invalid = { n: 1, extra: 2 };
+    expect(() => createDocument({ schema, initial: invalid })).toThrow('not declared');
+    expect(() => parse(schema, invalid)).toThrow('not declared');
+    const runtime = createDocument({ schema, initial: { n: 0 } });
+    expect(runtime.replace(invalid).status).toBe('rejected');
+    expect(runtime.snapshot()).toEqual({ n: 0 });
+    expect(runtime.revision()).toBe(0);
+  });
+
+  it('rejects undeclared symbols and non-enumerable properties on structural objects', () => {
+    const schema = object({ n: field(number) });
+    const symbol = { n: 1, [Symbol('extra')]: 2 };
+    const hidden = Object.defineProperty({ n: 1 }, 'extra', { value: 2 });
+    expect(() => parse(schema, symbol)).toThrow('not declared');
+    expect(() => parse(schema, hidden)).toThrow('not declared');
+  });
+
+  it('rolls back earlier edits when a replacement contains undeclared structural members', () => {
+    const schema = object({ n: field(number), rows: map(object({ value: field(number) })) });
+    const initial = { n: 0, rows: { a: { value: 1 } } };
+    const runtime = createDocument({ schema, initial });
+    const listener = vi.fn();
+    runtime.subscribe(listener);
+    const invalid = { value: 2, extra: 3 };
+    expect(
+      runtime.update(d => {
+        d.n = 1;
+        assign(d.rows, 'a', invalid);
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(listener).not.toHaveBeenCalled();
+    expect(
+      runtime.apply(
+        {
+          changes: [
+            {
+              kind: 'members',
+              at: [],
+              members: [{ key: 'n', kind: 'updated', before: 0, after: 1 }],
+            },
+            {
+              kind: 'members',
+              at: ['rows'],
+              members: [{ key: 'a', kind: 'updated', before: {}, after: invalid }],
+            },
+          ],
+        },
+        { expectedRevision: 0 }
+      ).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.revision()).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('allows only the active variant branch and preserves precise replacement history', () => {
+    const schema = object({
+      choice: variant('kind', {
+        a: object({ n: field(number), stable: field(text) }),
+        b: object({ text: field(text) }),
+      }),
+    });
+    const initial = { choice: { kind: 'a' as const, n: 1, stable: 'same' } };
+    expect(parse(schema, initial)).toEqual(initial);
+    expect(() => parse(schema, { choice: { ...initial.choice, text: 'wrong branch' } })).toThrow(
+      'not declared'
+    );
+    const runtime = createDocument({ schema, initial });
+    const listener = vi.fn();
+    runtime.subscribe(p => p.choice.stable, listener);
+    expect(
+      runtime.update(d => {
+        d.choice = { kind: 'a', n: 2, stable: 'same' };
+      }).status
+    ).toBe('committed');
+    expect(listener).not.toHaveBeenCalled();
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(listener).not.toHaveBeenCalled();
+    expect(
+      runtime.update(d => {
+        d.choice = { kind: 'b', text: 'next' };
+      }).status
+    ).toBe('committed');
+    expect(runtime.snapshot().choice).toEqual({ kind: 'b', text: 'next' });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot().choice).toEqual({ kind: 'a', n: 2, stable: 'same' });
+  });
+
+  it('keeps arbitrary payload properties inside fields and dynamic members inside maps', () => {
+    const payload = Object.defineProperty({ [Symbol('payload')]: 1 }, 'hidden', { value: 2 });
+    const schema = object({
+      payload: field(),
+      values: map(field(number)),
+      missing: optional(field(number)),
+    });
+    const runtime = createDocument({ schema, initial: { payload, values: { arbitrary: 1 } } });
+    expect(runtime.snapshot().payload).toBe(payload);
+    expect(
+      runtime.update(d => {
+        d.values.another = 2;
+        d.missing = undefined;
+      }).status
+    ).toBe('committed');
+    expect(Object.hasOwn(runtime.snapshot(), 'missing')).toBe(true);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(Object.hasOwn(runtime.snapshot(), 'missing')).toBe(false);
+    expect(runtime.snapshot().payload).toBe(payload);
+  });
+
   it('seals primitive fields with exact presence and Object.is semantics', () => {
     const token = Symbol('value');
     const schema = object({ values: map(field<unknown>()) });

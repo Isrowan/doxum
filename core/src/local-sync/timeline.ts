@@ -3,7 +3,8 @@ import {
   LocalSyncSchemaError,
   LocalSyncUnavailableError,
 } from './contract';
-import { json, jsonArray, type JsonValue } from './json';
+import { json, jsonChanges, type JsonValue } from './json';
+import type { ChangeSet } from '../changes';
 import { isRecord } from '../value/ownership';
 
 const DATABASE_VERSION = 4;
@@ -24,7 +25,7 @@ export type StoredCommit = {
   readonly formatVersion: number;
   readonly documentId: string;
   readonly seq: number;
-  readonly changes: readonly JsonValue[];
+  readonly changes: ChangeSet;
   readonly createdAt: number;
 };
 
@@ -93,7 +94,7 @@ const commitRecord = (value: unknown): StoredCommit => {
     formatVersion: FORMAT_VERSION,
     documentId: string(value.documentId, 'commit.documentId'),
     seq: positiveInteger(value.seq, 'commit.seq'),
-    changes: jsonArray(value.changes, 'commit.changes'),
+    changes: jsonChanges({ changes: value.changes }, 'commit.changes'),
     createdAt: nonNegativeInteger(value.createdAt, 'commit.createdAt'),
   });
 };
@@ -109,7 +110,7 @@ export type IndexedDbTimeline = {
   readonly append: (input: {
     readonly documentId: string;
     readonly expectedHeadSeq: number;
-    readonly changes: readonly JsonValue[];
+    readonly changes: ChangeSet;
   }) => Promise<StoredCommit>;
   readonly close: () => void;
 };
@@ -208,7 +209,7 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
         createdAt: Date.now(),
       };
       documents.put({ ...current, headSeq: commit.seq });
-      transaction.objectStore(COMMITS).put(commit);
+      transaction.objectStore(COMMITS).put({ ...commit, changes: commit.changes.changes });
       await complete(transaction);
       return Object.freeze(commit);
     },

@@ -19,7 +19,7 @@ Structural writes advance the mutation session generation. Retained proxies then
 resolve through their current parents, sharing the renewed parent resolution.
 `address.ts` owns full-path, container and compiled-member resolution. Draft assignments
 reuse a `ResolvedContainer` for the current session generation and call
-`setMember`/`removeMember`. They allocate no per-write address or resolved-member
+`assignMember`/`removeMember`. They allocate no per-write address or resolved-member
 wrapper. Address replay resolves a group container and uses the same write funnel;
 `assign` enters the ordinary proxy assignment. No access or resolved
 canonical location is reused across transactions.
@@ -28,12 +28,36 @@ MutationSession and its recorder. Existing atomic collection-member updates keep
 their generation; membership and structural changes invalidate locations.
 
 Fixed object and variant branch shapes are compiled once per schema shape into
-immutable member descriptors. Their access path no longer performs a per-read
-shape lookup or node-kind dispatch; the runtime only checks scope/generation and
-reads the current parent. Dynamic map keys and ordered collections retain their
+immutable member layouts. `FixedLayout` contains descriptors with mandatory slots;
+dynamic layouts contain a shared collection-entry descriptor. `ResolvedContainer`
+carries one discriminated layout rather than independently optional members and entry
+fields. Field access looks up its compiled descriptor and reads the current parent.
+Dynamic map keys and ordered collections retain their
 runtime lookup path, while their statically known value objects still use the
 compiled descriptors. Compilation is schema-derived and contains no document
 instance state.
+
+Fixed object members have schema-compiled lexical slot numbers. Scope child
+caches and recorder first-touch storage use these slots instead of a Map per
+object. Dynamic keys use Maps; variant access caches retain key identity across
+branch changes. A changed object schema clears its child-slot layout, while
+retained proxies continue resolving their logical addresses.
+Fixed slot arrays allocate the schema's known width, without growth capacity.
+Their storage and enumeration cost therefore depends on that fixed object shape;
+this is not an O(1) storage promise for arbitrarily wide object schemas. Dynamic
+collection size does not determine the slot array size. Session passes the compiled
+member definition through to recorder, including its slot, without resolving it again.
+Recorder member storage explicitly distinguishes fixed slots from dynamic keys;
+lookup, deletion and empty-group checks stay local to recorder. Scope owns its own
+fixed/dynamic child cache and renews the fixed cache when the object schema changes.
+
+Object and variant structure is closed. `schema-value.ts` rejects undeclared own
+properties (including symbols and non-enumerable properties) at construction, parse,
+replacement and apply boundaries. Variants additionally allow their discriminant.
+Dynamic keys belong to maps; arbitrary object interiors belong to atomic fields.
+Structure copying preserves declared property presence, enumeration order and
+enumerability. Equality and replacement diffs follow the compiled schema, with no
+fallback for extra properties. Payload interiors remain opaque and shared.
 
 ## Mutation
 
@@ -52,16 +76,29 @@ draft assignment / explicit collection method / decoded ChangeSet
 `mutation/issue.ts` creates engine issues. Application `TransactionRejected`
 is classified only at the transaction boundary. Ordinary exceptions are rethrown.
 
+Session entry points express assignment, removal or replacement. Ordinary assignment
+checks its structural replacement policy before the common write path. That path
+accepts a resolved location and a `set`/`remove` operation, with no replacement
+permission flag or optional physical-index override. Located list operations pass
+their already resolved index directly. No per-write command object is allocated.
+
+Sequence insert/remove/move/install operations in `anchor.ts` invalidate list indexes
+as part of the structural write. Session and rollback call these operations; neither
+manually invalidates the index. Installing a same-key value preserves the index.
+
 `mutation/recorder.ts` keeps one first-touch fact per value slot, one initial order
 per changed sequence, and initial states only for touched tree nodes. Structural
 captures absorb descendant facts by reconstructing the initial touched subtree.
 Unrelated entities are not cloned or traversed. List slot identity uses stable
 keys rather than moving array indices.
 
-First-touch members are grouped by their owning structural container. Each member
-map is also the deduplication registry, so there is no separate slot marker set.
-Groups share their address, schema and canonical location. Only structural
-operations build the recorder's logical-address coverage index. Absorption removes
+First-touch members are grouped by their owning structural container. The member
+slots or dynamic-key Map are also the deduplication registry; there is no separate
+slot marker set. Groups share their address, schema and canonical location.
+The coverage index stores groups at container addresses, not individual scalar
+leaves. Order and tree facts do not force scalar groups into the index; only
+structural member capture needs group coverage and absorption. An ancestor group
+is checked at the addressed key without scanning its other members. Absorption removes
 covered members and deletes empty groups; current object identity is never used
 as the authority for logical coverage across replacement.
 Published before structures and order baselines transfer from
@@ -77,7 +114,11 @@ Seal compares atomic fields with `Object.is`; structural nodes follow their valu
 schemas. Expandable structures are diffed directly without first recursively testing
 equality at each ancestor. Same-branch object replacements emit changed child facts, so deleting and
 recreating an entry does not invalidate unchanged fields. Root reset remains one
-explicit `reset` change. `schema-value.ts` owns one structure copier for canonical
+explicit `reset` change. The module-local `diffMember` algorithm only consumes schema,
+before/after values and output arrays; it cannot access recorder state. Capture,
+coverage absorption and rollback remain recorder responsibilities. These algorithms
+are separate without introducing another change representation or protocol.
+`schema-value.ts` owns one structure copier for canonical
 installation, snapshots, parse, rollback and commit publication. It copies editable
 schema structure and shares immutable payloads, including opaque classes, functions,
 list items and tree values. Snapshots never expose mutable canonical structure.
@@ -104,6 +145,14 @@ duplicates and overlaps using the shared address index and establishes determini
 lexicographic address/kind order. No string-path parser or command envelope enters
 executors.
 
+The decoder also owns the identity of validated publications. Recorder output and
+normalized decoded ChangeSets are registered in a private WeakSet; JSON validation,
+local-sync replay and public apply preserve the same ChangeSet object. Known
+publications reuse shape/conflict validation, while fresh unknown envelopes are
+always decoded. Revision checks, current schema/value validation and actual-local
+before capture still run on every apply. The entire published ChangeSet, including
+addresses, members, order arrays and payloads, is readonly by ownership contract.
+
 Application installs values first, tree units next/as encountered, then final
 orders. Table/list membership and tree structure must validate before publication.
 Conflicts are checked at logical member addresses, not group prefixes. Duplicate
@@ -111,6 +160,13 @@ groups/keys and parent replacements overlapping descendants are rejected; an
 ancestor order can coexist with descendant member changes. Actual rollback facts are captured locally, independent of
 received before values. Public apply requires `expectedRevision`; local sync
 additionally checks durable sequence under exclusive Web Lock leadership.
+
+Membership is determined from actual local presence, not the incoming transition
+label. Ordered membership changes capture an order baseline before writing.
+Pure existing-member updates validate only their new values. Explicit orders
+must match the final member keys; table membership changes without a matching
+final order are rejected. Valid values elsewhere in the collection are not
+revalidated merely because one member or the order changed.
 
 ## Derived Consumers
 
@@ -146,8 +202,17 @@ compiled schema member. Address allocation for repeated writes is bounded by
 distinct accessed containers, not assignment count. Scope counters expose proxy,
 address and cache-refresh work; recorder counters distinguish groups, first-touch
 members and published transitions. Impact counters expose explicit index builds.
-The first membership/order change of an ordered container may copy O(N) keys;
-array moves and list key lookup can also cost O(N). Tree deletion touches its
+The first membership/order change of an ordered container may copy O(N) keys.
+`anchor.ts` owns a lazy key-to-index cache for canonical list value access,
+address resolution, writes and sealing. Building it costs O(N); subsequent key
+lookups are O(1) until a membership/order change invalidates it. Cache identity
+includes the array and keyOf function; externally supplied arrays are validated
+without this cache. Pure key-preserving value updates reuse it across transactions.
+One-off structural list operations locate their positions directly and do not
+build a lookup index solely to discard it after moving elements. Array insertion,
+removal and moves still cost O(N). `profile.address.listIndexes/listItems` counts
+index builds and scanned items; `profile.recorder.indexedGroups` counts coverage
+registrations. Tree deletion touches its
 subtree; child-order edits touch affected child arrays. These costs are deliberate
 and instrumented, not hidden behind a constant-time promise.
 
@@ -166,3 +231,9 @@ also been removed. Local-sync uses IndexedDB version 4 and record format 2. Old
 databases are rejected without modification; there is no implicit migration.
 JSON change limits count individual members and `1 + nodes.length` for tree
 changes, with one unit each for order/reset, rather than only outer groups.
+`changeLimits` is an admission policy for newly authored local commits, with
+defaults applied when the attachment omits it. Reading existing durable commits
+validates JSON and ChangeSet structure without applying today's admission limits.
+This permits reopening or following a document whose earlier leader admitted a
+larger commit. Stored data retains its existing format; decoded records carry the
+normalized ChangeSet through replay without decoding it a second time.
