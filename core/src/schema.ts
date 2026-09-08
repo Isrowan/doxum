@@ -2,13 +2,26 @@ import type { Validator } from './schema-value';
 import { checkKey } from './schema-value';
 export type DocumentAddress = readonly string[];
 
+/** Shared payloads are immutable through every alias, including builtin methods. */
+export type ReadonlyValue<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends ReadonlyMap<infer K, infer V>
+    ? ReadonlyMap<ReadonlyValue<K>, ReadonlyValue<V>>
+    : T extends ReadonlySet<infer V>
+      ? ReadonlySet<ReadonlyValue<V>>
+      : T extends Date
+        ? Omit<Date, `set${string}`>
+        : T extends object
+          ? { readonly [K in keyof T]: ReadonlyValue<T[K]> }
+          : T;
+
 export type DocumentListConfig<TItem> = {
-  readonly keyOf: (item: TItem) => string;
+  readonly keyOf: (item: ReadonlyValue<TItem>) => string;
 };
 export type DocumentTreeNode<TValue> = {
   readonly parentId?: string;
   readonly children: readonly string[];
-  readonly value?: TValue;
+  readonly value?: ReadonlyValue<TValue>;
 };
 export type DocumentTreeValue<TValue> = {
   readonly rootId?: string;
@@ -22,7 +35,6 @@ type BaseNode<K extends string> = {
 export type FieldNode<T, Optional extends boolean = false> = BaseNode<'field'> & {
   readonly __value?: T;
   readonly validator?: Validator<T>;
-  snapshot?(value: T): T;
 } & (Optional extends true ? { readonly optional: true } : { readonly optional?: false });
 /** A node with optional presence. The marker replaces, rather than intersects, a field marker. */
 export type OptionalNode<TNode extends DocumentNode> =
@@ -61,7 +73,7 @@ export type MapNode<
 };
 export type ListNode<TItem> = BaseNode<'list'> & {
   readonly value: FieldNode<TItem, boolean>;
-  keyOf(item: TItem): string;
+  keyOf(item: ReadonlyValue<TItem>): string;
 };
 export type TreeNode<TValue> = BaseNode<'tree'> & {
   readonly value: FieldNode<TValue, boolean>;
@@ -88,8 +100,8 @@ export type Infer<T extends DocumentNode> = T extends { readonly optional: true 
 type NodeValue<N> =
   N extends FieldNode<infer T, infer O>
     ? O extends true
-      ? T | undefined
-      : T
+      ? ReadonlyValue<T> | undefined
+      : ReadonlyValue<T>
     : N extends ObjectNode<infer S>
       ? ShapeValue<S>
       : N extends VariantNode<infer T, infer V>
@@ -104,7 +116,7 @@ type NodeValue<N> =
           : N extends MapNode<infer V, infer K>
             ? Readonly<Record<K, NodeValue<V>>>
             : N extends ListNode<infer I>
-              ? readonly I[]
+              ? readonly ReadonlyValue<I>[]
               : N extends TreeNode<infer T>
                 ? DocumentTreeValue<T>
                 : never;
@@ -212,10 +224,8 @@ export type CollectionNode<T> =
     : ValueSchemaNode;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
-export const field = <T>(
-  validator?: Validator<T>,
-  options?: { snapshot(value: T): T }
-): FieldNode<T> => node({ kind: 'field', ...(validator ? { validator } : {}), ...options });
+export const field = <T>(validator?: Validator<T>): FieldNode<T> =>
+  node({ kind: 'field', ...(validator ? { validator } : {}) });
 type OptionalLeaf =
   | FieldNode<unknown, boolean>
   | VariantNode<string, VariantShape>

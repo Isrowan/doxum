@@ -1,9 +1,9 @@
 # Value Boundaries
 
-`Infer<N>` describes independent schema data. `Read<N>` and `Draft<N>` describe
-scoped access with different permissions. `snapshot(scope)` returns the matching
-Infer value at that instant. Its structural objects can be frozen, while detached
-atomic builtins remain independent values.
+`Infer<N>` describes readonly schema data, including readonly atomic payloads.
+`Read<N>` and `Draft<N>` describe scoped access with different permissions.
+`snapshot(scope)` returns the matching Infer value at that instant. Its editable
+schema structure is independent, and its immutable payloads are shared.
 
 ## Structure And Atomic Values
 
@@ -13,15 +13,30 @@ value; never mutate its nested arrays, Map entries, Date state or object members
 This is an ownership contract, not a runtime defensive deep-proxy mechanism.
 
 Canonical copies traverse editable schema structure and preserve atomic payloads.
-Callers must stop mutating supplied payloads. Snapshots detach atomic values and
-use a field's `snapshot(value)` copier for opaque classes or functions. Copiers
-must be synchronous and return independent values. Lists and trees get their
-validation and copying rules from their field value node.
+Inputs, Read/Draft, snapshots, ChangeSets, history and projections may all retain
+the same payload reference. Callers must never mutate a supplied payload through
+any alias, including after it is replaced or removed: history may still retain it.
+This includes builtin mutation methods and mutable state reachable through classes
+or function closures. `ReadonlyValue<T>` expresses common readonly types; it cannot
+prevent every mutating method on arbitrary classes or typed arrays.
 
-A standalone raw field value carries no schema metadata. `snapshot(rawValue)`
-uses generic copying; snapshot the containing structural scope to invoke the
-field's custom copier. Detached collection read methods reject use after their
-schema branch changes; fetch the method from the current proxy again.
+`copyValue` is the single schema structure copier. Object/map/table structures,
+list arrays and tree topology are copied; fields, list items and tree payloads are
+shared. Extra properties outside an object's declared shape are opaque readonly
+values too. Subsequent document writes cannot change an earlier snapshot's structure.
+Root snapshots, scoped snapshots and strict parse all follow these rules.
+There is no field copier option. `snapshot(rawValue)` has no schema metadata and
+returns the original readonly value without traversing it.
+
+Commits, ChangeSets, addresses, snapshots and their payloads are readonly by contract.
+The publication path does not freeze them. Do not modify published structures even
+when JavaScript permits it: history and other consumers can share them. Mutable
+application exports require an explicit application-owned copy (`structuredClone`
+for supported data, or domain-specific conversion for other values). Serialization
+belongs to adapters; local sync still accepts JSON data only.
+
+Detached collection read methods reject use after their schema branch changes;
+fetch the method from the current proxy again.
 
 Atomic equality is `Object.is`. Replacing a field object with an equal-looking
 new object is a change. Restoring the same original atomic reference is net-zero.
@@ -54,9 +69,12 @@ scope, ordinary object as a whole, or a variant discriminant.
 
 ## Validation
 
-Validators are synchronous, value-preserving functions or Standard Schema v1
-objects. Validation runs against detached input so a validator cannot mutate a
-canonical payload. Transformation and async validation are rejected.
+Validators are pure synchronous functions or Standard Schema v1 objects. They
+receive the original input reference. They must not mutate input or perform side
+effects. A successful output is ignored; Doxum retains the original input and does
+not detect transformations or compare input/output deeply. Perform conversions
+before entering Doxum. Mutation by a validator violates the ownership contract and
+cannot be repaired by transaction rollback. Async validation is rejected.
 Strict `parse` requires validators for atomic values; typed runtime fields may
 omit them. Incremental writes validate only their affected values.
 

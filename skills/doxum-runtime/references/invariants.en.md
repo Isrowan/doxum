@@ -9,7 +9,9 @@
 4. ChangeRecorder owns first-touch values, order baselines and touched tree nodes.
    Rollback runs no user callbacks or validators. Seal publishes net differences.
 5. Atomic equality is Object.is; canonical structure retains atomic references under
-   ownership contract. Snapshots detach values. Structures follow schema equality.
+   ownership contract. Snapshots copy structure and share readonly payloads, as do
+   commits and history. No payload cloning or publication freezing. Validators receive
+   original inputs and must be pure; successful output is ignored.
 6. List identity is a stable key; replacement retains it. Anchor owns ordering.
    Tree owns reciprocal, connected, acyclic, empty-or-single-root topology.
 7. ObjectNode owns schema identity; runtime owns instance identity. Shared path compiler

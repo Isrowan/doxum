@@ -30,10 +30,10 @@ document.subscribe(
 结构作用域在回调结束后失效。预期拒绝抛 TransactionRejected；普通异常完整恢复后
 原样抛出。正常返回 false/undefined 是业务结果，不表示拒绝。
 
-object 暴露可编辑成员；field 是原子值，包括对象和数组。作用域内原子值深只读；
-canonical 复制保留原子引用，调用方必须遵守所有权边界，不能继续修改已传入的 payload。
-snapshot 返回独立值。需要使用字段 copier 时对所属结构取快照；
-单独原子值没有 schema 信息，只进行通用复制。
+object 暴露可编辑成员；field 是原子值，包括对象和数组。Infer 与作用域内原子值深只读；
+输入、快照、commit 和 history 共享 payload 引用，删除后也不能通过任何别名修改它。
+snapshot 只复制 schema 结构；snapshot(rawPayload) 返回原始只读引用。
+发布数据不做运行时冻结，不再支持字段 copier。需要可修改副本或序列化时由应用边界显式处理。
 
 Infer 保留 optional 属性和扁平 variant 联合。Read/Draft 带集合方法；
 含 table/list/tree 数据的整体替换使用 assign(scope, key, inferValue)。
@@ -51,8 +51,9 @@ Read 只暴露读取方法。map 支持 field/object/variant。list 替换项必
 简单数组与笔画可作为一个原子 field。optional 支持 field/variant/map/list/tree，
 缺失与存在的 undefined 不同。variant tag 只读，通过整体替换切换分支。
 
-校验器支持同步、不转换值的函数与 Standard Schema v1。parse(model, unknown)
-返回独立校验值；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 访问、
+校验器是纯同步函数或 Standard Schema v1，直接接收原始引用且不得修改它。
+成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。
+parse(model, unknown) 复制校验后的结构并共享只读 payload；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 访问、
 符号路径和 impact。路径回调描述地址，包括缺失键，订阅注册时解析。
 React useDocumentSelector 追踪实际读取，并在选择分支改变时更新依赖。
 

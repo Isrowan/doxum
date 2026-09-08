@@ -1,4 +1,3 @@
-export type CloneReason = 'initial' | 'canonical' | 'commit' | 'replace' | 'snapshot' | 'recorder';
 const counters = () => ({
   projection: {
     sourceEvents: 0,
@@ -9,15 +8,10 @@ const counters = () => ({
     publishedNodes: 0,
     flushes: 0,
   },
-  clone: {
-    calls: 0,
-    containers: 0,
-    nodes: { initial: 0, canonical: 0, commit: 0, replace: 0, snapshot: 0, recorder: 0 },
-    deepEqual: { calls: 0, containers: 0 },
-    documents: { initial: 0 },
-  },
+  copy: { structures: 0 },
+  equality: { calls: 0, containers: 0 },
   recorder: { facts: 0, absorbed: 0, orderSnapshots: 0, orderItems: 0, treeNodes: 0, sealed: 0 },
-  access: { scopes: 0, proxies: 0, snapshots: 0 },
+  access: { scopes: 0, proxies: 0, snapshots: 0, addresses: 0, resolutions: 0 },
   address: {
     schemaSteps: 0,
     documentSteps: 0,
@@ -49,24 +43,17 @@ export const profile = {
   access: (key: keyof Counters['access']) => {
     if (active) active.access[key]++;
   },
-  clone: {
-    call: () => {
-      if (active) active.clone.calls++;
+  copy: {
+    structure: () => {
+      if (active) active.copy.structures++;
     },
-    node: (reason: CloneReason) => {
-      if (active) active.clone.nodes[reason]++;
+  },
+  equality: {
+    call: () => {
+      if (active) active.equality.calls++;
     },
     container: () => {
-      if (active) active.clone.containers++;
-    },
-    deepEqual: () => {
-      if (active) active.clone.deepEqual.calls++;
-    },
-    deepEqualContainer: () => {
-      if (active) active.clone.deepEqual.containers++;
-    },
-    initialDocument: () => {
-      if (active) active.clone.documents.initial++;
+      if (active) active.equality.containers++;
     },
   },
   address: {

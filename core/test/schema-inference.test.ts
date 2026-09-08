@@ -72,7 +72,7 @@ describe('schema inference and public access', () => {
     >();
     expectTypeOf(select(runtime, d => snapshot(d))).toEqualTypeOf<Infer<typeof model>>();
   });
-  it('enforces atomic payload readonly access while preserving Infer user types', () => {
+  it('enforces shared payload readonly access in Infer, snapshots and drafts', () => {
     const opaque = field<{
       n: number;
       points: { x: number }[];
@@ -80,9 +80,9 @@ describe('schema inference and public access', () => {
     }>();
     const model = object({ payload: opaque, n: field<number>() });
     expectTypeOf<Infer<typeof opaque>>().toEqualTypeOf<{
-      n: number;
-      points: { x: number }[];
-      values: Map<string, { n: number }>;
+      readonly n: number;
+      readonly points: readonly { readonly x: number }[];
+      readonly values: ReadonlyMap<string, { readonly n: number }>;
     }>();
     const illegal = (d: Draft<typeof model>, r: Read<typeof model>) => {
       // @ts-expect-error Atomic payload interiors cannot be drafted.
@@ -93,6 +93,11 @@ describe('schema inference and public access', () => {
       d.payload.values.set('a', { n: 1 });
       // @ts-expect-error Structural reads cannot be assigned.
       r.n = 1;
+      const saved = snapshot(r);
+      // @ts-expect-error Snapshots share readonly payloads.
+      saved.payload.n++;
+      // @ts-expect-error Raw payload snapshots are readonly too.
+      snapshot({ n: 0 }).n++;
       d.payload = { n: 1, points: [], values: new Map() };
     };
     void illegal;

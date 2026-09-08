@@ -217,9 +217,18 @@ const resolveWithPrefix = (
       });
     if (!node) return undefined;
   }
+  const last = address[address.length - 1];
+  return resolveChild(node, current, last);
+};
+
+/** Resolves one member from an already current schema/container pair. */
+export const resolveChild = (
+  node: DocumentNode | undefined,
+  current: unknown,
+  last: string
+): ResolvedAddress | undefined => {
   profile.address.schemaStep();
   profile.address.documentStep();
-  const last = address[address.length - 1];
   const resolved = step(node, current, last);
   if (!resolved || (!isRecord(current) && !Array.isArray(current))) return undefined;
   if (node?.kind === 'table' && isRecord(current) && isRecord(current.byId))

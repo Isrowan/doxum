@@ -13,6 +13,84 @@ import {
 } from '../src';
 import { startProfile } from '../src/profile';
 describe('bounded mutation work', () => {
+  it('reads nested entities without materializing addresses and writes from their resolved parents', () => {
+    const count = 2000;
+    const schema = object({
+      rows: map(object({ position: object({ x: field<number>(), y: field<number>() }) })),
+    });
+    const ids = Array.from({ length: count }, (_, i) => String(i));
+    const runtime = createDocument({
+      schema,
+      initial: { rows: Object.fromEntries(ids.map(id => [id, { position: { x: 1, y: 2 } }])) },
+      history: false,
+    });
+    const reads = startProfile();
+    const result = runtime.update(d => {
+      let sum = 0;
+      for (const id of ids) {
+        const p = d.rows[id]!.position;
+        sum += p.x + p.y;
+      }
+      return sum;
+    });
+    const readWork = reads.stop();
+    expect(result).toMatchObject({ status: 'unchanged', value: count * 3 });
+    expect(readWork.access).toMatchObject({ proxies: count * 2 + 2, addresses: 0, resolutions: 1 });
+    expect(readWork.recorder.facts).toBe(0);
+    const writes = startProfile();
+    const changed = runtime.update(d => {
+      for (const id of ids) {
+        const p = d.rows[id]!.position;
+        p.x++;
+        p.y += 2;
+      }
+    });
+    const writeWork = writes.stop();
+    expect(changed.status).toBe('committed');
+    expect(writeWork.access).toMatchObject({
+      proxies: count * 2 + 2,
+      addresses: count * 4 + 1,
+      resolutions: 1,
+    });
+    expect(writeWork.address).toMatchObject({ schemaSteps: count * 2, documentSteps: count * 2 });
+    expect(writeWork.recorder).toMatchObject({
+      facts: count * 2,
+      sealed: count * 2,
+      orderSnapshots: 0,
+    });
+    expect(writeWork.copy.structures).toBe(0);
+    expect(runtime.snapshot().rows['0'].position).toEqual({ x: 2, y: 4 });
+    runtime.dispose();
+  });
+  it('shares renewed parent resolutions between retained descendants after a structural edit', () => {
+    const schema = object({
+      rows: map(object({ position: object({ x: field<number>(), y: field<number>() }) })),
+    });
+    const initial = { rows: { a: { position: { x: 1, y: 2 } } } };
+    const runtime = createDocument({ schema, initial });
+    const work = startProfile();
+    const result = runtime.update(d => {
+      const row = d.rows.a!,
+        position = row.position;
+      position.x = 3;
+      d.rows.b = { position: { x: 5, y: 6 } };
+      position.y = position.x + 1;
+      expect(row.position).toBe(position);
+      delete d.rows.a;
+      d.rows.a = { position: { x: 8, y: 9 } };
+      position.x = 10;
+      expect(row.position).toBe(position);
+    });
+    const counters = work.stop();
+    expect(result.status).toBe('committed');
+    expect(counters.access.proxies).toBe(4);
+    expect(counters.access.resolutions).toBeLessThanOrEqual(10);
+    expect(runtime.snapshot().rows.a.position).toEqual({ x: 10, y: 9 });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(runtime.snapshot().rows.a.position).toEqual({ x: 10, y: 9 });
+  });
   it('inserts and removes a large table batch without argument limits or repeated order scans', () => {
     const schema = object({ rows: table(object({ n: field<number>() })) });
     const runtime = createDocument({
@@ -73,7 +151,7 @@ describe('bounded mutation work', () => {
     expect(listener).not.toHaveBeenCalled();
     expect(counters.impact.affectsChecks).toBe(0);
     expect(counters.recorder).toMatchObject({ facts: 1, orderSnapshots: 0, sealed: 1 });
-    expect(counters.clone.containers).toBe(0);
+    expect(counters.copy.structures).toBe(0);
     if (result.status !== 'committed') throw new Error('commit');
     expect(result.commit.impact.collection(p => p.rows)).toMatchObject({
       updated: new Set(['2000']),

@@ -8,7 +8,7 @@ import { MutationSession } from './mutation/session';
 import { decodeChanges } from './mutation/changes';
 import { MutationRejected, fail } from './mutation/issue';
 import type { ChangeDirection, ChangeSet } from './changes';
-import { checkValue, copyValue, ParseError, snapshotValue } from './schema-value';
+import { checkValue, copyValue, ParseError } from './schema-value';
 import {
   DocumentDisposedError,
   DocumentReentrancyError,
@@ -78,12 +78,12 @@ export const createDocument = <S extends ObjectNode>(input: {
     source: CommitSource,
     recordHistory: boolean
   ): Extract<OperationResult<DocumentCommit<S>>, { status: 'committed' }> => {
-    const commit = Object.freeze({
+    const commit: DocumentCommit<S> = {
       revision: ++revision,
       source,
       changes,
       impact: createImpact(input.schema, changes),
-    });
+    };
     if (source === 'remote') history.invalidate();
     else if (recordHistory && (source === 'local' || source === 'system')) history.record(changes);
     else if (source === 'history') history.publish();
@@ -214,7 +214,7 @@ export const createDocument = <S extends ObjectNode>(input: {
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();
-      return snapshotValue(input.schema, state.document) as Infer<S>;
+      return copyValue(input.schema, state.document) as Infer<S>;
     },
     subscribe: ((
       pick: PathPick<S> | readonly PathPick<S>[] | CommitListener<S>,

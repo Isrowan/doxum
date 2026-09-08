@@ -32,10 +32,11 @@ callback return. Throw TransactionRejected for expected rejection; ordinary thro
 restore all work and rethrow unchanged. False/undefined returns are business values.
 
 Object exposes editable members; field is atomic, including arrays and objects.
-Scoped atomic values are deeply readonly. Canonical copies preserve atomic references:
-honor their ownership contract and stop mutating supplied payloads. Snapshot detaches
-values. Snapshot a structural subtree to invoke configured field copiers; a raw atomic
-value has no schema association and uses generic copying.
+Atomic values are deeply readonly in Infer and scoped access. Inputs, snapshots,
+commits and history share payload references. Never mutate them through any alias,
+even after removal. Snapshot copies schema structure only; snapshot(rawPayload)
+returns its original readonly reference. Published data is not frozen. Field copiers
+are not supported; mutable exports and serialization belong to application boundaries.
 
 Infer preserves optional properties and flat variant unions. Read/Draft contain
 collection tools; assign(scope, key, inferValue) handles plain replacements containing
@@ -55,9 +56,11 @@ List replacement retains the addressed key. Simple arrays and strokes can be one
 atomic field. Optional supports field/variant/map/list/tree. Absent differs from
 present undefined. Variant tags are readonly; change branch by whole replacement.
 
-Synchronous value-preserving functions and Standard Schema v1 validators are supported.
-parse(model, unknown) returns independent validated data; strict parse requires atomic
-validators. Branded map/table keys flow through access, symbolic paths and impact.
+Pure synchronous functions and Standard Schema v1 validators receive original input.
+They must not mutate it; successful output is ignored, with no copy or deep conversion
+check. Transform values before entering Doxum. parse(model, unknown) copies validated
+structure and shares readonly payloads; strict parse requires atomic validators.
+Branded map/table keys flow through access, symbolic paths and impact.
 Path callbacks describe locations, including absent entries, and compile at registration.
 React useDocumentSelector tracks actual reads and changes dependencies when branching.
 

@@ -8,7 +8,9 @@ at source creation and source identity is interned by internal compiled targets.
 `map(source, (key, entry) => value)` maps document collections or projected
 collections. Structural document entries are scoped `Read` values; atomic map
 entries are atomic values. Key types propagate through downstream collections.
-Store `snapshot(entry)` when the output needs an independent structural value.
+Store `snapshot(entry)` when the output needs a stable structural value. Snapshots
+copy schema structure and share immutable payloads; raw payload snapshots retain
+their identity. Treat projection outputs as readonly.
 
 `value(sources, compute, { isEqual }?)` handles pure derivation. Stateful processors
 use `value({ sources, build })`, returning `{ value, update }`. Custom incremental

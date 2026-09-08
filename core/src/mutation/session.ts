@@ -1,14 +1,12 @@
-import type { ChangeDirection, ChangeSet, Presence } from '../changes';
+import type { ChangeDirection, ChangeSet } from '../changes';
 import type { DocumentAddress, DocumentAnchor, DocumentNode } from '../schema';
-import { createAddressResolver, nodeAt, read } from '../address';
+import { createAddressResolver, nodeAt, read, type ResolvedAddress } from '../address';
 import { checkKey, checkValue, copyValue } from '../schema-value';
-import { cloneValue } from '../value/ownership';
 import {
   ChangeRecorder,
   installOrder,
   installValue,
   orderOf,
-  presence,
   type CanonicalState,
 } from './recorder';
 import { fail } from './issue';
@@ -39,7 +37,15 @@ export class MutationSession {
       );
   }
   set(at: DocumentAddress, value: unknown, present = true, replacement = false): void {
-    const location = this.resolver.resolve(at);
+    this.setResolved(at, this.resolver.resolve(at), value, present, replacement);
+  }
+  setResolved(
+    at: DocumentAddress,
+    location: ResolvedAddress | undefined,
+    value: unknown,
+    present = true,
+    replacement = false
+  ): void {
     const node = at.length ? location?.node : this.state.schema;
     if (!node || (at.length && !location))
       return fail(at, 'invalid-address', 'Address does not exist.');
@@ -66,36 +72,35 @@ export class MutationSession {
       const issue = checkKey(parentNode.key, at[at.length - 1], at);
       if (issue) return fail(at, 'invalid-key', issue.message);
     }
-    const before = location
-      ? presence(location.parent, location.key)
-      : ({ present: true, value: this.state.document } as const);
+    const existed = location ? Object.hasOwn(location.parent, location.key) : true;
+    const previous = location
+      ? (location.parent as Record<string | number, unknown>)[location.key]
+      : this.state.document;
     if (present) {
       this.validate(node, value, at);
       if (parentNode?.kind === 'list' && parentNode.keyOf(value) !== at[at.length - 1])
         return fail(at, 'invalid-list-key', 'Replacing an item must retain its addressed key.');
     }
-    if (
-      before.present === present &&
-      (!present || (before.present && Object.is(before.value, value)))
-    )
-      return;
+    if (existed === present && (!present || Object.is(previous, value))) return;
     this.recorder.value(at, node, location);
-    const next: Presence = present
-      ? { present: true, value: copyValue(node, value) }
-      : { present: false };
+    const nextValue = present ? copyValue(node, value) : undefined;
     if (node.kind === 'field' && location && !Array.isArray(location.parent)) {
-      if (next.present) {
-        if (Object.hasOwn(location.parent, location.key))
-          location.parent[location.key] = next.value;
+      if (present) {
+        if (existed) location.parent[location.key] = nextValue;
         else
           Object.defineProperty(location.parent, location.key, {
-            value: next.value,
+            value: nextValue,
             writable: true,
             enumerable: true,
             configurable: true,
           });
       } else delete location.parent[location.key];
-    } else installValue(this.state, at, next);
+    } else
+      installValue(
+        this.state,
+        at,
+        present ? { present: true, value: nextValue } : { present: false }
+      );
     if (node.kind !== 'field' || entry) this.invalidate();
   }
   private invalidate(): void {
@@ -245,7 +250,7 @@ export class MutationSession {
           this.recorder.order(parentAt);
           containers.set(JSON.stringify(parentAt), parentAt);
         }
-        this.set(change.at, next.present ? cloneValue(next.value) : undefined, next.present, true);
+        this.set(change.at, next.present ? next.value : undefined, next.present, true);
       } else {
         this.treeEdit(change.at, (current, capture) => {
           capture(change.nodes.map(n => n.id));
@@ -256,7 +261,7 @@ export class MutationSession {
             const next = item[side];
             if (next.present)
               Object.defineProperty(current.nodes, item.id, {
-                value: cloneValue(next.value),
+                value: { ...next.value, children: [...next.value.children] },
                 writable: true,
                 enumerable: true,
                 configurable: true,

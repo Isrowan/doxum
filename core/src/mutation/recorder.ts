@@ -8,34 +8,37 @@ import {
   resolveLocated,
   type ResolvedAddress,
 } from '../address';
-import { cloneValue, deepEqual } from '../value/ownership';
-import { snapshotValue, copyValue, equalValue } from '../schema-value';
+import * as anchor from './anchor';
+import { copyValue, equalValue } from '../schema-value';
 import type { MutableTree, MutableTreeNode } from './tree';
 import { profile } from '../profile';
 
 export type CanonicalState = { schema: ObjectNode; document: unknown };
 type ValueFact = {
   kind: 'value';
+  index: number;
   at: DocumentAddress;
   node: DocumentNode;
-  before: Presence;
+  present: boolean;
+  value: unknown;
   location?: ResolvedAddress;
 };
-type OrderFact = { kind: 'order'; at: DocumentAddress; before: readonly string[] };
+type OrderFact = { kind: 'order'; index: number; at: DocumentAddress; before: readonly string[] };
 type TreeFact = {
   kind: 'tree';
+  index: number;
   at: DocumentAddress;
   before: Presence<string>;
   nodes: Map<string, Presence<MutableTreeNode>>;
 };
 type Fact = ValueFact | OrderFact | TreeFact;
-const absent = Object.freeze({ present: false } as const);
+const absent = { present: false } as const;
 export const presence = (parent: object, key: PropertyKey): Presence =>
   Object.prototype.hasOwnProperty.call(parent, key)
     ? { present: true, value: (parent as Record<PropertyKey, unknown>)[key] }
     : absent;
 export const samePresence = (a: Presence, b: Presence): boolean =>
-  a.present === b.present && (!a.present || (b.present && deepEqual(a.value, b.value)));
+  a.present === b.present && (!a.present || (b.present && Object.is(a.value, b.value)));
 export const valuePresence = (state: CanonicalState, at: DocumentAddress): Presence => {
   if (!at.length) return { present: true, value: state.document };
   const location = resolveLocated(state.schema, state.document, at);
@@ -110,9 +113,7 @@ const restore = (fact: Fact, state: CanonicalState, skip = 0): void => {
     installValue(
       state,
       at,
-      fact.before.present
-        ? { present: true, value: copyValue(fact.node, fact.before.value) }
-        : absent
+      fact.present ? { present: true, value: copyValue(fact.node, fact.value) } : absent
     );
   else if (fact.kind === 'order') installOrder(state, at, fact.before);
   else restoreTree(read(state.document, at, state.schema) as MutableTree, fact.before, fact.nodes);
@@ -120,14 +121,16 @@ const restore = (fact: Fact, state: CanonicalState, skip = 0): void => {
 
 /** First-touch facts are the sole source for rollback and published before values. */
 export class ChangeRecorder {
-  private readonly facts = new Set<Fact>();
-  private readonly slots = new WeakMap<object, Map<PropertyKey, ValueFact>>();
+  private readonly facts: (Fact | undefined)[] = [];
+  private readonly slots = new WeakMap<object, Set<PropertyKey>>();
   private index?: AddressIndex<Fact>;
   constructor(private readonly state: CanonicalState) {}
   private indexed(): AddressIndex<Fact> {
     if (!this.index) {
       this.index = new AddressIndex();
-      this.facts.forEach(fact => this.index!.add(fact.at, fact));
+      this.facts.forEach(fact => {
+        if (fact) this.index!.add(fact.at, fact);
+      });
     }
     return this.index;
   }
@@ -146,38 +149,43 @@ export class ChangeRecorder {
     const parent = location?.parent ?? this.state;
     const key = Array.isArray(parent) ? at[at.length - 1] : (location?.key ?? 'document');
     if (this.slots.get(parent)?.has(key) || this.covered(at)) return;
-    let before = location ? presence(location.parent, location.key) : valuePresence(this.state, at);
+    const present = location ? Object.hasOwn(location.parent, location.key) : true;
+    let value = location
+      ? (location.parent as Record<string | number, unknown>)[location.key]
+      : this.state.document;
     if (node.kind !== 'field') {
       const index = this.indexed();
       const children: Fact[] = [];
       index.query(fact => {
         if (contains(at, fact.at)) children.push(fact);
       })(at);
-      if (before.present) {
-        const copy = { schema: node as ObjectNode, document: copyValue(node, before.value) };
+      if (present) {
+        const copy = { schema: node as ObjectNode, document: copyValue(node, value) };
         for (const child of children.filter(f => f.kind !== 'order').reverse())
           restore(child, copy, at.length);
         for (const child of children.filter(f => f.kind === 'order'))
           restore(child, copy, at.length);
-        before = { present: true, value: copy.document };
+        value = copy.document;
       }
       for (const child of children) {
         profile.recorder('absorbed');
-        this.facts.delete(child);
+        this.facts[child.index] = undefined;
         index.delete(child.at, child);
       }
     }
     const fact: ValueFact = {
       kind: 'value',
+      index: this.facts.length,
       at,
       node,
-      before,
-      ...(location && !Array.isArray(location.parent) ? { location } : {}),
+      present,
+      value,
+      location: location && !Array.isArray(location.parent) ? location : undefined,
     };
     let slots = this.slots.get(parent);
-    if (!slots) this.slots.set(parent, (slots = new Map()));
-    slots.set(key, fact);
-    this.facts.add(fact);
+    if (!slots) this.slots.set(parent, (slots = new Set()));
+    slots.add(key);
+    this.facts.push(fact);
     profile.recorder('facts');
     this.index?.add(at, fact);
   }
@@ -185,10 +193,15 @@ export class ChangeRecorder {
     if (this.covered(at)) return;
     const index = this.indexed();
     if ([...(index.exact(at) ?? [])].some(f => f.kind === 'order')) return;
-    const fact: OrderFact = { kind: 'order', at, before: orderOf(this.state, at) };
+    const fact: OrderFact = {
+      kind: 'order',
+      index: this.facts.length,
+      at,
+      before: orderOf(this.state, at),
+    };
     profile.recorder('orderSnapshots');
     profile.recorder('orderItems', fact.before.length);
-    this.facts.add(fact);
+    this.facts.push(fact);
     index.add(at, fact);
   }
   tree(at: DocumentAddress, ids: readonly string[]): void {
@@ -197,8 +210,14 @@ export class ChangeRecorder {
     let fact = [...(index.exact(at) ?? [])].find((f): f is TreeFact => f.kind === 'tree');
     const tree = read(this.state.document, at, this.state.schema) as MutableTree;
     if (!fact) {
-      fact = { kind: 'tree', at, before: treeRoot(tree), nodes: new Map() };
-      this.facts.add(fact);
+      fact = {
+        kind: 'tree',
+        index: this.facts.length,
+        at,
+        before: treeRoot(tree),
+        nodes: new Map(),
+      };
+      this.facts.push(fact);
       index.add(at, fact);
     }
     for (const id of ids)
@@ -213,46 +232,42 @@ export class ChangeRecorder {
       }
   }
   rollback(): void {
-    const facts = [...this.facts];
-    for (const fact of facts.filter(f => f.kind !== 'order').reverse()) restore(fact, this.state);
-    for (const fact of facts.filter(f => f.kind === 'order')) restore(fact, this.state);
+    for (let i = this.facts.length - 1; i >= 0; i--) {
+      const fact = this.facts[i];
+      if (fact && fact.kind !== 'order') restore(fact, this.state);
+    }
+    for (const fact of this.facts) if (fact?.kind === 'order') restore(fact, this.state);
   }
   seal(): ChangeSet {
     const changes: Change[] = [];
-    const publish = (node: DocumentNode, p: Presence): Presence =>
-      p.present
-        ? Object.freeze({
-            present: true,
-            value: cloneValue(snapshotValue(node, p.value), 'commit'),
-          })
-        : absent;
+    const publish = (node: DocumentNode, present: boolean, value: unknown): Presence =>
+      present ? { present: true, value: copyValue(node, value) } : absent;
     const emit = (
       node: DocumentNode,
       at: DocumentAddress,
-      before: Presence,
-      after: Presence
+      beforePresent: boolean,
+      before: unknown,
+      afterPresent: boolean,
+      after: unknown
     ): void => {
+      if (beforePresent === afterPresent && (!beforePresent || Object.is(before, after))) return;
       if (
-        before.present === after.present &&
-        (!before.present || (after.present && equalValue(node, before.value, after.value)))
-      )
-        return;
-      if (
+        node.kind !== 'field' &&
         at.length &&
-        before.present &&
-        after.present &&
-        before.value !== undefined &&
-        after.value !== undefined
+        beforePresent &&
+        afterPresent &&
+        before !== undefined &&
+        after !== undefined
       ) {
         let shape = node.kind === 'object' ? node.shape : undefined;
         if (node.kind === 'variant') {
-          const a = before.value as Record<string, unknown>,
-            b = after.value as typeof a;
+          const a = before as Record<string, unknown>,
+            b = after as typeof a;
           if (a[node.tag] === b[node.tag]) shape = node.variants[String(a[node.tag])].shape;
         }
         if (shape) {
-          const a = before.value as Record<string, unknown>,
-            b = after.value as typeof a;
+          const a = before as Record<string, unknown>,
+            b = after as typeof a;
           const extras = new Set(
             [...Reflect.ownKeys(a), ...Reflect.ownKeys(b)].filter(
               key => typeof key !== 'string' || !Object.hasOwn(shape, key)
@@ -260,55 +275,87 @@ export class ChangeRecorder {
           );
           if ([...extras].every(key => samePresence(presence(a, key), presence(b, key)))) {
             for (const key of Object.keys(shape))
-              emit(shape[key], [...at, key], presence(a, key), presence(b, key));
+              emit(
+                shape[key],
+                at.concat(key),
+                Object.hasOwn(a, key),
+                a[key],
+                Object.hasOwn(b, key),
+                b[key]
+              );
             return;
           }
         }
         if (node.kind === 'map' || node.kind === 'table') {
-          const a = before.value as Record<string, unknown>,
-            b = after.value as typeof a;
+          const a = before as Record<string, unknown>,
+            b = after as typeof a;
           const left = (node.kind === 'table' ? a.byId : a) as Record<string, unknown>,
             right = (node.kind === 'table' ? b.byId : b) as typeof left;
           for (const id of new Set([...Object.keys(left), ...Object.keys(right)]))
-            emit(node.value, [...at, id], presence(left, id), presence(right, id));
-          if (node.kind === 'table' && !deepEqual(a.ids, b.ids))
-            changes.push(
-              cloneValue({ kind: 'order', at, before: a.ids, after: b.ids }, 'commit') as Change
+            emit(
+              node.value,
+              at.concat(id),
+              Object.hasOwn(left, id),
+              left[id],
+              Object.hasOwn(right, id),
+              right[id]
             );
+          if (node.kind === 'table' && !anchor.equal(a.ids as string[], b.ids as string[]))
+            changes.push({
+              kind: 'order',
+              at,
+              before: a.ids as string[],
+              after: [...(b.ids as string[])],
+            });
           return;
         }
       }
-      changes.push(
-        Object.freeze({
-          kind: 'value',
-          at: Object.freeze([...at]),
-          before: publish(node, before),
-          after: publish(node, after),
-        })
-      );
+      if (beforePresent === afterPresent && equalValue(node, before, after)) return;
+      changes.push({
+        kind: 'value',
+        at,
+        before: beforePresent ? { present: true, value: before } : absent,
+        after: publish(node, afterPresent, after),
+      });
     };
     for (const fact of this.facts) {
+      if (!fact) continue;
       if (fact.kind === 'value') {
-        const after = fact.location
-          ? presence(fact.location.parent, fact.location.key)
-          : valuePresence(this.state, fact.at);
-        emit(fact.node, fact.at, fact.before, after);
+        if (fact.location) {
+          const { parent, key } = fact.location;
+          emit(
+            fact.node,
+            fact.at,
+            fact.present,
+            fact.value,
+            Object.hasOwn(parent, key),
+            (parent as Record<string | number, unknown>)[key]
+          );
+        } else {
+          const after = valuePresence(this.state, fact.at);
+          emit(
+            fact.node,
+            fact.at,
+            fact.present,
+            fact.value,
+            after.present,
+            after.present ? after.value : undefined
+          );
+        }
       } else if (fact.kind === 'order') {
         const after = orderOf(this.state, fact.at);
-        if (!deepEqual(fact.before, after))
-          changes.push(
-            Object.freeze({
-              kind: 'order',
-              at: Object.freeze([...fact.at]),
-              before: Object.freeze([...fact.before]),
-              after: Object.freeze(after),
-            })
-          );
+        if (!anchor.equal(fact.before, after))
+          changes.push({
+            kind: 'order',
+            at: fact.at,
+            before: fact.before,
+            after,
+          });
       } else {
         const tree = read(this.state.document, fact.at, this.state.schema) as MutableTree;
         const node = nodeAt(this.state.schema, fact.at, this.state.document);
         if (node?.kind !== 'tree') throw new Error('Tree schema disappeared before sealing.');
-        const publishNode = (p: Presence): Presence => {
+        const publishNode = (p: Presence): Presence<MutableTreeNode> => {
           if (!p.present) return absent;
           const value = p.value as MutableTreeNode;
           return {
@@ -316,9 +363,6 @@ export class ChangeRecorder {
             value: {
               ...value,
               children: [...value.children],
-              ...(Object.hasOwn(value, 'value')
-                ? { value: snapshotValue(node.value, value.value) }
-                : {}),
             },
           };
         };
@@ -330,27 +374,22 @@ export class ChangeRecorder {
               b = after.value as MutableTreeNode;
             if (
               a.parentId === b.parentId &&
-              deepEqual(a.children, b.children) &&
+              anchor.equal(a.children, b.children) &&
               Object.hasOwn(a, 'value') === Object.hasOwn(b, 'value') &&
               equalValue(node.value, a.value, b.value)
             )
               return [];
           }
-          return [{ id, before: publishNode(before), after: publishNode(after) }];
+          return [{ id, before, after: publishNode(after) }];
         });
         const after = treeRoot(tree);
         if (nodes.length || !samePresence(fact.before, after))
-          changes.push(
-            cloneValue(
-              { kind: 'tree', at: fact.at, before: fact.before, after, nodes },
-              'commit'
-            ) as Change
-          );
+          changes.push({ kind: 'tree', at: fact.at, before: fact.before, after, nodes });
       }
     }
     changes.sort(compareChanges);
     profile.recorder('sealed', changes.length);
-    return Object.freeze({ changes: Object.freeze(changes) });
+    return { changes };
   }
 }
 

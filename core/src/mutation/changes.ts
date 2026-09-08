@@ -3,6 +3,7 @@ import { isPlainObject } from '../value/ownership';
 import { AddressIndex } from '../address';
 import { fail } from './issue';
 import { compareChanges } from './recorder';
+import { validNode } from './tree';
 
 const keys = (value: Record<string, unknown>, expected: readonly string[]) =>
   Object.keys(value).every(key => expected.includes(key));
@@ -26,7 +27,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
   for (const entry of input.changes) {
     if (!isPlainObject(entry) || !strings(entry.at))
       return fail([], 'invalid-changes', 'Change addresses must contain strings.');
-    const at = Object.freeze([...entry.at]) as readonly string[];
+    const at = entry.at;
     if (
       entry.kind === 'value' &&
       keys(entry, ['kind', 'at', 'before', 'after']) &&
@@ -58,7 +59,9 @@ export const decodeChanges = (input: unknown): ChangeSet => {
           typeof node.id !== 'string' ||
           seen.has(node.id) ||
           !presence(node.before) ||
-          !presence(node.after)
+          !presence(node.after) ||
+          (node.before.present && !validNode(node.before.value)) ||
+          (node.after.present && !validNode(node.after.value))
         )
           return fail(at, 'invalid-changes', 'Malformed or duplicate tree facts.');
         seen.add(node.id);

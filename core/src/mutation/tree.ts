@@ -8,6 +8,17 @@ const node = (tree: MutableTree, id: string) => (has(tree.nodes, id) ? tree.node
 export const is = (value: unknown): value is MutableTree =>
   isRecord(value) && isRecord(value.nodes);
 
+export const validNode = (value: unknown): value is MutableTreeNode => {
+  if (!isRecord(value) || !Array.isArray(value.children)) return false;
+  if (value.parentId !== undefined && typeof value.parentId !== 'string') return false;
+  const children = new Set<string>();
+  for (const id of value.children) {
+    if (typeof id !== 'string' || children.has(id)) return false;
+    children.add(id);
+  }
+  return true;
+};
+
 export const contains = (tree: MutableTree, id: string): boolean => has(tree.nodes, id);
 
 export const parent = (tree: MutableTree, id: string): string | undefined =>
@@ -24,13 +35,7 @@ export const validate = (value: unknown): value is MutableTree => {
 
   for (const id of ids) {
     const entry = value.nodes[id];
-    if (!isRecord(entry) || !Array.isArray(entry.children)) return false;
-    if (
-      entry.children.some(child => typeof child !== 'string') ||
-      new Set(entry.children).size !== entry.children.length
-    )
-      return false;
-    if (entry.parentId !== undefined && typeof entry.parentId !== 'string') return false;
+    if (!validNode(entry)) return false;
     if (id === value.rootId) {
       if (entry.parentId !== undefined) return false;
     } else if (entry.parentId === undefined || !has(value.nodes, entry.parentId)) return false;

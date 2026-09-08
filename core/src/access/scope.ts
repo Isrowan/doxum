@@ -9,29 +9,19 @@ import type {
   MapNode,
   ObjectNode,
   ObjectShape,
+  ReadonlyValue,
   TableNode,
   TreeNode,
   ValueSchemaNode,
   VariantNode,
 } from '../schema';
-import { nodeAt, read as readAddress } from '../address';
-import { snapshotValue, detached } from '../schema-value';
+import { nodeAt, read as readAddress, resolveChild, resolveLocated } from '../address';
+import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
 import type { MutationSession } from '../mutation/session';
 import * as tree from '../mutation/tree';
 import { profile } from '../profile';
 
-export type ReadonlyValue<T> = T extends (...args: never[]) => unknown
-  ? T
-  : T extends Map<infer K, infer V>
-    ? ReadonlyMap<ReadonlyValue<K>, ReadonlyValue<V>>
-    : T extends Set<infer V>
-      ? ReadonlySet<ReadonlyValue<V>>
-      : T extends Date
-        ? Omit<Date, `set${string}`>
-        : T extends object
-          ? { readonly [K in keyof T]: ReadonlyValue<T[K]> }
-          : T;
 declare const scopeValue: unique symbol;
 type Scoped<N extends DocumentNode> = { readonly [scopeValue]?: Infer<N> };
 type ShapeAccess<S extends ObjectShape, W extends boolean> = W extends true
@@ -59,11 +49,11 @@ type ListAccess<T, W extends boolean> = {
   ids(): readonly string[];
 } & (W extends true
   ? {
-      insert(value: T, anchor?: DocumentAnchor): void;
-      set(key: string, value: T): void;
+      insert(value: ReadonlyValue<T>, anchor?: DocumentAnchor): void;
+      set(key: string, value: ReadonlyValue<T>): void;
       remove(key: string): void;
       move(key: string, anchor?: DocumentAnchor): void;
-      replace(value: readonly T[]): void;
+      replace(value: readonly ReadonlyValue<T>[]): void;
     }
   : {});
 type TreeAccess<T, W extends boolean> = {
@@ -74,8 +64,8 @@ type TreeAccess<T, W extends boolean> = {
   children(id: string): readonly string[] | undefined;
 } & (W extends true
   ? {
-      insert(id: string, value: T, position?: tree.TreePosition): void;
-      set(id: string, value: T): void;
+      insert(id: string, value: ReadonlyValue<T>, position?: tree.TreePosition): void;
+      set(id: string, value: ReadonlyValue<T>): void;
       move(id: string, position?: tree.TreePosition): void;
       remove(id: string): void;
       replace(value: DocumentTreeValue<T>): void;
@@ -109,10 +99,35 @@ type Access<N extends DocumentNode, W extends boolean> = N extends { readonly op
   : NodeAccess<N, W>;
 export type Read<N extends DocumentNode> = Access<N, false>;
 export type Draft<N extends DocumentNode> = Access<N, true>;
-type Snapshot<T> = T extends { readonly [scopeValue]?: infer V } ? V : T;
+type Snapshot<T> = T extends { readonly [scopeValue]?: infer V } ? V : ReadonlyValue<T>;
 type Location = { readonly context: AccessContext; readonly at: DocumentAddress };
 const locationKey = Symbol('doxum.access');
 const accesses = new WeakSet<object>();
+type CompiledMember = { readonly node: DocumentNode; readonly field: boolean };
+const compiledObjects = new WeakMap<object, ReadonlyMap<string, CompiledMember>>();
+const compileObject = (shape: ObjectShape): ReadonlyMap<string, CompiledMember> => {
+  const cached = compiledObjects.get(shape);
+  if (cached) return cached;
+  const members = new Map<string, CompiledMember>();
+  for (const key of Object.keys(shape)) {
+    const node = shape[key];
+    members.set(key, { node, field: node.kind === 'field' });
+  }
+  const result = Object.freeze(members);
+  compiledObjects.set(shape, result);
+  return result;
+};
+const compiledMembers = (
+  node: DocumentNode,
+  value: unknown
+): ReadonlyMap<string, CompiledMember> | undefined => {
+  if (node.kind === 'object') return compileObject(node.shape);
+  if (node.kind === 'variant' && value && typeof value === 'object') {
+    const branch = node.variants[String((value as Record<string, unknown>)[node.tag])];
+    return branch ? compileObject(branch.shape) : undefined;
+  }
+  return undefined;
+};
 const locationOf = (value: object): Location | undefined =>
   accesses.has(value) ? (Reflect.get(value, locationKey) as Location) : undefined;
 export type AccessContext = {
@@ -138,13 +153,13 @@ const collect = (
 };
 export const snapshot = <T>(value: T): Snapshot<T> => {
   const location = value && typeof value === 'object' ? locationOf(value) : undefined;
-  if (!location) return detached(value) as Snapshot<T>;
+  if (!location) return value as Snapshot<T>;
   const { context, at } = location;
   profile.access('snapshots');
   collect(context, at);
   const node = nodeAt(context.schema, at, context.root());
   if (!node) throw new Error('The selected schema address no longer exists.');
-  return snapshotValue(node, readAddress(context.root(), at, context.schema)) as Snapshot<T>;
+  return copyValue(node, readAddress(context.root(), at, context.schema)) as Snapshot<T>;
 };
 /** TypeScript cannot express asymmetric index signatures for nested collection tools. */
 export const assign = <T extends object, K extends keyof Snapshot<T>>(
@@ -154,14 +169,11 @@ export const assign = <T extends object, K extends keyof Snapshot<T>>(
 ): void => {
   const location = locationOf(container);
   if (!location) throw new TypeError('assign requires scoped document access.');
-  const { context, at } = location;
+  const { context } = location;
   assertActive(context);
   if (!context.session) throw new TypeError('Cannot modify read-only document access.');
   if (typeof key !== 'string') throw new TypeError('Document keys must be strings.');
-  const parent = nodeAt(context.schema, at, context.root());
-  if (parent?.kind === 'variant' && parent.tag === key)
-    throw new TypeError('Variant discriminants are read-only.');
-  context.session.set([...at, key], value);
+  Reflect.set(container, key, value);
 };
 /** Projection collection contexts use the same scoped access, with explicit collection tools. */
 export type CollectionAccess<K extends string, N extends ValueSchemaNode> = TableAccess<
@@ -171,192 +183,232 @@ export type CollectionAccess<K extends string, N extends ValueSchemaNode> = Tabl
 >;
 export const createAccess = (context: AccessContext, initial: DocumentAddress = []): unknown => {
   profile.access('scopes');
-  const resolutions = new Map<
-    DocumentAddress,
-    { node: DocumentNode | undefined; value: unknown; generation: number; proxy?: object }
-  >();
-  const resolve = (at: DocumentAddress) => {
+  type Target = {
+    at?: DocumentAddress;
+    parent?: Target;
+    key: string;
+    node: DocumentNode | undefined;
+    value: unknown;
+    generation: number;
+    children?: Map<string, Target>;
+    proxy?: object;
+  };
+  const addressOf = (target: Target): DocumentAddress => {
+    if (target.at) return target.at;
+    profile.access('addresses');
+    return (target.at = addressOf(target.parent!).concat(target.key));
+  };
+  const resolve = (target: Target) => {
     assertActive(context);
     const generation = context.session?.generation ?? 0;
-    const cached = resolutions.get(at);
-    if (cached?.generation === generation) return cached;
-    const root = context.root();
-    const result = {
-      node: nodeAt(context.schema, at, root),
-      value: readAddress(root, at, context.schema),
-      generation,
-      proxy: cached?.proxy,
-    };
-    resolutions.set(at, result);
-    return result;
+    if (target.generation !== generation) {
+      profile.access('resolutions');
+      if (!target.parent && !initial.length) {
+        target.node = context.schema;
+        target.value = context.root();
+      } else {
+        const parent = target.parent && resolve(target.parent);
+        const location = parent
+          ? resolveChild(parent.node, parent.value, target.key)
+          : resolveLocated(context.schema, context.root(), initial);
+        target.node = location?.node ?? nodeAt(context.schema, addressOf(target), context.root());
+        target.value =
+          location && Object.hasOwn(location.parent, location.key)
+            ? (location.parent as Record<string | number, unknown>)[location.key]
+            : undefined;
+      }
+      target.generation = generation;
+    }
+    return target;
   };
   const mutable = (): MutationSession => {
     assertActive(context);
     if (!context.session) throw new TypeError('Cannot modify read-only document access.');
     return context.session;
   };
-  type Target = { at: DocumentAddress; children?: Map<string, DocumentAddress> };
   const childAt = (target: Target, key: string): DocumentAddress => {
-    const children = (target.children ??= new Map());
-    let child = children.get(key);
-    if (!child) children.set(key, (child = [...target.at, key]));
-    return child;
+    profile.access('addresses');
+    return addressOf(target).concat(key);
   };
-  const access = (at: DocumentAddress, childNode?: DocumentNode, childValue?: unknown): unknown => {
-    if (childNode) {
-      const generation = context.session?.generation ?? 0;
-      const cached = resolutions.get(at);
-      if (cached?.generation !== generation)
-        resolutions.set(at, {
-          node: childNode,
-          value: childValue,
-          generation,
-          proxy: cached?.proxy,
-        });
-    }
-    const resolved = resolve(at);
-    const { node, value } = resolved;
-    if (!node || value === undefined || node.kind === 'field') {
-      collect(context, at);
-      return value;
-    }
-    if (resolved.proxy) return resolved.proxy;
-    const proxy = new Proxy({ at }, handler);
+  const access = (target: Target): unknown => {
+    if (target.proxy) return target.proxy;
+    const proxy = new Proxy(target, handler);
     profile.access('proxies');
     accesses.add(proxy);
-    resolved.proxy = proxy;
+    target.proxy = proxy;
     return proxy;
+  };
+  const childAccess = (target: Target, key: string, node: DocumentNode, value: unknown) => {
+    if (node.kind === 'field' || value === undefined) {
+      if (context.dependencies) collect(context, childAt(target, key));
+      return value;
+    }
+    const children = (target.children ??= new Map());
+    let child = children.get(key);
+    if (child?.generation === target.generation) return child.proxy;
+    if (!child) {
+      child = {
+        at: undefined,
+        parent: target,
+        key,
+        node,
+        value,
+        generation: target.generation,
+        children: undefined,
+        proxy: undefined,
+      };
+      children.set(key, child);
+    } else {
+      child.node = node;
+      child.value = value;
+      child.generation = target.generation;
+    }
+    return access(child);
+  };
+  // Collection closures must not allocate a lexical environment for every field read.
+  const collectionMethod = (
+    target: Target,
+    property: string,
+    node: Extract<DocumentNode, { kind: 'table' | 'list' | 'tree' }>
+  ): unknown => {
+    if (node.kind === 'table' || node.kind === 'list') {
+      const at = addressOf(target);
+      const currentValue = () => {
+        const current = resolve(target);
+        if (current.node !== node || current.value === undefined)
+          throw new TypeError('The collection method belongs to a replaced schema branch.');
+        return current.value;
+      };
+      const ids = () => {
+        const current = currentValue();
+        collect(context, at, 'collection');
+        return node.kind === 'table'
+          ? [...(current as { ids: string[] }).ids]
+          : (current as unknown[]).map(node.keyOf);
+      };
+      const has = (id: string) => {
+        const current = currentValue();
+        collect(context, at, 'collection', id);
+        return node.kind === 'table'
+          ? Object.hasOwn((current as { byId: object }).byId, id)
+          : (current as unknown[]).some(item => node.keyOf(item) === id);
+      };
+      if (property === 'ids') return ids;
+      if (property === 'has') return has;
+      if (property === 'get')
+        return (id: string) => {
+          if (!has(id)) return undefined;
+          const location = resolveChild(node, currentValue(), id)!;
+          return childAccess(
+            target,
+            id,
+            location.node,
+            (location.parent as Record<string | number, unknown>)[location.key]
+          );
+        };
+      if (property === 'move')
+        return (id: string, position?: DocumentAnchor) => mutable().move(at, id, position);
+      if (node.kind === 'table') {
+        if (property === 'create')
+          return (
+            input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
+            position?: DocumentAnchor
+          ) =>
+            mutable().tableCreate(
+              at,
+              Array.isArray(input) ? input : [input as { id: string; value: unknown }],
+              position
+            );
+        if (property === 'remove')
+          return (ids: string | readonly string[]) =>
+            mutable().tableRemove(at, typeof ids === 'string' ? [ids] : ids);
+      } else {
+        if (property === 'insert')
+          return (value: unknown, position?: DocumentAnchor) =>
+            mutable().listInsert(at, value, position);
+        if (property === 'remove') return (id: string) => mutable().listRemove(at, id);
+        if (property === 'set')
+          return (id: string, value: unknown) => mutable().listSet(at, id, value);
+        if (property === 'replace') return (value: unknown) => mutable().set(at, value, true, true);
+      }
+      return undefined;
+    }
+    if (node.kind === 'tree') {
+      const at = addressOf(target);
+      const current = () => {
+        collect(context, at);
+        return resolve(target).value as tree.MutableTree;
+      };
+      if (property === 'rootId') return () => current().rootId;
+      if (property === 'get')
+        return (id: string) => {
+          const value = current();
+          return tree.contains(value, id) ? value.nodes[id].value : undefined;
+        };
+      if (property === 'has') return (id: string) => tree.contains(current(), id);
+      if (property === 'parent') return (id: string) => tree.parent(current(), id);
+      if (property === 'children')
+        return (id: string) => {
+          const children = tree.children(current(), id);
+          return children ? [...children] : undefined;
+        };
+      if (property === 'insert')
+        return (id: string, value: unknown, position?: tree.TreePosition) =>
+          mutable().treeInsert(at, id, value, position);
+      if (property === 'set')
+        return (id: string, value: unknown) => mutable().treeSet(at, id, value);
+      if (property === 'remove')
+        return (id: string) =>
+          mutable().treeEdit(at, (value, capture) => tree.remove(value, id, capture, at));
+      if (property === 'move')
+        return (id: string, position?: tree.TreePosition) =>
+          mutable().treeEdit(at, (value, capture) => tree.move(value, id, position, capture, at));
+      if (property === 'replace') return (value: unknown) => mutable().set(at, value, true, true);
+      return undefined;
+    }
   };
   const handler: ProxyHandler<Target> = {
     get: (target, property) => {
-      const { at } = target;
-      if (property === locationKey) return { context, at };
-      const { node, value } = resolve(at);
+      if (property === locationKey) return { context, at: addressOf(target) };
+      const { node, value } = resolve(target);
       if (!node || value === undefined) return undefined;
       if (typeof property !== 'string') return undefined;
       if (node.kind === 'map') {
-        collect(context, at, 'collection', property);
+        if (context.dependencies) collect(context, addressOf(target), 'collection', property);
         if (!Object.hasOwn(value as object, property)) return undefined;
         if (node.value.kind === 'field') {
-          collect(context, childAt(target, property));
+          if (context.dependencies) collect(context, childAt(target, property));
           return (value as Record<string, unknown>)[property];
         }
-        return access(
-          childAt(target, property),
+        return childAccess(
+          target,
+          property,
           node.value,
           (value as Record<string, unknown>)[property]
         );
       }
-      if (node.kind === 'table' || node.kind === 'list') {
-        const currentValue = () => {
-          const current = resolve(at);
-          if (current.node !== node || current.value === undefined)
-            throw new TypeError('The collection method belongs to a replaced schema branch.');
-          return current.value;
-        };
-        const ids = () => {
-          const current = currentValue();
-          collect(context, at, 'collection');
-          return node.kind === 'table'
-            ? [...(current as { ids: string[] }).ids]
-            : (current as unknown[]).map(node.keyOf);
-        };
-        const has = (id: string) => {
-          const current = currentValue();
-          collect(context, at, 'collection', id);
-          return node.kind === 'table'
-            ? Object.hasOwn((current as { byId: object }).byId, id)
-            : (current as unknown[]).some(item => node.keyOf(item) === id);
-        };
-        if (property === 'ids') return ids;
-        if (property === 'has') return has;
-        if (property === 'get')
-          return (id: string) => (has(id) ? access(childAt(target, id)) : undefined);
-        if (property === 'move')
-          return (id: string, position?: DocumentAnchor) => mutable().move(at, id, position);
-        if (node.kind === 'table') {
-          if (property === 'create')
-            return (
-              input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
-              position?: DocumentAnchor
-            ) =>
-              mutable().tableCreate(
-                at,
-                Array.isArray(input) ? input : [input as { id: string; value: unknown }],
-                position
-              );
-          if (property === 'remove')
-            return (ids: string | readonly string[]) =>
-              mutable().tableRemove(at, typeof ids === 'string' ? [ids] : ids);
-        } else {
-          if (property === 'insert')
-            return (value: unknown, position?: DocumentAnchor) =>
-              mutable().listInsert(at, value, position);
-          if (property === 'remove') return (id: string) => mutable().listRemove(at, id);
-          if (property === 'set')
-            return (id: string, value: unknown) => mutable().listSet(at, id, value);
-          if (property === 'replace')
-            return (value: unknown) => mutable().set(at, value, true, true);
-        }
-        return undefined;
-      }
-      if (node.kind === 'tree') {
-        const current = () => {
-          collect(context, at);
-          return resolve(at).value as tree.MutableTree;
-        };
-        if (property === 'rootId') return () => current().rootId;
-        if (property === 'get')
-          return (id: string) => {
-            const value = current();
-            return tree.contains(value, id) ? value.nodes[id].value : undefined;
-          };
-        if (property === 'has') return (id: string) => tree.contains(current(), id);
-        if (property === 'parent') return (id: string) => tree.parent(current(), id);
-        if (property === 'children')
-          return (id: string) => {
-            const children = tree.children(current(), id);
-            return children ? [...children] : undefined;
-          };
-        if (property === 'insert')
-          return (id: string, value: unknown, position?: tree.TreePosition) =>
-            mutable().treeInsert(at, id, value, position);
-        if (property === 'set')
-          return (id: string, value: unknown) => mutable().treeSet(at, id, value);
-        if (property === 'remove')
-          return (id: string) =>
-            mutable().treeEdit(at, (value, capture) => tree.remove(value, id, capture, at));
-        if (property === 'move')
-          return (id: string, position?: tree.TreePosition) =>
-            mutable().treeEdit(at, (value, capture) => tree.move(value, id, position, capture, at));
-        if (property === 'replace') return (value: unknown) => mutable().set(at, value, true, true);
-        return undefined;
-      }
+      if (node.kind === 'table' || node.kind === 'list' || node.kind === 'tree')
+        return collectionMethod(target, property, node);
       if (node.kind === 'variant' && property === node.tag) {
         collect(context, childAt(target, property));
         return (value as Record<string, unknown>)[property];
       }
-      const shape =
-        node.kind === 'object'
-          ? node.shape
-          : node.kind === 'variant'
-            ? node.variants[String((value as Record<string, unknown>)[node.tag])]?.shape
-            : undefined;
-      if (!shape || !Object.hasOwn(shape, property)) return undefined;
-      if (shape[property].kind === 'field') {
+      const member = compiledMembers(node, value)?.get(property);
+      if (!member) return undefined;
+      if (member.field) {
         if (context.dependencies) collect(context, childAt(target, property));
         return (value as Record<string, unknown>)[property];
       }
-      return access(
-        childAt(target, property),
-        shape[property],
+      return childAccess(
+        target,
+        property,
+        member.node,
         (value as Record<string, unknown>)[property]
       );
     },
     set: (target, property, value) => {
-      const { at } = target;
       const session = mutable(),
-        node = resolve(at).node;
+        { node, value: current } = resolve(target);
       if (
         typeof property !== 'string' ||
         !node ||
@@ -365,36 +417,41 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         throw new TypeError('Invalid structural assignment.');
       if (node.kind === 'variant' && node.tag === property)
         throw new TypeError('Variant discriminants are read-only.');
-      session.set(childAt(target, property), value);
+      session.setResolved(childAt(target, property), resolveChild(node, current, property), value);
       return true;
     },
     deleteProperty: (target, property) => {
-      const { at } = target;
       const session = mutable(),
-        node = resolve(at).node;
+        { node, value: current } = resolve(target);
       if (typeof property !== 'string' || (node?.kind === 'variant' && node.tag === property))
         throw new TypeError('Invalid structural deletion.');
-      session.set(childAt(target, property), undefined, false, true);
+      session.setResolved(
+        childAt(target, property),
+        resolveChild(node, current, property),
+        undefined,
+        false,
+        true
+      );
       return true;
     },
-    has: ({ at }, property) => {
-      const { node, value } = resolve(at);
+    has: (target, property) => {
+      const { node, value } = resolve(target);
       if (typeof property !== 'string') return false;
       collect(
         context,
-        at,
+        addressOf(target),
         node?.kind === 'map' ? 'collection' : 'value',
         node?.kind === 'map' ? property : undefined
       );
       return value !== undefined && Object.hasOwn(value as object, property);
     },
-    ownKeys: ({ at }) => {
-      const { value } = resolve(at);
-      collect(context, at, 'collection');
+    ownKeys: target => {
+      const { value } = resolve(target);
+      if (context.dependencies) collect(context, addressOf(target), 'collection');
       return value && typeof value === 'object' ? Object.keys(value) : [];
     },
-    getOwnPropertyDescriptor: ({ at }, property) => {
-      const { value } = resolve(at);
+    getOwnPropertyDescriptor: (target, property) => {
+      const { value } = resolve(target);
       return value && Object.hasOwn(value as object, property)
         ? { enumerable: true, configurable: true }
         : undefined;
@@ -412,7 +469,21 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       throw new TypeError('Document access cannot be frozen.');
     },
   };
-  return access(initial);
+  const root = resolve({
+    at: initial,
+    parent: undefined,
+    key: '',
+    node: undefined,
+    value: undefined,
+    generation: -1,
+    children: undefined,
+    proxy: undefined,
+  });
+  if (!root.node || root.node.kind === 'field' || root.value === undefined) {
+    if (context.dependencies) collect(context, initial);
+    return root.value;
+  }
+  return access(root);
 };
 export const collectionAccess = (
   context: AccessContext,

@@ -8,7 +8,8 @@
 4. ChangeRecorder 唯一记录首次旧值、顺序基线和触及树节点。回滚不调用用户回调或
    校验器，seal 只发布净变化。
 5. 原子值按 Object.is 比较，canonical 结构依所有权契约保留原子引用；
-   快照独立复制，结构按 schema 比较。
+   快照只复制结构，payload 与 commit、history 共享且只读，不做深复制或发布冻结。
+   校验器直接读取原始输入，必须纯同步，成功返回值被忽略。
 6. list 以稳定键标记身份，替换值必须保留键。anchor 拥有排序语义；
    tree 拥有双向一致、连通、无环、空树或单根的拓扑约束。
 7. ObjectNode 拥有定义身份，runtime 拥有实例身份；共享路径 compiler 和

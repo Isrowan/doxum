@@ -29,6 +29,151 @@ const text = (value: unknown): string => {
 };
 
 describe('schema validation and snapshots', () => {
+  it('seals primitive fields with exact presence and Object.is semantics', () => {
+    const token = Symbol('value');
+    const schema = object({ values: map(field<unknown>()) });
+    const initial = {
+      values: { zero: 0, nan: NaN, text: 'old', flag: false, big: 1n, empty: 1, symbol: null },
+    };
+    const runtime = createDocument({ schema, initial });
+    const unchanged = vi.fn();
+    runtime.subscribe(p => p.values.item('nan'), unchanged);
+    const result = runtime.update(d => {
+      d.values.zero = -0;
+      d.values.nan = 1;
+      d.values.nan = NaN;
+      d.values.text = 'new';
+      d.values.flag = true;
+      d.values.big = 2n;
+      d.values.empty = null;
+      d.values.symbol = token;
+      d.values.missing = undefined;
+    });
+    expect(result.status).toBe('committed');
+    if (result.status !== 'committed') throw new Error('Expected commit');
+    expect(result.commit.changes.changes).toHaveLength(7);
+    expect(result.commit.changes.changes.find(c => c.at[1] === 'missing')).toMatchObject({
+      before: { present: false },
+      after: { present: true, value: undefined },
+    });
+    expect(unchanged).not.toHaveBeenCalled();
+    expect(Object.is(runtime.snapshot().values.zero, -0)).toBe(true);
+    expect(runtime.snapshot().values.symbol).toBe(token);
+    expect(result.commit.changes.changes[0].kind).toBe('value');
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(Object.hasOwn(runtime.snapshot().values, 'missing')).toBe(false);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(Object.hasOwn(runtime.snapshot().values, 'missing')).toBe(true);
+  });
+  it('shares object and function payloads across commits, snapshots and history', () => {
+    const before = { n: 0 },
+      after = { n: 1 },
+      fn = () => 1;
+    const runtime = createDocument({
+      schema: object({ payload: field<unknown>() }),
+      initial: { payload: before },
+    });
+    const old = runtime.snapshot();
+    const result = runtime.update(d => {
+      d.payload = after;
+    });
+    if (result.status !== 'committed') throw new Error('Expected commit');
+    const change = result.commit.changes.changes[0];
+    if (change.kind !== 'value' || !change.before.present || !change.after.present)
+      throw new Error('Expected value');
+    expect(change.before.value).toBe(before);
+    expect(change.after.value).toBe(after);
+    expect(runtime.snapshot().payload).toBe(after);
+    expect(snapshot(after)).toBe(after);
+    expect(old.payload).toBe(before);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot().payload).toBe(before);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(runtime.snapshot().payload).toBe(after);
+    runtime.update(d => {
+      d.payload = fn;
+    });
+    expect(runtime.snapshot().payload).toBe(fn);
+    expect(snapshot(fn)).toBe(fn);
+    runtime.history.undo();
+    expect(runtime.snapshot().payload).toBe(after);
+  });
+  it('rejects a retained descendant write while its containing entry is absent and restores prior edits', () => {
+    const schema = object({ rows: map(object({ position: object({ x: field<number>() }) })) });
+    const initial = { rows: { a: { position: { x: 1 } } } };
+    const runtime = createDocument({ schema, initial });
+    expect(
+      runtime.update(d => {
+        const position = d.rows.a!.position;
+        position.x = 2;
+        delete d.rows.a;
+        expect(position.x).toBeUndefined();
+        position.x = 3;
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.revision()).toBe(0);
+  });
+  it('uses the current schema for retained descendants when variants reuse a member name', () => {
+    const schema = object({
+      choice: variant('kind', {
+        n: object({ payload: object({ value: field(number) }) }),
+        s: object({ payload: object({ value: field(text) }) }),
+      }),
+    });
+    const initial = { choice: { kind: 'n' as const, payload: { value: 1 } } };
+    const runtime = createDocument({ schema, initial });
+    expect(
+      runtime.update(d => {
+        const payload = d.choice.payload;
+        Reflect.set(payload, 'value', 2);
+        d.choice = { kind: 's', payload: { value: 'A' } };
+        expect(Reflect.get(payload, 'value')).toBe('A');
+        Reflect.set(payload, 'value', 3);
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(
+      runtime.update(d => {
+        const payload = d.choice.payload;
+        d.choice = { kind: 's', payload: { value: 'A' } };
+        Reflect.set(payload, 'value', 'B');
+        expect(d.choice.payload).toBe(payload);
+      }).status
+    ).toBe('committed');
+    expect(runtime.snapshot().choice).toEqual({ kind: 's', payload: { value: 'B' } });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+  });
+  it('keeps access metadata out of business fields, enumeration and snapshots', () => {
+    const names = [
+      'at',
+      'parent',
+      'key',
+      'node',
+      'value',
+      'generation',
+      'children',
+      'proxy',
+      '__proto__',
+    ];
+    const schema = object(
+      Object.fromEntries(names.map(name => [name, object({ n: field<number>() })]))
+    );
+    const initial = Object.fromEntries(names.map(name => [name, { n: 0 }]));
+    const runtime = createDocument({ schema, initial });
+    expect(
+      runtime.update(d => {
+        expect(Object.keys(d)).toEqual(names);
+        for (const name of names) d[name].n++;
+        expect(Object.keys(snapshot(d))).toEqual(names);
+      }).status
+    ).toBe('committed');
+    expect(runtime.snapshot()).toEqual(Object.fromEntries(names.map(name => [name, { n: 1 }])));
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+  });
   it('parses every container through value schemas', () => {
     const row = field((input: unknown): { id: string; n: number } => {
       const v = input as { id: string; n: number };
@@ -55,15 +200,15 @@ describe('schema validation and snapshots', () => {
     };
     const parsed = parse(schema, input);
     expect(parsed).toEqual(input);
-    input.rows[0].n = 9;
-    expect(parsed.rows[0].n).toBe(1);
+    expect(parsed.rows).not.toBe(input.rows);
+    expect(parsed.rows[0]).toBe(input.rows[0]);
     expect(() => parse(schema, { ...input, rows: [input.rows[0], input.rows[0]] })).toThrow(
       'unique'
     );
     expect(() => parse(field<string>(), 'unchecked')).toThrow('validator is required');
     expect(parse(optional(field(text)), undefined)).toBeUndefined();
   });
-  it('accepts Standard Schema, preserves paths, rejects transformations and asynchronous validation', () => {
+  it('accepts Standard Schema, preserves paths, ignores output and rejects asynchronous validation', () => {
     const validator: Validator<number> = {
       '~standard': {
         version: 1,
@@ -83,12 +228,16 @@ describe('schema validation and snapshots', () => {
       expect(error).toBeInstanceOf(ParseError);
       expect((error as ParseError).issues[0].address).toEqual(['n', 'nested']);
     }
-    expect(() =>
+    expect(
       parse(
         field(value => Number(value)),
         '2'
       )
-    ).toThrow('preserve');
+    ).toBe('2');
+    const outputIgnored: Validator<number> = {
+      '~standard': { version: 1, vendor: 'test', validate: () => ({ value: 99 }) },
+    };
+    expect(parse(field(outputIgnored), 2)).toBe(2);
     expect(() =>
       parse(
         field(async value => value),
@@ -96,18 +245,11 @@ describe('schema validation and snapshots', () => {
       )
     ).toThrow('synchronous');
   });
-  it('isolates validator payload mutation and rejects attempted reentrant writes', () => {
+  it('passes the original payload to pure validators and rejects reentrant writes', () => {
     const source = { n: 1 };
-    expect(() =>
-      parse(
-        field(input => {
-          (input as { n: number }).n++;
-          return input;
-        }),
-        source
-      )
-    ).toThrow('preserve');
-    expect(source.n).toBe(1);
+    const validate = vi.fn((input: unknown) => input as typeof source);
+    expect(parse(field(validate), source)).toBe(source);
+    expect(validate).toHaveBeenCalledExactlyOnceWith(source);
     let hook = () => {};
     const schema = object({
       n: field(value => {
@@ -160,61 +302,66 @@ describe('schema validation and snapshots', () => {
     expect(runtime.replace({ n: NaN, rows: { ids: [], byId: {} } }).status).toBe('rejected');
     expect(runtime.revision()).toBe(0);
   });
-  it('snapshots atomic builtins, symbols and sparse arrays independently', () => {
+  it('shares atomic builtins, symbols and sparse arrays without traversing payloads', () => {
     const key = Symbol('payload');
-    const schema = object({
-      payload: field<{ [key]: { n: number }; holes: number[] }>(),
-      date: field<Date>(),
-      values: field<Map<string, { n: number }>>(),
-    });
+    const initial = {
+      payload: { [key]: { n: 1 }, holes: new Array<number>(3) },
+      date: new Date(0),
+      values: new Map([['a', { n: 1 }]]),
+    };
     const runtime = createDocument({
-      schema,
-      initial: {
-        payload: { [key]: { n: 1 }, holes: new Array(3) },
-        date: new Date(0),
-        values: new Map([['a', { n: 1 }]]),
-      },
+      schema: object({
+        payload: field<typeof initial.payload>(),
+        date: field<Date>(),
+        values: field<typeof initial.values>(),
+      }),
+      initial,
     });
     const copy = select(runtime, state => snapshot(state));
+    expect(copy).not.toBe(initial);
+    expect(copy.payload).toBe(initial.payload);
+    expect(copy.date).toBe(initial.date);
+    expect(copy.values).toBe(initial.values);
     expect(0 in copy.payload.holes).toBe(false);
     expect(copy.payload.holes.length).toBe(3);
-    copy.payload[key].n = 5;
-    copy.date.setTime(9);
-    copy.values.get('a')!.n = 5;
-    expect(select(runtime, s => s.payload[key].n)).toBe(1);
-    expect(select(runtime, s => s.date.getTime())).toBe(0);
-    expect(select(runtime, s => s.values.get('a')!.n)).toBe(1);
+    expect(select(runtime, state => snapshot(state.date))).toBe(initial.date);
   });
-  it('uses field copiers for object, list and tree snapshot values', () => {
+  it('copies object, list and tree structure while sharing opaque payloads', () => {
     class Point {
-      constructor(public x: number) {}
+      constructor(public readonly x: number) {}
     }
-    const value = field<Point>(undefined, { snapshot: p => new Point(p.x) });
+    const value = field<Point>();
     const schema = object({
       point: value,
       rows: list(value, { keyOf: p => String(p.x) }),
       outline: tree(value),
     });
-    const runtime = createDocument({
-      schema,
-      initial: {
-        point: new Point(1),
-        rows: [new Point(2)],
-        outline: { rootId: 'r', nodes: { r: { children: [], value: new Point(3) } } },
-      },
+    const initial = {
+      point: new Point(1),
+      rows: [new Point(2)],
+      outline: { rootId: 'r', nodes: { r: { children: [], value: new Point(3) } } },
+    };
+    const runtime = createDocument({ schema, initial });
+    const saved = runtime.snapshot();
+    expect(saved.point).toBe(initial.point);
+    expect(saved.rows[0]).toBe(initial.rows[0]);
+    expect(saved.outline.nodes.r.value).toBe(initial.outline.nodes.r.value);
+    expect(saved.rows).not.toBe(initial.rows);
+    expect(saved.outline.nodes.r.children).not.toBe(initial.outline.nodes.r.children);
+    runtime.update(d => {
+      d.point = new Point(4);
+      d.rows.insert(new Point(5));
+      d.outline.insert('child', new Point(6), { parentId: 'r' });
     });
-    const copy = runtime.snapshot();
-    copy.point.x = 9;
-    copy.rows[0].x = 9;
-    copy.outline.nodes.r.value!.x = 9;
-    expect(runtime.snapshot().point.x).toBe(1);
-    expect(runtime.snapshot().rows[0].x).toBe(2);
-    expect(runtime.snapshot().outline.nodes.r.value!.x).toBe(3);
-    const opaque = createDocument({
-      schema: object({ point: field<Point>() }),
-      initial: { point: new Point(1) },
-    });
-    expect(() => opaque.snapshot()).toThrow('copier');
+    expect(saved.rows).toHaveLength(1);
+    expect(saved.outline.nodes.r.children).toEqual([]);
+    expect(initial.rows).toHaveLength(1);
+    expect(initial.outline.nodes.r.children).toEqual([]);
+    runtime.history.undo();
+    expect(runtime.snapshot().point).toBe(initial.point);
+    expect(runtime.snapshot().rows[0]).toBe(initial.rows[0]);
+    runtime.history.redo();
+    expect(saved.point).toBe(initial.point);
   });
   it('records exact dependencies for field reads, presence, membership and subtrees', () => {
     const schema = object({ rows: map(object({ n: field<number>(), title: field<string>() })) });
@@ -298,7 +445,7 @@ describe('schema validation and snapshots', () => {
     }
     const schema = object({
       date: field<Date>(),
-      point: field<Point>(undefined, { snapshot: p => new Point(p.x) }),
+      point: field<Point>(),
     });
     const runtime = createDocument({ schema, initial: { date: new Date(1), point: new Point(1) } });
     runtime.update(d => {

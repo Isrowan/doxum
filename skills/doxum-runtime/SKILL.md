@@ -10,7 +10,7 @@ For examples read [patterns](references/patterns.en.md) or [中文模式](refere
 Before runtime changes read [invariants](references/invariants.en.md) or
 [中文不变量](references/invariants.zh-CN.md).
 
-- Root object defines schema identity; Infer describes independent data.
+- Root object defines schema identity; Infer describes readonly data with shared immutable payloads.
 - createDocument owns canonical state. update, apply and replace share one session.
 - Draft and Read scopes expire at callback completion. Use snapshot to retain data.
 - Atomic fields are deeply readonly during access and replaced whole.

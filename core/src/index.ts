@@ -17,6 +17,7 @@ export type {
   TreeNode,
   DocumentNode,
   Infer,
+  ReadonlyValue,
   SchemaPath,
 } from './schema';
 export { parse, ParseError } from './schema-value';

@@ -66,7 +66,7 @@ describe('ChangeSet boundary', () => {
     expect(b.snapshot()).toEqual(a.snapshot());
     b.history.undo();
     expect(b.snapshot()).toEqual(setup().snapshot());
-    expect(Object.isFrozen(result.commit.changes.changes[1])).toBe(true);
+    expect(result.commit.changes.changes[1]).toMatchObject({ after: { value: { n: 4 } } });
   });
   it('requires a revision baseline and records actual old state instead of trusting incoming before', () => {
     const runtime = setup();
@@ -182,7 +182,17 @@ describe('ChangeSet boundary', () => {
       expect(runtime.snapshot()).toEqual({ outline: { nodes: {} } });
     }
   });
-  it('rejects malformed incremental tree node payloads and restores earlier changes', () => {
+  it.each([
+    null,
+    undefined,
+    1,
+    {},
+    { children: 'not an array' },
+    { children: new Array(1) },
+    { children: [undefined] },
+    { children: ['x', 'x'] },
+    { children: [], parentId: 1 },
+  ])('rejects malformed incremental tree nodes: %j', value => {
     const schema = object({ a: field<number>(), outline: tree(field<number>()) });
     const initial = { a: 0, outline: { nodes: {} } },
       runtime = createDocument({ schema, initial });
@@ -200,7 +210,7 @@ describe('ChangeSet boundary', () => {
                 {
                   id: 'x',
                   before: { present: false },
-                  after: { present: true, value: { children: 'not an array' } },
+                  after: { present: true, value },
                 },
               ],
             },

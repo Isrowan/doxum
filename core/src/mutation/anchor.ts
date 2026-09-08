@@ -1,4 +1,14 @@
 import type { DocumentAnchor } from '../schema';
+import { profile } from '../profile';
+
+export const equal = (left: readonly string[], right: readonly string[]): boolean => {
+  profile.equality.call();
+  if (left === right) return true;
+  profile.equality.container();
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+};
 
 export type KeyOrder = {
   readonly length: number;

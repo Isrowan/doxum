@@ -35,8 +35,11 @@ The root object is the schema identity. Multiple runtimes can share its definiti
 their data, revisions and subscriptions remain independent. Definitions are immutable.
 
 `object()` exposes editable structure. `field<T>()` is atomic: replace the whole
-value, including objects, arrays, Maps and Dates. Atomic interiors are deeply
-readonly in `Read`/`Draft`; callers must honor their ownership boundary at runtime.
+value, including objects, arrays, Maps and Dates. Atomic payloads are shared by
+reference across inputs, reads, snapshots, commits and history. They are deeply
+readonly in `Infer`/`Read`/`Draft`: never mutate them through any alias, even after
+removal from the document. Published results are readonly by contract, without
+defensive deep copying or runtime freezing. Classes and functions need no copier.
 
 Drafts and structural reads expire when their callback returns. Ordinary property
 reads see preceding writes in the same update. Same-address proxies are stable
@@ -64,7 +67,11 @@ document.subscribe(
 document.subscribe([path => path.title, path => path.tasks], () => {});
 ```
 
-`snapshot` exports an independent value with the subtree's `Infer` type.
+`snapshot` exports a stable value with the subtree's `Infer` type: editable schema
+structure is copied, while immutable atomic payloads keep their identity.
+`snapshot(rawPayload)` returns that same readonly reference. To edit exported
+payloads, explicitly copy them in application code; `structuredClone` works for
+supported types, while classes/functions need application-specific handling.
 Use ordinary properties for fine-grained reads. Data callbacks read real values;
 path callbacks describe symbolic schema locations, including missing entries.
 Subscription paths compile once during registration.
@@ -93,10 +100,12 @@ capabilities while retaining selection, subscription and projection support.
 - `optional(node)` permits absence for fields, variants, maps, lists and trees.
 
 Map/table key validators preserve branded string types through access, paths,
-projection keys and impact queries. Field validators can be value-preserving
-functions or Standard Schema v1 validators. `parse(model, unknown)` validates
-external values and returns an independent inferred value. Strict parsing requires
-validators for atomic fields; typed in-memory fields can omit them.
+projection keys and impact queries. Validators are pure, synchronous functions or
+Standard Schema v1 validators. They receive the original value, must not mutate it,
+and their successful output is ignored. Perform transformations before calling
+Doxum; it does not detect validator mutation or conversion. `parse(model, unknown)`
+validates and copies schema structure while sharing readonly payloads. Strict parsing
+requires validators for atomic fields; typed in-memory fields can omit them.
 
 For replacements containing nested collection tools, use `assign(scope, key, value)`:
 
