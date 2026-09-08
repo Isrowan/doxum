@@ -1,5 +1,15 @@
 import { performance } from 'node:perf_hooks';
-import { createDocument, createProjectionRuntime, field, map, object } from '../src';
+import {
+  createDocument,
+  createProjectionRuntime,
+  field,
+  list,
+  map,
+  object,
+  table,
+  tree,
+  type Draft,
+} from '../src';
 import { startProfile } from '../src/profile';
 import { MutationSession } from '../src/mutation/session';
 const schema = object({
@@ -102,4 +112,87 @@ for (const [count, changed, subscribers] of [
   );
   projection.dispose();
   runtime.dispose();
+}
+
+const structuralSchema = object({
+  rows: table(object({ n: field<number>() })),
+  items: list(field<{ id: string; n: number }>(), { keyOf: value => value.id }),
+  outline: tree(field<number>()),
+});
+const keys = Array.from({ length: 10000 }, (_, i) => String(i));
+const structuralInitial = {
+  rows: { ids: keys, byId: Object.fromEntries(keys.map(id => [id, { n: 0 }])) },
+  items: keys.map(id => ({ id, n: 0 })),
+  outline: { rootId: 'r', nodes: { r: { children: [], value: 0 } } },
+};
+const edits: [string, (draft: Draft<typeof structuralSchema>) => void][] = [
+  [
+    'structural-replacement',
+    d => {
+      d.items.replace([...structuralInitial.items.slice(1), { id: 'next', n: 1 }]);
+    },
+  ],
+  [
+    'table-membership',
+    d => {
+      d.rows.remove(keys.slice(0, 100));
+      d.rows.create(keys.slice(0, 100).map(id => ({ id: `next:${id}`, value: { n: 1 } })));
+    },
+  ],
+  [
+    'list-membership',
+    d => {
+      d.items.remove('0');
+      d.items.insert({ id: 'next', n: 1 });
+    },
+  ],
+  [
+    'list-values',
+    d => {
+      for (let i = 0; i < 100; i++) d.items.set(String(i), { id: String(i), n: 1 });
+    },
+  ],
+  [
+    'order-roundtrip',
+    d => {
+      for (let i = 0; i < 100; i++) {
+        d.items.move('0');
+        d.items.move('0', { at: 'start' });
+      }
+    },
+  ],
+  [
+    'tree-repeated',
+    d => {
+      for (let i = 0; i < 1000; i++) d.outline.set('r', i + 1);
+    },
+  ],
+];
+for (const [name, edit] of [...edits, ['root-reset', undefined] as const]) {
+  const runtime = createDocument({
+    schema: structuralSchema,
+    initial: structuralInitial,
+    history: false,
+  });
+  const invalidate = MutationSession.prototype.invalidate;
+  let invalidations = 0;
+  MutationSession.prototype.invalidate = function () {
+    invalidations++;
+    invalidate.call(this);
+  };
+  const profile = startProfile();
+  try {
+    const start = performance.now();
+    const result = edit
+      ? runtime.update(edit)
+      : runtime.replace({ ...structuralInitial, items: [] });
+    const elapsed = performance.now() - start;
+    if (result.status !== (name === 'order-roundtrip' ? 'unchanged' : 'committed'))
+      throw new Error('Structural profile workload failed');
+    console.log(JSON.stringify({ name, elapsed, invalidations, counters: profile.stop() }));
+  } finally {
+    profile.stop();
+    MutationSession.prototype.invalidate = invalidate;
+    runtime.dispose();
+  }
 }

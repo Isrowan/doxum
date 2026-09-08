@@ -14,9 +14,7 @@ const compareChanges = (a: Change, b: Change): number => {
   return a.at.length - b.at.length || lexical(a.kind, b.kind);
 };
 
-/** Engine-produced changes and decoded inputs share one immutable publication boundary. */
-export const sealChanges = (changes: Change[]): ChangeSet => {
-  changes.sort(compareChanges);
+const mergeContainers = (changes: Change[]): void => {
   // Merge adjacent member/order contributions into one public container record.
   let length = 0;
   for (const change of changes) {
@@ -38,9 +36,19 @@ export const sealChanges = (changes: Change[]): ChangeSet => {
     } else changes[length++] = change;
   }
   changes.length = length;
+};
+
+const publication = (changes: Change[]): ChangeSet => {
   const result = { changes };
   validated.add(result);
   return result;
+};
+
+/** Internal contributions are merged; unknown input must already contain complete groups. */
+export const sealChanges = (changes: Change[]): ChangeSet => {
+  changes.sort(compareChanges);
+  mergeContainers(changes);
+  return publication(changes);
 };
 
 const keys = (value: Record<string, unknown>, expected: readonly string[]) =>
@@ -154,7 +162,11 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       });
     } else return fail(at, 'invalid-changes', 'Unknown or malformed change.');
   }
-  const sorted = result.sort(compareChanges);
+  return publication(normalizeChanges(result));
+};
+
+const normalizeChanges = (changes: Change[]): Change[] => {
+  const sorted = changes.sort(compareChanges);
   const groups = new AddressIndex<true>();
   const replacements = new AddressIndex<true>();
   const orders = new AddressIndex<true>();
@@ -181,9 +193,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       replacements.add(change.at, true);
     }
   }
-  const decoded = { changes: sorted };
-  validated.add(decoded);
-  return decoded;
+  return sorted;
 };
 
 export const changeCount = (changes: ChangeSet): number => {

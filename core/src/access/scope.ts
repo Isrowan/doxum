@@ -17,17 +17,20 @@ import type {
 } from '../schema';
 import {
   nodeAt,
-  read as readAddress,
+  resolveValue,
   resolveChild,
   resolveLocated,
   compiledShape,
   type FixedMember,
-  resolveContainer,
   type ResolvedContainer,
 } from '../address';
 import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
 import type { MutationSession } from '../mutation/session';
+import * as tableOperations from '../mutation/operations/table';
+import * as listOperations from '../mutation/operations/list';
+import * as treeOperations from '../mutation/operations/tree';
+import * as orderOperations from '../mutation/operations/order';
 import * as tree from '../mutation/tree';
 import * as anchor from '../mutation/anchor';
 import { profile } from '../profile';
@@ -142,9 +145,11 @@ export const snapshot = <T>(value: T): Snapshot<T> => {
   const { context, at } = location;
   profile.access('snapshots');
   collect(context, at);
-  const node = nodeAt(context.schema, at, context.root());
-  if (!node) throw new Error('The selected schema address no longer exists.');
-  return copyValue(node, readAddress(context.root(), at, context.schema)) as Snapshot<T>;
+  const resolved = resolveValue(context.schema, context.root(), at);
+  if (resolved) return copyValue(resolved.node, resolved.value) as Snapshot<T>;
+  if (!nodeAt(context.schema, at, context.root()))
+    throw new Error('The selected schema address no longer exists.');
+  return undefined as Snapshot<T>;
 };
 /** TypeScript cannot express asymmetric index signatures for nested collection tools. */
 export const assign = <T extends object, K extends keyof Snapshot<T>>(
@@ -217,14 +222,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   };
   const writableContainer = (target: Target, session: MutationSession): ResolvedContainer => {
     if (target.container?.generation === session.generation) return target.container;
-    const container = resolveContainer(
-      session.identity,
-      session.generation,
-      addressOf(target),
-      target.node,
-      target.value
-    );
-    return (target.container = container ?? session.resolve(addressOf(target)));
+    return (target.container = session.bind(addressOf(target), target.node, target.value));
   };
   const childAt = (target: Target, key: string): DocumentAddress => {
     profile.access('addresses');
@@ -297,107 +295,127 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     collectionValue(target, node);
     return session;
   };
-  // Collection closures must not allocate a lexical environment for every field read.
-  const collectionMethod = (
+  const orderedMethod = (
     target: Target,
     property: string,
-    node: Extract<DocumentNode, { kind: 'table' | 'list' | 'tree' }>
+    node: Extract<DocumentNode, { kind: 'table' | 'list' }>
   ): unknown => {
     const at = addressOf(target);
-    if (node.kind === 'table' || node.kind === 'list') {
-      const ids = () => {
+    if (property === 'ids')
+      return () => {
         const current = collectionValue(target, node);
         collect(context, at, 'collection');
         return node.kind === 'table'
           ? [...(current as { ids: string[] }).ids]
           : (current as unknown[]).map(node.keyOf);
       };
-      const has = (id: string) => {
+    if (property === 'has')
+      return (id: string) => {
         const current = collectionValue(target, node);
         collect(context, at, 'collection', id);
         return node.kind === 'table'
           ? Object.hasOwn((current as { byId: object }).byId, id)
           : anchor.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
       };
-      if (property === 'ids') return ids;
-      if (property === 'has') return has;
-      if (property === 'get')
-        return (id: string) => {
-          const current = collectionValue(target, node);
-          collect(context, at, 'collection', id);
-          const location = resolveChild(node, current, id);
-          if (!location || !Object.hasOwn(location.parent, location.key)) return undefined;
-          return childAccess(
-            target,
-            id,
-            location.node,
-            (location.parent as Record<string | number, unknown>)[location.key]
-          );
-        };
-      if (property === 'move')
-        return (id: string, position?: DocumentAnchor) =>
-          writableCollection(target, node).move(at, id, position);
-      if (node.kind === 'table') {
-        if (property === 'create')
-          return (
-            input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
-            position?: DocumentAnchor
-          ) =>
-            writableCollection(target, node).tableCreate(
-              at,
-              Array.isArray(input) ? input : [input as { id: string; value: unknown }],
-              position
-            );
-        if (property === 'remove')
-          return (ids: string | readonly string[]) =>
-            writableCollection(target, node).tableRemove(at, typeof ids === 'string' ? [ids] : ids);
-      } else {
-        if (property === 'insert')
-          return (value: unknown, position?: DocumentAnchor) =>
-            writableCollection(target, node).listInsert(at, value, position);
-        if (property === 'remove')
-          return (id: string) => writableCollection(target, node).listRemove(at, id);
-        if (property === 'set')
-          return (id: string, value: unknown) =>
-            writableCollection(target, node).listSet(at, id, value);
-        if (property === 'replace')
-          return (value: unknown) => writableCollection(target, node).replace(at, value);
-      }
-      return undefined;
-    }
-    if (node.kind === 'tree') {
-      const current = () => {
-        collect(context, at);
-        return collectionValue(target, node) as tree.MutableTree;
+    if (property === 'get')
+      return (id: string) => {
+        const current = collectionValue(target, node);
+        collect(context, at, 'collection', id);
+        const location = resolveChild(node, current, id);
+        if (!location || !Object.hasOwn(location.parent, location.key)) return undefined;
+        return childAccess(
+          target,
+          id,
+          location.node,
+          (location.parent as Record<string | number, unknown>)[location.key]
+        );
       };
-      if (property === 'rootId') return () => current().rootId;
-      if (property === 'get')
-        return (id: string) => {
-          const value = current();
-          return tree.contains(value, id) ? value.nodes[id].value : undefined;
-        };
-      if (property === 'has') return (id: string) => tree.contains(current(), id);
-      if (property === 'parent') return (id: string) => tree.parent(current(), id);
-      if (property === 'children')
-        return (id: string) => {
-          const children = tree.children(current(), id);
-          return children ? [...children] : undefined;
-        };
-      if (property === 'insert')
-        return (id: string, value: unknown, position?: tree.TreePosition) =>
-          writableCollection(target, node).treeInsert(at, id, value, position);
-      if (property === 'set')
-        return (id: string, value: unknown) =>
-          writableCollection(target, node).treeSet(at, id, value);
-      if (property === 'remove')
-        return (id: string) => writableCollection(target, node).treeRemove(at, id);
-      if (property === 'move')
-        return (id: string, position?: tree.TreePosition) =>
-          writableCollection(target, node).treeMove(at, id, position);
-      if (property === 'replace')
-        return (value: unknown) => writableCollection(target, node).replace(at, value);
-      return undefined;
-    }
+    if (property === 'move')
+      return (id: string, position?: DocumentAnchor) =>
+        orderOperations.move(writableCollection(target, node), at, id, position);
+    return undefined;
+  };
+  const tableMethod = (
+    target: Target,
+    property: string,
+    node: Extract<DocumentNode, { kind: 'table' }>
+  ): unknown => {
+    const at = addressOf(target);
+    if (property === 'create')
+      return (
+        input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
+        position?: DocumentAnchor
+      ) =>
+        tableOperations.create(
+          writableCollection(target, node),
+          at,
+          Array.isArray(input) ? input : [input as { id: string; value: unknown }],
+          position
+        );
+    if (property === 'remove')
+      return (ids: string | readonly string[]) =>
+        tableOperations.remove(
+          writableCollection(target, node),
+          at,
+          typeof ids === 'string' ? [ids] : ids
+        );
+    return orderedMethod(target, property, node);
+  };
+  const listMethod = (
+    target: Target,
+    property: string,
+    node: Extract<DocumentNode, { kind: 'list' }>
+  ): unknown => {
+    const at = addressOf(target);
+    if (property === 'insert')
+      return (value: unknown, position?: DocumentAnchor) =>
+        listOperations.insert(writableCollection(target, node), at, value, position);
+    if (property === 'remove')
+      return (id: string) => listOperations.remove(writableCollection(target, node), at, id);
+    if (property === 'set')
+      return (id: string, value: unknown) =>
+        listOperations.set(writableCollection(target, node), at, id, value);
+    if (property === 'replace')
+      return (value: unknown) => writableCollection(target, node).replace(at, value);
+    return orderedMethod(target, property, node);
+  };
+  const treeMethod = (
+    target: Target,
+    property: string,
+    node: Extract<DocumentNode, { kind: 'tree' }>
+  ): unknown => {
+    const at = addressOf(target);
+    if (property === 'insert')
+      return (id: string, value: unknown, position?: tree.TreePosition) =>
+        treeOperations.insert(writableCollection(target, node), at, id, value, position);
+    if (property === 'set')
+      return (id: string, value: unknown) =>
+        treeOperations.set(writableCollection(target, node), at, id, value);
+    if (property === 'remove')
+      return (id: string) => treeOperations.remove(writableCollection(target, node), at, id);
+    if (property === 'move')
+      return (id: string, position?: tree.TreePosition) =>
+        treeOperations.move(writableCollection(target, node), at, id, position);
+    if (property === 'replace')
+      return (value: unknown) => writableCollection(target, node).replace(at, value);
+    const current = () => {
+      collect(context, at);
+      return collectionValue(target, node) as tree.MutableTree;
+    };
+    if (property === 'rootId') return () => current().rootId;
+    if (property === 'get')
+      return (id: string) => {
+        const value = current();
+        return tree.contains(value, id) ? value.nodes[id].value : undefined;
+      };
+    if (property === 'has') return (id: string) => tree.contains(current(), id);
+    if (property === 'parent') return (id: string) => tree.parent(current(), id);
+    if (property === 'children')
+      return (id: string) => {
+        const children = tree.children(current(), id);
+        return children ? [...children] : undefined;
+      };
+    return undefined;
   };
   const handler: ProxyHandler<Target> = {
     get: (target, property) => {
@@ -419,8 +437,9 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
           (value as Record<string, unknown>)[property]
         );
       }
-      if (node.kind === 'table' || node.kind === 'list' || node.kind === 'tree')
-        return collectionMethod(target, property, node);
+      if (node.kind === 'table') return tableMethod(target, property, node);
+      if (node.kind === 'list') return listMethod(target, property, node);
+      if (node.kind === 'tree') return treeMethod(target, property, node);
       if (node.kind === 'variant' && property === node.tag) {
         collect(context, childAt(target, property));
         return (value as Record<string, unknown>)[property];

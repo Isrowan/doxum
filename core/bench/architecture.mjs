@@ -35,6 +35,9 @@ const scenarios = [
   ['mixed-order', 10000, 10000, 0],
   ['table-bulk-members', 10000, 1000, 0],
   ['table-members-apply', 10000, 1000, 0],
+  ['table-order-roundtrip', 10000, 100, 0],
+  ['list-order-roundtrip', 10000, 100, 0],
+  ['tree-repeated', 1000, 1000, 0],
 ].filter(
   ([name]) =>
     !process.env.DOXUM_BENCH_FILTER || process.env.DOXUM_BENCH_FILTER.split(',').includes(name)
@@ -74,6 +77,57 @@ if (process.argv.includes('--isolate')) {
 }
 
 function setup(name, count, changed, listeners) {
+  if (
+    name === 'table-order-roundtrip' ||
+    name === 'list-order-roundtrip' ||
+    name === 'tree-repeated'
+  ) {
+    const ids = Array.from({ length: count }, (_, i) => String(i));
+    const isTree = name === 'tree-repeated';
+    const isTable = name === 'table-order-roundtrip';
+    const schema = object({
+      rows: isTree
+        ? tree(field())
+        : isTable
+          ? table(object({ n: field() }))
+          : list(field(), { keyOf: value => value }),
+    });
+    const initial = {
+      rows: isTree
+        ? {
+            rootId: 'r',
+            nodes: Object.fromEntries([
+              ['r', { children: ids, value: 0 }],
+              ...ids.map(id => [id, { parentId: 'r', children: [], value: 0 }]),
+            ]),
+          }
+        : isTable
+          ? { ids, byId: Object.fromEntries(ids.map(id => [id, { n: 0 }])) }
+          : ids,
+    };
+    const runtime = createDocument({ schema, initial, history: false });
+    let frame = 0;
+    return {
+      tick: () =>
+        runtime.update(d => {
+          frame++;
+          for (let i = 0; i < changed; i++) {
+            if (isTree) d.rows.set('0', frame * changed + i);
+            else {
+              d.rows.move('0');
+              d.rows.move('0', { at: 'start' });
+            }
+          }
+        }),
+      verify: () => {
+        assert.equal(runtime.revision(), isTree ? warmup + measured : 0);
+        if (isTree)
+          assert.equal(runtime.snapshot().rows.nodes['0'].value, frame * changed + changed - 1);
+        else assert.deepEqual(runtime.snapshot(), initial);
+      },
+      dispose: () => runtime.dispose(),
+    };
+  }
   if (name === 'table-bulk-members' || name === 'table-members-apply') {
     const ids = Array.from({ length: count }, (_, i) => String(i));
     const schema = object({ rows: table(object({ n: field() })) });
@@ -312,7 +366,10 @@ for (const [name, count, changed, listeners] of scenarios) {
     const workload = setup(name, count, changed, listeners);
     const tick = () => {
       const result = workload.tick();
-      assert.equal(result.status, name === 'unchanged' ? 'unchanged' : 'committed');
+      assert.equal(
+        result.status,
+        name === 'unchanged' || name.endsWith('-roundtrip') ? 'unchanged' : 'committed'
+      );
       if (result.status === 'committed') assert.equal(result.observerErrors.length, 0);
     };
     for (let i = 0; i < warmup; i++) tick();

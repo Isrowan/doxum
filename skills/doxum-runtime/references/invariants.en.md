@@ -1,6 +1,10 @@
 # Runtime Invariants
 
 1. createDocument owns canonical state; Draft, apply and replace share MutationSession.
+   runtime owns one execution/rollback/seal/publish boundary, also used by history.
+   mutation/operations groups table/list/order/tree/replay commands by domain; session
+   owns the write kernel. Scope binds already-resolved facts through session and
+   reuses handles within a generation. These are internal implementation boundaries.
 2. Updates and reads are synchronous and scoped. Reentrant writes are forbidden.
    Failure restores all earlier work. Ordinary exceptions rethrow; TransactionRejected
    returns application issues.
@@ -9,6 +13,8 @@
    installs its members then its optional order; no standalone order records.
 4. ChangeRecorder groups first-touch members by container and owns order baselines and touched tree nodes.
    Rollback runs no user callbacks or validators. Seal publishes net differences.
+   Capture, restoration and per-domain sealing stay separate. Copy final order only
+   after comparing current keys; keep the rollback baseline even for a net-zero edit.
 5. Atomic equality is Object.is; canonical structure retains atomic references under
    ownership contract. Snapshots copy structure and share readonly payloads, as do
    commits and history. No payload cloning or publication freezing. Validators receive

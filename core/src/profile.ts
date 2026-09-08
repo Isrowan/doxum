@@ -17,6 +17,7 @@ const counters = () => ({
     absorbed: 0,
     orderSnapshots: 0,
     orderItems: 0,
+    publishedOrderItems: 0,
     treeNodes: 0,
     sealed: 0,
     indexedGroups: 0,

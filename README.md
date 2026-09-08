@@ -249,10 +249,16 @@ comma-separated workload list, and `DOXUM_BENCH_MODULE=/absolute/path/to/index.j
 to compare a saved build. Sampling timings are not normal latency measurements.
 `pnpm run profile` reports work counters and separates writes, sealing, remaining
 runtime/publication work and explicit impact queries.
+It also reports structural generation advances and distinguishes captured order
+baselines from final published order copies. Architecture workloads include order
+round trips and repeated tree edits to expose costs hidden by commit-only benchmarks.
 
 Builds produce root `dist` ESM/CJS/declarations for `doxum`, `doxum/integration`,
 `doxum/local-sync` and `doxum/react`. Source ownership is described in
 [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+The runtime shares one transaction lifecycle; complete mutation operations are
+organized by domain under `core/src/mutation/operations`, with access, first-touch
+recording and publication retaining their own responsibilities.
 The published [runtime skill](skills/doxum-runtime/SKILL.md) includes English and
 Chinese application guidance.
 

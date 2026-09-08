@@ -23,12 +23,23 @@ reuse a `ResolvedContainer` for the current session generation and call
 wrapper. Address replay resolves a group container and uses the same write funnel;
 `assign` enters the ordinary proxy assignment. No access or resolved
 canonical location is reused across transactions.
+Session is the only writable-container construction boundary: `resolveContainer`
+walks a logical address, while `bind` accepts the current schema/value already
+resolved by scope. Scope keeps that bound handle until generation changes. Forcing
+an additional root-to-container walk here would discard the access cache's work.
+`resolveValue` reads schema and current value; session's private `refresh` checks
+handle ownership and renews stale generations. Schema-only `nodeAt` remains
+necessary for missing descendants and branch checks; snapshot uses it only when
+value resolution fails, not alongside every successful read.
 Resolved containers carry a session identity token, not a reference back to the
 MutationSession and its recorder. Existing atomic collection-member updates keep
 their generation; membership and structural changes invalidate locations.
 
 Collection methods resolve their current value once for reads and enter complete
-session operations for writes. A retained method remains valid across replacement
+domain operations for writes. Table, list and tree dispatchers stay local to scope;
+ordered reads and move dispatch are shared by table and list. They all use the same
+scope and schema-branch checks. Each read branch creates only its requested method;
+write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
 the old method throws; reading the method again obtains the current branch's method.
 All retained structural accesses and methods expire at callback completion.
@@ -68,8 +79,10 @@ fallback for extra properties. Payload interiors remain opaque and shared.
 ## Mutation
 
 ```text
-draft assignment / explicit collection method / decoded ChangeSet
-  -> MutationSession
+update / apply / replace / history replay
+  -> runtime mutate: authorize + lock + create session
+  -> scoped assignment / domain operation / decoded ChangeSet replay
+  -> MutationSession write kernel
   -> schema/key/value validation
   -> ChangeRecorder first-touch capture
   -> immediate canonical write
@@ -77,16 +90,33 @@ draft assignment / explicit collection method / decoded ChangeSet
   -> commit + impact + history + projections + external listeners
 ```
 
-`mutation/session.ts` coordinates writes. `anchor.ts` owns ordered-key semantics;
-`tree.ts` owns topology validation and insert/remove/move/set algorithms.
-Session owns complete table/list/tree operations; scope never composes tree capture
-callbacks. A bulk table operation resolves its container once and reuses its member
-layout. `ResolvedContainer` includes both the container value and its member storage
+`runtime.ts` has one internal `mutate` lifecycle for all write sources. Its execution
+boundary covers session work and seal, restores the session on failure, and always
+releases the write lock. Only update converts application `TransactionRejected`;
+the internal overloads preserve that public result distinction. Authorization runs
+before this boundary, so driver exceptions propagate unchanged. Publish runs after
+seal and outside rollback handling: revision, history, impact and notifications are
+accepted together, and observer errors cannot turn an accepted commit into rejection.
+Draft access expires before seal or any observer runs.
+
+`mutation/session.ts` owns resolution, validation, the common member-write kernel,
+generation, tree capture coordination and recorder lifetime. Complete operations
+are grouped under `mutation/operations/`: `table` owns create/remove, `list` owns
+insert/set/remove, `order` owns the shared move, `tree` owns tree commands, and
+`replay` owns applying complete ChangeSet groups. Generic assignment and replacement
+remain session primitives. These modules take the existing session, own no state,
+and are not public exports. There are no forwarding methods left on session.
+`anchor.ts` owns ordered-key semantics; `tree.ts` owns topology validation and
+insert/remove/move/set algorithms. Scope never composes tree capture callbacks.
+A bulk operation resolves its container once and reuses its member layout and
+located-write primitive for the group. `ResolvedContainer` includes both the container value and its member storage
 (for a table, the latter is `byId`). `mutation/state.ts` owns installation of validated
 members and orders, shared by session and recorder restoration. It stores no second
 document and performs no validation or capture of its own.
-`mutation/issue.ts` creates engine issues. Application `TransactionRejected`
-is classified only at the transaction boundary. Ordinary exceptions are rethrown.
+`mutation/issue.ts` creates engine issues and maps value parse failures through
+`invalidValue`. The field success path validates without constructing an address;
+only a failure materializes its complete address. Key validation retains its distinct
+`invalid-key` semantics. Ordinary exceptions are rethrown unchanged.
 
 Session entry points express assignment, removal or replacement. Ordinary assignment
 checks its structural replacement policy before the common write path. That path
@@ -97,6 +127,10 @@ their already resolved index directly. No per-write command object is allocated.
 Sequence insert/remove/move/install operations in `anchor.ts` invalidate list indexes
 as part of the structural write. Session and rollback call these operations; neither
 manually invalidates the index. Installing a same-key value preserves the index.
+Generation advances immediately on each structural installation. Domain operations
+may resolve once and retain their local container, but retained user scopes must
+observe earlier writes inside the callback. There is no deferred invalidation mode,
+nested batch counter, or separate commit-time refresh protocol.
 
 `mutation/recorder.ts` keeps one first-touch fact per value slot, one initial order
 per changed sequence, and initial states only for touched tree nodes. Structural
@@ -118,6 +152,11 @@ as the authority for logical coverage across replacement.
 Fact registration and removal update the fact set, parent identity registry and
 coverage index through one recorder-owned lifecycle. The lazy group-index backfill
 remains explicit, so scalar writes do not pay for structural coverage indexing.
+Order/tree deduplication uses the existing exact logical-address lookup. An extra
+object-identity registry would need registration, absorption and reset coordination
+alongside the required coverage index; it is not added solely to replace a short
+allocation-free address walk. Member groups retain their existing parent-identity
+registry because that lookup serves every scalar write.
 Published before structures and order baselines transfer from
 the recorder; after structures are copied away from canonical state. Payloads retain
 their original references. Results are readonly by contract and are not frozen.
@@ -135,6 +174,11 @@ explicit `reset` change. The module-local `diffMember` algorithm only consumes s
 before/after values and output arrays; it cannot access recorder state. Capture,
 coverage absorption and rollback remain recorder responsibilities. These algorithms
 are separate without introducing another change representation or protocol.
+Module-local `sealMembers`, `sealOrder` and `sealTree` each publish their fact domain;
+the recorder's `seal` only dispatches facts and handles root reset. Order sealing
+compares the captured baseline against current keys before copying. A sequence
+restored to its original order produces no after array and no commit. Changed
+sequences still detach their final order from mutable canonical arrays.
 `schema-value.ts` owns one structure copier for canonical
 installation, snapshots, parse, rollback and commit publication. It copies editable
 schema structure and shares immutable payloads, including opaque classes, functions,
@@ -175,6 +219,11 @@ is stored on each commit. Member keys and tree node IDs are lexically sorted.
 duplicates and overlaps using the shared address index and establishes deterministic
 lexicographic address/kind order. No string-path parser or command envelope enters
 executors.
+Inside this boundary, `decodeChanges` validates unknown shapes,
+`normalizeChanges` checks logical conflicts and sorts, and `sealChanges` merges
+internal container contributions. A shared private `publication` registers the
+result's validated identity. These stages use the same Change type and introduce
+no parallel wire representation or exported normalization API.
 Recorder publication merges member and order contributions at the same address
 while sealing sorted groups. Unknown input must already have complete groups;
 the decoder rejects split groups instead of silently merging them.
@@ -252,6 +301,12 @@ index builds and scanned items; `profile.recorder.indexedGroups` counts coverage
 registrations. Tree deletion touches its
 subtree; child-order edits touch affected child arrays. These costs are deliberate
 and instrumented, not hidden behind a constant-time promise.
+`profile.recorder.orderItems` counts first-touch baseline keys;
+`publishedOrderItems` counts detached final order keys. `core/bench/profile.ts`
+also reports generation advances for membership, value replay, sequence, tree and
+root replacement workloads. `core/bench/architecture.mjs` includes repeated tree
+writes and order round trips, supports isolated saved-build comparisons, and keeps
+timing and sampled allocation runs separate.
 
 Payload capture, publication and replay preserve references regardless of payload
 size. Only application validation can traverse a payload. `profile.copy.structures`

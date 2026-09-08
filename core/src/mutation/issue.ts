@@ -1,4 +1,5 @@
 import type { DocumentAddress } from '../schema';
+import type { ParseIssue } from '../schema-value';
 
 export type MutationIssueCode =
   | 'invalid-address'
@@ -41,3 +42,6 @@ export class MutationRejected extends Error {
 export const fail = (address: DocumentAddress, code: MutationIssueCode, message: string): never => {
   throw new MutationRejected(at(address, code, message));
 };
+
+export const invalidValue = (issue: ParseIssue, address = issue.address): never =>
+  fail(address, issue.code === 'missing-validator' ? 'invalid-value' : issue.code, issue.message);

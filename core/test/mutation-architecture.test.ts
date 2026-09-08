@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, field, map, object, table, type ChangeSet } from '../src';
+import { createDocument, field, list, map, object, table, type ChangeSet } from '../src';
 import { type ImpactTarget } from '../src/schema';
 import { startProfile } from '../src/profile';
 import { createImpact, affectsTarget } from '../src/impact';
@@ -9,6 +9,49 @@ import { MutationSession } from '../src/mutation/session';
 import { jsonChanges } from '../src/local-sync/json';
 
 describe('grouped mutation architecture', () => {
+  it('copies final order only when it changes and keeps published orders isolated', () => {
+    const ids = Array.from({ length: 10000 }, (_, i) => String(i));
+    const schema = object({
+      rows: table(object({ n: field<number>() })),
+      items: list(field<string>(), { keyOf: value => value }),
+    });
+    const initial = {
+      rows: { ids, byId: Object.fromEntries(ids.map(id => [id, { n: 0 }])) },
+      items: ids,
+    };
+    const runtime = createDocument({ schema, initial });
+    const notices = vi.fn();
+    runtime.subscribe(notices);
+    const unchanged = startProfile();
+    expect(
+      runtime.update(d => {
+        d.rows.move('0');
+        d.rows.move('0', { at: 'start' });
+        d.items.move('0');
+        d.items.move('0', { at: 'start' });
+      }).status
+    ).toBe('unchanged');
+    expect(unchanged.stop().recorder).toMatchObject({
+      orderSnapshots: 2,
+      orderItems: 20000,
+      publishedOrderItems: 0,
+      sealed: 0,
+    });
+    expect(notices).not.toHaveBeenCalled();
+    expect(runtime.revision()).toBe(0);
+    const changed = startProfile();
+    const result = runtime.update(d => {
+      d.rows.move('0');
+      d.items.move('0');
+    });
+    expect(changed.stop().recorder.publishedOrderItems).toBe(20000);
+    if (result.status !== 'committed') throw new Error('commit');
+    const saved = structuredClone(result.commit.changes);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(result.commit.changes).toEqual(saved);
+  });
   it('retains a stable collection impact result for an explicit root reset', () => {
     const schema = object({ values: map(field<number>()) });
     const runtime = createDocument({ schema, initial: { values: {} } });
@@ -33,7 +76,9 @@ describe('grouped mutation architecture', () => {
     expect(counters.recorder).toMatchObject({ facts: 1, groups: 1, transitions: 1 });
     const a = new MutationSession({ schema, document: { values: { a: 0 } } });
     const b = new MutationSession({ schema, document: { values: { a: 0 } } });
-    expect(() => b.assignMember(a.resolve(['values']), 'a', 1)).toThrow('another mutation session');
+    expect(() => b.assignMember(a.resolveContainer(['values']), 'a', 1)).toThrow(
+      'another mutation session'
+    );
     expect(b.state.document).toEqual({ values: { a: 0 } });
   });
   it('publishes identical lexical member groups regardless of write order', () => {

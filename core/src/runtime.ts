@@ -5,9 +5,11 @@ import { createImpact } from './impact';
 import { createHistory } from './history';
 import { createAccess, type Draft } from './access/scope';
 import { MutationSession } from './mutation/session';
+import * as replay from './mutation/operations/replay';
+import type { RuntimeWriteIntent } from './runtime/driver';
 import { decodeChanges } from './mutation/changes';
 import { MutationRejected, fail } from './mutation/issue';
-import type { ChangeDirection, ChangeSet } from './changes';
+import type { ChangeSet } from './changes';
 import { checkValue, copyValue, ParseError } from './schema-value';
 import {
   DocumentDisposedError,
@@ -62,7 +64,10 @@ export const createDocument = <S extends ObjectNode>(input: {
   const history = createHistory<DocumentCommit<S>>({
     capacity: input.history === false ? 0 : Math.max(0, input.history?.capacity ?? 100),
     revision: () => revision,
-    apply: (changes, direction) => applyBatch(changes, direction, 'history', false),
+    apply: (changes, direction) =>
+      mutate({ kind: 'apply', source: 'history' }, false, session => {
+        for (const change of changes) replay.apply(session, change, direction);
+      }),
     assertIdle: idle,
     notify: run => {
       busy = true;
@@ -94,27 +99,44 @@ export const createDocument = <S extends ObjectNode>(input: {
       observerErrors: notify(notification, commit, history.flush),
     };
   };
-  function applyBatch(
-    changes: readonly ChangeSet[],
-    direction: ChangeDirection,
-    source: CommitSource,
-    recordHistory: boolean
-  ): OperationResult<DocumentCommit<S>> {
-    writable({ kind: 'apply', source });
+  function mutate(
+    intent: Extract<RuntimeWriteIntent, { kind: 'update' }>,
+    recordHistory: boolean,
+    execute: (session: MutationSession) => void
+  ):
+    | OperationResult<DocumentCommit<S>>
+    | Extract<TransactionResult<never, never>, { status: 'rejected' }>;
+  function mutate(
+    intent: Exclude<RuntimeWriteIntent, { kind: 'update' }>,
+    recordHistory: boolean,
+    execute: (session: MutationSession) => void
+  ): OperationResult<DocumentCommit<S>>;
+  function mutate(
+    intent: RuntimeWriteIntent,
+    recordHistory: boolean,
+    execute: (session: MutationSession) => void
+  ):
+    | OperationResult<DocumentCommit<S>>
+    | Extract<TransactionResult<never, never>, { status: 'rejected' }> {
+    writable(intent);
     busy = true;
-    const session = new MutationSession(state);
-    let committed = false;
     try {
-      for (const change of changes) session.apply(change, direction);
-      const sealed = session.finish();
-      if (!sealed.changes.length) return { status: 'unchanged', revision };
-      committed = true;
-      return publish(sealed, source, recordHistory);
-    } catch (error) {
-      if (!committed) session.rollback();
-      if (error instanceof MutationRejected)
-        return { status: 'rejected', issues: [error.issue], revision };
-      throw error;
+      const session = new MutationSession(state);
+      let changes: ChangeSet;
+      try {
+        execute(session);
+        changes = session.finish();
+      } catch (error) {
+        session.rollback();
+        if (error instanceof MutationRejected)
+          return { status: 'rejected', issues: [error.issue], revision };
+        if (intent.kind === 'update' && error instanceof TransactionRejected)
+          return { status: 'rejected', issues: error.issues, revision };
+        throw error;
+      }
+      if (!changes.changes.length) return { status: 'unchanged', revision };
+      // Publication is outside the rollback boundary: observers see accepted state.
+      return publish(changes, intent.source, recordHistory);
     } finally {
       busy = false;
     }
@@ -134,20 +156,16 @@ export const createDocument = <S extends ObjectNode>(input: {
       options?: { source?: Extract<CommitSource, 'local' | 'system'>; history?: boolean }
     ): TransactionResult<V, DocumentCommit<S>> => {
       const source = options?.source ?? 'local';
-      writable({ kind: 'update', source });
-      busy = true;
-      const session = new MutationSession(state);
-      let active = true,
-        committed = false;
-      try {
-        const draft = createAccess({
-          schema: input.schema,
-          root: () => state.document,
-          active: () => active,
-          session,
-        }) as Draft<S>;
-        let value: V;
+      let value!: V;
+      const result = mutate({ kind: 'update', source }, options?.history ?? true, session => {
+        let active = true;
         try {
+          const draft = createAccess({
+            schema: input.schema,
+            root: () => state.document,
+            active: () => active,
+            session,
+          }) as Draft<S>;
           value = run(draft);
         } finally {
           active = false;
@@ -158,59 +176,24 @@ export const createDocument = <S extends ObjectNode>(input: {
           typeof (value as { then?: unknown }).then === 'function'
         )
           throw new TypeError('Document updates must be synchronous.');
-        const changes = session.finish();
-        if (!changes.changes.length) return { status: 'unchanged', value, revision };
-        committed = true;
-        return { ...publish(changes, source, options?.history ?? true), value };
-      } catch (error) {
-        if (!committed) session.rollback();
-        if (error instanceof TransactionRejected)
-          return { status: 'rejected', issues: error.issues, revision };
-        if (error instanceof MutationRejected)
-          return { status: 'rejected', issues: [error.issue], revision };
-        throw error;
-      } finally {
-        active = false;
-        busy = false;
-      }
+      });
+      return result.status === 'rejected' ? result : { ...result, value };
     },
-    apply: (inputChanges, options) => {
-      writable({ kind: 'apply', source: options?.source ?? 'local' });
-      let changes: ChangeSet;
-      busy = true;
-      try {
-        if (!options || options.expectedRevision !== revision)
-          fail([], 'baseline-mismatch', 'apply requires the current expectedRevision.');
-        changes = decodeChanges(inputChanges);
-      } catch (error) {
-        if (error instanceof MutationRejected)
-          return { status: 'rejected', issues: [error.issue], revision };
-        throw error;
-      } finally {
-        busy = false;
-      }
-      return applyBatch([changes], 'forward', options.source ?? 'local', options.history ?? true);
-    },
+    apply: (inputChanges, options) =>
+      mutate(
+        { kind: 'apply', source: options?.source ?? 'local' },
+        options?.history ?? true,
+        session => {
+          if (!options || options.expectedRevision !== revision)
+            fail([], 'baseline-mismatch', 'apply requires the current expectedRevision.');
+          replay.apply(session, decodeChanges(inputChanges), 'forward');
+        }
+      ),
     replace: (value, options) => {
       const source = options?.source ?? 'system';
-      writable({ kind: 'replace', source });
-      busy = true;
-      const session = new MutationSession(state);
-      let committed = false;
-      try {
-        session.replace([], value);
-        const changes = session.finish();
-        if (!changes.changes.length) return { status: 'unchanged', revision };
-        committed = true;
-        return publish(changes, source, source !== 'remote');
-      } catch (error) {
-        if (!committed) session.rollback();
-        if (error instanceof MutationRejected)
-          return { status: 'rejected', issues: [error.issue], revision };
-        throw error;
-      } finally {
-        busy = false;
-      }
+      return mutate({ kind: 'replace', source }, source !== 'remote', session =>
+        session.replace([], value)
+      );
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();

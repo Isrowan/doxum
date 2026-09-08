@@ -31,6 +31,11 @@ when a change touches addressing, mutation, impact, notifications, or views.
   second writable cache or bypass the mutation session.
 - A transaction is synchronous and atomic. Preserve rollback behavior for each
   new operation and test rejected batches after partial work.
+- `runtime.ts` owns the shared authorize/execute/rollback/seal/publish lifecycle.
+  Publication is outside rollback handling. `mutation/operations/` groups complete
+  table, list, order, tree and replay commands by domain; these reuse the existing
+  session's write kernel and own no canonical state. Do not add session forwarding
+  methods or another operation representation.
 - Every committed ChangeSet needs correct before/after data and an exact impact.
   Update history and notification tests alongside mutation behavior.
 - `mutation/changes.ts` is the sole unknown ChangeSet boundary. Decode and
@@ -71,6 +76,9 @@ when a change touches addressing, mutation, impact, notifications, or views.
 - `access/scope.ts` owns Read/Draft access. Structural scopes expire at callback
   completion; atomic field interiors are readonly under the ownership contract.
   `assign` accepts plain Infer replacements through the same mutation session.
+  Session constructs writable containers: resolve an address or bind current facts
+  already resolved by scope. Preserve generation-local reuse; do not force an extra
+  address walk for every field write. Collection dispatch remains local by domain.
 - Root ObjectNode is schema identity. Subscription/impact/collection paths compile
   at their consumer boundary; do not export application target constructors.
 - `ProjectionCollection` and `ProjectionValue` are derived state. Their values must

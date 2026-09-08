@@ -150,13 +150,15 @@ const diffMember = (
         if (!Object.hasOwn(left, id))
           diffMember(changes, children, node.value, childAt, id, false, undefined, true, right[id]);
       publishMembers(changes, childAt, children);
-      if (node.kind === 'table' && !anchor.equal(a.ids as string[], b.ids as string[]))
+      if (node.kind === 'table' && !anchor.equal(a.ids as string[], b.ids as string[])) {
+        profile.recorder('publishedOrderItems', (b.ids as string[]).length);
         changes.push({
           kind: 'members',
           at: childAt,
           members: [],
           order: { before: a.ids as string[], after: [...(b.ids as string[])] },
         });
+      }
       return;
     }
   }
@@ -199,6 +201,94 @@ const reconstructBefore = (
   for (const record of records)
     if (record.kind === 'order') before = restore(record, node, before, offset);
   return before;
+};
+
+const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
+  const members: MemberChange[] = [];
+  for (const member of fact.members.values()) {
+    if (!member) continue;
+    const key = memberKey(fact.container, member.key);
+    const present = Object.hasOwn(fact.container.parent, key);
+    const value = (fact.container.parent as Record<string | number, unknown>)[key];
+    if (member.node.kind === 'field') {
+      const change = transition(
+        member.node,
+        member.key,
+        member.present,
+        member.value,
+        present,
+        value
+      );
+      if (change) members.push(change);
+    } else
+      diffMember(
+        changes,
+        members,
+        member.node,
+        fact.at,
+        member.key,
+        member.present,
+        member.value,
+        present,
+        value
+      );
+  }
+  publishMembers(changes, fact.at, members);
+};
+
+const sealOrder = (fact: OrderFact, state: CanonicalState, changes: Change[]): void => {
+  const { node, value } = resolveValue(state.schema, state.document, fact.at)!;
+  const current =
+    node.kind === 'list'
+      ? anchor.keys(value as unknown[], node.keyOf)
+      : (value as { ids: string[] }).ids;
+  if (!anchor.equal(fact.before, current)) {
+    const after = orderOf(node, value);
+    profile.recorder('publishedOrderItems', after.length);
+    changes.push({
+      kind: 'members',
+      at: fact.at,
+      members: [],
+      order: { before: fact.before, after },
+    });
+  }
+};
+
+const sealTree = (fact: TreeFact, state: CanonicalState, changes: Change[]): void => {
+  const location = resolveValue(state.schema, state.document, fact.at);
+  const tree = location?.value as MutableTree;
+  const node = location?.node;
+  if (node?.kind !== 'tree') throw new Error('Tree schema disappeared before sealing.');
+  const nodes: Extract<Change, { kind: 'tree' }>['nodes'][number][] = [];
+  for (const [id, before] of fact.nodes) {
+    const after = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+    if (!before && !after) continue;
+    if (
+      before &&
+      after &&
+      before.parentId === after.parentId &&
+      anchor.equal(before.children, after.children) &&
+      Object.hasOwn(before, 'value') === Object.hasOwn(after, 'value') &&
+      equalValue(node.value, before.value, after.value)
+    )
+      continue;
+    nodes.push(
+      !before
+        ? { id, kind: 'added', after: copyNode(after!) }
+        : !after
+          ? { id, kind: 'removed', before }
+          : { id, kind: 'updated', before, after: copyNode(after) }
+    );
+  }
+  const after = tree.rootId ?? null;
+  if (nodes.length || fact.before !== after)
+    changes.push({
+      kind: 'tree',
+      at: fact.at,
+      before: fact.before,
+      after,
+      nodes: nodes.sort((a, b) => lexical(a.id, b.id)),
+    });
 };
 
 /** One first-touch record per owning container, never a per-write operation log. */
@@ -410,83 +500,9 @@ export class ChangeRecorder {
     }
     const changes: Change[] = [];
     for (const fact of this.facts) {
-      if (fact.kind === 'members') {
-        const members: MemberChange[] = [];
-        for (const member of fact.members.values()) {
-          if (!member) continue;
-          const key = memberKey(fact.container, member.key);
-          const present = Object.hasOwn(fact.container.parent, key);
-          const value = (fact.container.parent as Record<string | number, unknown>)[key];
-          if (member.node.kind === 'field') {
-            const change = transition(
-              member.node,
-              member.key,
-              member.present,
-              member.value,
-              present,
-              value
-            );
-            if (change) members.push(change);
-          } else
-            diffMember(
-              changes,
-              members,
-              member.node,
-              fact.at,
-              member.key,
-              member.present,
-              member.value,
-              present,
-              value
-            );
-        }
-        publishMembers(changes, fact.at, members);
-      } else if (fact.kind === 'order') {
-        const { node, value } = resolveValue(this.state.schema, this.state.document, fact.at)!;
-        const after = orderOf(node, value);
-        if (!anchor.equal(fact.before, after))
-          changes.push({
-            kind: 'members',
-            at: fact.at,
-            members: [],
-            order: { before: fact.before, after },
-          });
-      } else {
-        const location = resolveValue(this.state.schema, this.state.document, fact.at);
-        const tree = location?.value as MutableTree;
-        const node = location?.node;
-        if (node?.kind !== 'tree') throw new Error('Tree schema disappeared before sealing.');
-        const nodes: Extract<Change, { kind: 'tree' }>['nodes'][number][] = [];
-        for (const [id, before] of fact.nodes) {
-          const after = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
-          if (!before && !after) continue;
-          if (
-            before &&
-            after &&
-            before.parentId === after.parentId &&
-            anchor.equal(before.children, after.children) &&
-            Object.hasOwn(before, 'value') === Object.hasOwn(after, 'value') &&
-            equalValue(node.value, before.value, after.value)
-          )
-            continue;
-          nodes.push(
-            !before
-              ? { id, kind: 'added', after: copyNode(after!) }
-              : !after
-                ? { id, kind: 'removed', before }
-                : { id, kind: 'updated', before, after: copyNode(after) }
-          );
-        }
-        const after = tree.rootId ?? null;
-        if (nodes.length || fact.before !== after)
-          changes.push({
-            kind: 'tree',
-            at: fact.at,
-            before: fact.before,
-            after,
-            nodes: nodes.sort((a, b) => lexical(a.id, b.id)),
-          });
-      }
+      if (fact.kind === 'members') sealMembers(fact, changes);
+      else if (fact.kind === 'order') sealOrder(fact, this.state, changes);
+      else sealTree(fact, this.state, changes);
     }
     const result = sealChanges(changes);
     profile.recorder('sealed', result.changes.length);
