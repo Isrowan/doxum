@@ -5,7 +5,6 @@ import {
   createProjectionRuntime,
   field,
   object,
-  schema,
   table,
   type ProjectionRuntime,
   type ProjectionError,
@@ -14,8 +13,8 @@ import {
 } from '../src';
 import { projectionDebug } from '../src/integration';
 import { startProfile } from '../src/profile';
-
-const model = schema({
+import { TransactionRejected, type SchemaPath } from '../src';
+const model = object({
   title: field<string>(),
   items: table(object({ value: field<number>(), group: field<string>() })),
 });
@@ -36,19 +35,20 @@ const setup = () => {
 afterEach(() => {
   owners.splice(0).forEach(owner => owner.dispose());
 });
-
 describe('projection source and value', () => {
   it('binds schema paths once, caches identity and shares one document subscription', () => {
     const { projection, runtime, document, source } = setup();
-    const pick = vi.fn((path: Parameters<Parameters<typeof model.collection>[0]>[0]) => path.items);
+    const pick = vi.fn((path: SchemaPath<typeof model.shape>) => path.items);
     expect(document.collection(pick)).toBe(source);
-    const selected = document.targets(model.collection(path => path.items));
-    expect(document.targets(model.collection(path => path.items))).toBe(selected);
+    const selected = document.targets((path: SchemaPath<(typeof model)['shape']>) => path.items);
+    expect(document.targets((path: SchemaPath<(typeof model)['shape']>) => path.items)).toBe(
+      selected
+    );
     expect(document.collection(path => path.items)).toBe(source);
     expect(projection.document(asReadable(runtime))).toBe(document);
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     expectTypeOf(view.item('a').current()).toEqualTypeOf<number | undefined>();
-    runtime.update(tx => tx.write.items.item('a').value.set(5));
+    runtime.update(tx => (tx.items.get('a')!.value = 5));
     expect(pick).toHaveBeenCalledTimes(1);
     expect(projectionDebug(projection).subscriptions).toBe(1);
     expect(() =>
@@ -60,30 +60,47 @@ describe('projection source and value', () => {
       })
     ).not.toThrow();
   });
-
   it('keeps readers scoped and skips unrelated collection commits', () => {
     const { projection, runtime, source } = setup();
-    let saved: { get(): number } | undefined;
-    const mapper = vi.fn((_id: string, entry: { value: { get(): number } }) => {
-      saved = entry.value;
-      return entry.value.get();
-    });
+    let saved: { readonly value: number } | undefined;
+    const mapper = vi.fn(
+      (
+        _id: string,
+        entry: {
+          value: number;
+        }
+      ) => {
+        saved = entry;
+        return entry.value;
+      }
+    );
     projection.map(source, mapper);
-    expect(() => saved!.get()).toThrow('no longer active');
-    runtime.update(tx => tx.write.title.set('two'));
+    expect(() => saved!.value).toThrow('expired');
+    runtime.update(tx => (tx.title = 'two'));
     expect(mapper).toHaveBeenCalledTimes(2);
   });
-
   it('uses explicit targets and preserves output references and revisions on equality', () => {
     const { projection, runtime, document } = setup();
-    const update = vi.fn(({ document }: { document: { read: { title: { get(): string } } } }) => ({
-      kind: 'changed' as const,
-      value: { title: document.read.title.get() },
-    }));
+    const update = vi.fn(
+      ({
+        document,
+      }: {
+        document: {
+          read: {
+            title: string;
+          };
+        };
+      }) => ({
+        kind: 'changed' as const,
+        value: { title: document.read.title },
+      })
+    );
     const value = projection.value(
       {
-        sources: { document: document.targets(model.value(path => path.title)) },
-        build: ({ document }) => ({ value: { title: document.read.title.get() }, update }),
+        sources: {
+          document: document.targets((path: SchemaPath<(typeof model)['shape']>) => path.title),
+        },
+        build: ({ document }) => ({ value: { title: document.read.title }, update }),
       },
       {
         isEqual: (a, b) => a.title === b.title,
@@ -92,20 +109,19 @@ describe('projection source and value', () => {
     const before = value.current();
     const listener = vi.fn();
     value.subscribe(listener);
-    runtime.update(tx => tx.write.items.item('a').value.set(3));
+    runtime.update(tx => (tx.items.get('a')!.value = 3));
     expect(update).not.toHaveBeenCalled();
     expect(value.revision()).toBe(0);
     value.rebuild();
     expect(value.current()).toBe(before);
     expect(listener).not.toHaveBeenCalled();
-    runtime.update(tx => tx.write.title.set('two'));
+    runtime.update(tx => (tx.title = 'two'));
     expect(value.current()).toEqual({ title: 'two' });
     expect(value.revision()).toBe(1);
   });
-
   it('settles a diamond once before listeners and supports document plus upstream dependencies', () => {
     const { projection, runtime, document, source } = setup();
-    const mapped = projection.map(source, (_id, entry) => entry.value.get());
+    const mapped = projection.map(source, (_id, entry) => entry.value);
     const count = projection.value({
       sources: { mapped },
       build: ({ mapped }) => ({
@@ -115,12 +131,12 @@ describe('projection source and value', () => {
     });
     const update = vi.fn(({ mapped, count, document }) => ({
       kind: 'changed' as const,
-      value: `${count.value}:${mapped.get('a')}:${document.read.title.get()}`,
+      value: `${count.value}:${mapped.get('a')}:${document.read.title}`,
     }));
     const summary = projection.value({
       sources: { mapped, count, document },
       build: inputs => ({
-        value: `${inputs.count.value}:${inputs.mapped.get('a')}:${inputs.document.read.title.get()}`,
+        value: `${inputs.count.value}:${inputs.mapped.get('a')}:${inputs.document.read.title}`,
         update,
       }),
     });
@@ -128,28 +144,26 @@ describe('projection source and value', () => {
     mapped.subscribe(() => seen.push(summary.current()));
     count.subscribe(() => seen.push(summary.current()));
     runtime.update(tx => {
-      tx.write.items.create({ id: 'c', value: { value: 3, group: 'x' } });
-      tx.write.items.item('a').value.set(10);
+      tx.items.create({ id: 'c', value: { value: 3, group: 'x' } });
+      tx.items.get('a')!.value = 10;
     });
     expect(summary.current()).toBe('3:10:one');
     expect(update).toHaveBeenCalledTimes(1);
     expect(seen).toEqual(['3:10:one', '3:10:one']);
   });
-
   it('settles every graph before starting graph listeners', () => {
     const { projection, runtime, source } = setup();
     const other = createProjectionRuntime({ onError: () => undefined });
     owners.push(other);
-    const a = projection.map(source, (_id, entry) => entry.value.get());
+    const a = projection.map(source, (_id, entry) => entry.value);
     const b = other.map(
       other.document(runtime).collection(path => path.items),
-      (_id, entry) => entry.value.get()
+      (_id, entry) => entry.value
     );
     a.subscribe(() => expect(b.item('a').current()).toBe(9));
-    const result = runtime.update(tx => tx.write.items.item('a').value.set(9));
+    const result = runtime.update(tx => (tx.items.get('a')!.value = 9));
     expect(result.status === 'committed' && result.observerErrors).toEqual([]);
   });
-
   it('accepts external readables without owning them and suppresses equal input', () => {
     const { projection } = setup();
     let current = { width: 5 };
@@ -168,10 +182,20 @@ describe('projection source and value', () => {
       },
       { isEqual: (a, b) => a.width === b.width }
     );
-    const update = vi.fn(({ size }: { size: { value: { width: number } } }) => ({
-      kind: 'changed' as const,
-      value: size.value.width,
-    }));
+    const update = vi.fn(
+      ({
+        size,
+      }: {
+        size: {
+          value: {
+            width: number;
+          };
+        };
+      }) => ({
+        kind: 'changed' as const,
+        value: size.value.width,
+      })
+    );
     const value = projection.value({
       sources: { size: source },
       build: ({ size }) => ({ value: size.value.width, update }),
@@ -187,27 +211,23 @@ describe('projection source and value', () => {
     projection.dispose();
     expect(listeners.size).toBe(0);
   });
-
   it('rejects foreign sources, invalid schema targets and reads after disposal', () => {
     const { projection, runtime, document, source } = setup();
     const other = createProjectionRuntime({ onError: () => undefined });
     owners.push(other);
     expect(() => other.map(source, () => 0)).toThrow('foreign');
-    expect(() =>
-      document.targets(schema({ title: field<string>() }).value(path => path.title))
-    ).toThrow('another schema');
-    const value = projection.map(source, (_id, entry) => entry.value.get());
+    expect(() => document.targets((() => ({})) as never)).toThrow('path');
+    const value = projection.map(source, (_id, entry) => entry.value);
     expect(() => other.fromReadable(value.all)).toThrow();
     projection.dispose();
     expect(() => value.ids.current()).toThrow('disposed');
     expect(() => projection.document(runtime)).toThrow('disposed');
   });
 });
-
 describe('projection collection publication', () => {
   it('emits exact keys, lazy all, stable ids and item handles', () => {
     const { projection, runtime, source } = setup();
-    const mapped = projection.map(source, (_id, entry) => ({ value: entry.value.get() }), {
+    const mapped = projection.map(source, (_id, entry) => ({ value: entry.value }), {
       isEqual: (a, b) => a.value === b.value,
     });
     const ids = mapped.ids.current();
@@ -217,12 +237,12 @@ describe('projection collection publication', () => {
     const bRevision = mapped.item('b').revision();
     mapped.subscribe(change => changes.push(change));
     expect(mapped.item('a')).toBe(item);
-    runtime.update(tx => tx.write.items.item('a').group.set('z'));
+    runtime.update(tx => (tx.items.get('a')!.group = 'z'));
     expect(item.current()).toBe(before);
     expect(changes).toEqual([]);
     expect(mapped.revision()).toBe(0);
     const profile = startProfile();
-    runtime.update(tx => tx.write.items.item('a').value.set(3));
+    runtime.update(tx => (tx.items.get('a')!.value = 3));
     expect(profile.snapshot().collectionView.arraysCopied).toBe(0);
     expect(mapped.ids.current()).toBe(ids);
     expect(mapped.ids.revision()).toBe(0);
@@ -235,21 +255,26 @@ describe('projection collection publication', () => {
       expect('add' in changes[0].updated).toBe(false);
     }
   });
-
   it('preserves order without remapping items and reports removal', () => {
     const { projection, runtime, source } = setup();
-    const mapper = vi.fn((_id: string, entry: { value: { get(): number } }) => entry.value.get());
+    const mapper = vi.fn(
+      (
+        _id: string,
+        entry: {
+          value: number;
+        }
+      ) => entry.value
+    );
     const view = projection.map(source, mapper);
     const removed = vi.fn();
     view.item('a').subscribe(removed);
-    runtime.update(tx => tx.write.items.move('b', { before: 'a' }));
+    runtime.update(tx => tx.items.move('b', { before: 'a' }));
     expect(view.ids.current()).toEqual(['b', 'a']);
     expect(mapper).toHaveBeenCalledTimes(2);
-    runtime.update(tx => tx.write.items.remove('a'));
+    runtime.update(tx => tx.items.remove('a'));
     expect(view.item('a').current()).toBeUndefined();
     expect(removed).toHaveBeenCalledTimes(1);
   });
-
   it('stages net-zero writes, undefined presence, order and replacement equality', () => {
     const { projection } = setup();
     const input = projection.input(0);
@@ -297,20 +322,19 @@ describe('projection collection publication', () => {
     expect(collection.ids.current()).toEqual(['b', 'a']);
     expect(notify).toHaveBeenCalledTimes(1);
   });
-
   it('does not expose partially mapped output when a structural update fails', () => {
     const { projection, runtime, source, errors } = setup();
     let fail = true;
     const view = projection.map(source, (id, entry) => {
       if (id === 'd' && fail) throw new Error('map failure');
-      return entry.value.get();
+      return entry.value;
     });
     const unchangedItem = view.item('a');
     const recovered = vi.fn();
     unchangedItem.subscribe(recovered);
     const result = runtime.update(tx => {
-      tx.write.items.create({ id: 'c', value: { value: 3, group: 'z' } });
-      tx.write.items.create({ id: 'd', value: { value: 4, group: 'z' } });
+      tx.items.create({ id: 'c', value: { value: 3, group: 'z' } });
+      tx.items.create({ id: 'd', value: { value: 4, group: 'z' } });
     });
     expect(result.status).toBe('committed');
     expect(errors).toHaveLength(2);
@@ -323,7 +347,6 @@ describe('projection collection publication', () => {
     expect(unchangedItem.current()).toBe(1);
     expect(recovered).toHaveBeenCalledTimes(2);
   });
-
   it('rejects malformed order or duplicate keys before publishing and recovers once', () => {
     const { projection, errors } = setup();
     const input = projection.input(0);
@@ -351,10 +374,9 @@ describe('projection collection publication', () => {
     expect(view.item('a').current()).toBe(1);
     expect(errors).toHaveLength(2);
   });
-
   it('isolates every collection listener failure', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     const later = vi.fn();
     const item = vi.fn();
     view.all.subscribe(() => {
@@ -362,45 +384,55 @@ describe('projection collection publication', () => {
     });
     view.all.subscribe(later);
     view.item('a').subscribe(item);
-    const result = runtime.update(tx => tx.write.items.item('a').value.set(3));
+    const result = runtime.update(tx => (tx.items.get('a')!.value = 3));
     expect(later).toHaveBeenCalledTimes(1);
     expect(item).toHaveBeenCalledTimes(1);
     expect(result.status === 'committed' && result.observerErrors.length).toBe(1);
   });
 });
-
 describe('batch, recovery and lifecycle', () => {
   it('batches remote apply, replace, another document and boundary input together', () => {
     const { projection, runtime, document } = setup();
-    const sessionSchema = schema({ selected: field<string>() });
+    const sessionSchema = object({ selected: field<string>() });
     const editor = createDocument({ schema: sessionSchema, initial: { selected: 'a' } });
     const session = projection.document(editor);
     const viewport = projection.input(1);
     const view = projection.value({
       sources: { document, session, viewport: viewport.source },
       build: ({ document, session, viewport }) => ({
-        value: `${document.read.title.get()}:${session.read.selected.get()}:${viewport.value}`,
+        value: `${document.read.title}:${session.read.selected}:${viewport.value}`,
         update: ({ document, session, viewport }) => ({
           kind: 'changed',
-          value: `${document.read.title.get()}:${session.read.selected.get()}:${viewport.value}`,
+          value: `${document.read.title}:${session.read.selected}:${viewport.value}`,
         }),
       }),
     });
     const listener = vi.fn();
     view.subscribe(listener);
     projection.batch(() => {
-      runtime.apply([{ type: 'field.set', at: ['title'], value: 'remote' }], { source: 'remote' });
+      runtime.apply(
+        {
+          changes: [
+            {
+              kind: 'value',
+              at: ['title'],
+              before: { present: true, value: 'one' },
+              after: { present: true, value: 'remote' },
+            },
+          ],
+        },
+        { expectedRevision: runtime.revision(), source: 'remote' }
+      );
       runtime.replace({ ...initial(), title: 'replacement' });
-      editor.update(tx => tx.write.selected.set('b'));
+      editor.update(tx => (tx.selected = 'b'));
       viewport.set(2);
     });
     expect(view.current()).toBe('replacement:b:2');
     expect(listener).toHaveBeenCalledTimes(1);
   });
-
   it('discards equality failures and notifies retained equal items on recovery', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, item) => item.value.get(), {
+    const view = projection.map(source, (_id, item) => item.value, {
       isEqual: (a, b) => {
         if (b === 9) throw new Error('equality');
         return a === b;
@@ -409,14 +441,13 @@ describe('batch, recovery and lifecycle', () => {
     const stable = view.item('b');
     const notify = vi.fn();
     stable.subscribe(notify);
-    runtime.update(tx => tx.write.items.item('a').value.set(9));
+    runtime.update(tx => (tx.items.get('a')!.value = 9));
     expect(() => stable.current()).toThrow();
-    runtime.update(tx => tx.write.items.item('a').value.set(10));
+    runtime.update(tx => (tx.items.get('a')!.value = 10));
     expect(stable.current()).toBe(2);
     expect(notify).toHaveBeenCalledTimes(2);
     expect(stable.revision()).toBe(0);
   });
-
   it('reports external read failures and recovers when the source becomes readable again', () => {
     const { projection, errors } = setup();
     let receive = () => {};
@@ -449,7 +480,6 @@ describe('batch, recovery and lifecycle', () => {
     receive();
     expect(view.current()).toBe(2);
   });
-
   it('does not reinterpret reporter failures as external source failures', () => {
     const reporter = vi.fn(() => {
       throw new Error('reporter');
@@ -478,7 +508,6 @@ describe('batch, recovery and lifecycle', () => {
     ).toThrow(original);
     expect(view.current()).toBe(2);
   });
-
   it('rejects processor and listener reentrancy without nested flushes', () => {
     const { projection, errors } = setup();
     const input = projection.input(0);
@@ -500,7 +529,6 @@ describe('batch, recovery and lifecycle', () => {
     expect(errors).toHaveLength(2);
     expect(later).toHaveBeenCalledTimes(1);
   });
-
   it('cleans a failed source registration and finishes cleanup even when an external unsubscribe throws', () => {
     const { projection } = setup();
     const before = projectionDebug(projection);
@@ -534,7 +562,6 @@ describe('batch, recovery and lifecycle', () => {
       pending: 0,
     });
   });
-
   it('handles a source event raised during a processor as a fault rather than reentering settlement', () => {
     const { projection } = setup();
     let receive = () => {};
@@ -564,17 +591,16 @@ describe('batch, recovery and lifecycle', () => {
     receive();
     expect(view.current()).toBe(current);
   });
-
   it('combines document and synchronous editor cleanup, preserving ordered commits and old batch reads', () => {
     const { projection, runtime, document } = setup();
     const editor = createDocument({
-      schema: schema({ selected: field<string>() }),
+      schema: object({ selected: field<string>() }),
       initial: { selected: 'a' },
     });
     const session = projection.document(editor);
     const update = vi.fn(({ document, session }) => ({
       kind: 'changed' as const,
-      value: `${document.read.items.ids().join(',')}:${session.read.selected.get()}`,
+      value: `${document.read.items.ids().join(',')}:${session.read.selected}`,
     }));
     const value = projection.value({
       sources: { document, session },
@@ -582,25 +608,24 @@ describe('batch, recovery and lifecycle', () => {
     });
     const listener = vi.fn();
     value.subscribe(listener);
-    runtime.subscribe(() => editor.update(tx => tx.write.selected.set('')));
+    runtime.subscribe(() => editor.update(tx => (tx.selected = '')));
     projection.batch(() => {
-      runtime.update(tx => tx.write.items.remove('a'));
+      runtime.update(tx => tx.items.remove('a'));
       expect(value.current()).toBe('a,b:a');
-      projection.batch(() => runtime.update(tx => tx.write.title.set('two')));
+      projection.batch(() => runtime.update(tx => (tx.title = 'two')));
     });
     expect(value.current()).toBe('b:');
     expect(update).toHaveBeenCalledTimes(1);
     expect(update.mock.calls[0][0].document.commits).toHaveLength(2);
     expect(listener).toHaveBeenCalledTimes(1);
   });
-
   it('flushes committed changes on callback throw and rejects async batches', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     const original = new Error('command failed');
     expect(() =>
       projection.batch(() => {
-        runtime.update(tx => tx.write.items.item('a').value.set(5));
+        runtime.update(tx => (tx.items.get('a')!.value = 5));
         throw original;
       })
     ).toThrow(original);
@@ -608,25 +633,23 @@ describe('batch, recovery and lifecycle', () => {
     // @ts-expect-error Async callbacks are rejected at both boundaries.
     expect(() => projection.batch(() => Promise.resolve())).toThrow('synchronous');
   });
-
   it('coalesces net-zero mapped changes and rebuilds after reset within a batch', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     const listener = vi.fn();
     view.subscribe(listener);
     projection.batch(() => {
-      runtime.update(tx => tx.write.items.item('a').value.set(5));
-      runtime.update(tx => tx.write.items.item('a').value.set(1));
+      runtime.update(tx => (tx.items.get('a')!.value = 5));
+      runtime.update(tx => (tx.items.get('a')!.value = 1));
     });
     expect(listener).not.toHaveBeenCalled();
     projection.batch(() => {
       runtime.replace({ ...initial(), title: 'reset' });
-      runtime.update(tx => tx.write.items.item('b').value.set(7));
+      runtime.update(tx => (tx.items.get('b')!.value = 7));
     });
     expect(view.all.current()).toEqual([1, 7]);
     expect(listener).toHaveBeenCalledTimes(1);
   });
-
   it('replaces corrupted processor instances, blocks failed descendants and recovers', () => {
     const { projection, runtime, document, errors } = setup();
     let builds = 0;
@@ -636,7 +659,7 @@ describe('batch, recovery and lifecycle', () => {
       build: ({ document }) => {
         builds++;
         if (failBuild) throw new Error('build');
-        let privateState = document.read.title.get();
+        let privateState = document.read.title;
         return {
           value: privateState,
           update: () => {
@@ -655,17 +678,17 @@ describe('batch, recovery and lifecycle', () => {
     });
     const independent = projection.map(
       document.collection(path => path.items),
-      (_id, entry) => entry.value.get()
+      (_id, entry) => entry.value
     );
-    runtime.update(tx => tx.write.title.set('two'));
+    runtime.update(tx => (tx.title = 'two'));
     expect(upstream.current()).toBe('two');
     expect(downstream.current()).toBe('TWO');
     expect(builds).toBe(2);
     expect(errors).toHaveLength(1);
     failBuild = true;
     runtime.update(tx => {
-      tx.write.title.set('three');
-      tx.write.items.item('a').value.set(10);
+      tx.title = 'three';
+      tx.items.get('a')!.value = 10;
     });
     expect(() => upstream.current()).toThrow();
     expect(() => downstream.current()).toThrow();
@@ -674,21 +697,28 @@ describe('batch, recovery and lifecycle', () => {
     upstream.rebuild();
     expect(downstream.current()).toBe('THREE');
   });
-
   it('routes explicit rebuild through descendants and blocks writes during processing and notifications', () => {
     const { projection, runtime, document } = setup();
     let factor = 1;
     const upstream = projection.value({
       sources: { document },
       build: ({ document }) => ({
-        value: document.read.items.get('a')!.value.get() * factor,
+        value: document.read.items.get('a')!.value * factor,
         update: () => ({ kind: 'unchanged' }),
       }),
     });
-    const update = vi.fn(({ upstream }: { upstream: { value: number } }) => ({
-      kind: 'changed' as const,
-      value: upstream.value * 2,
-    }));
+    const update = vi.fn(
+      ({
+        upstream,
+      }: {
+        upstream: {
+          value: number;
+        };
+      }) => ({
+        kind: 'changed' as const,
+        value: upstream.value * 2,
+      })
+    );
     const downstream = projection.value({
       sources: { upstream },
       build: ({ upstream }) => ({ value: upstream.value * 2, update }),
@@ -696,7 +726,7 @@ describe('batch, recovery and lifecycle', () => {
     const notify = vi.fn();
     upstream.subscribe(() => {
       expect(downstream.current()).toBe(4);
-      expect(() => runtime.update(tx => tx.write.title.set('bad'))).toThrow('re-entered');
+      expect(() => runtime.update(tx => (tx.title = 'bad'))).toThrow('re-entered');
       notify();
     });
     factor = 2;
@@ -709,16 +739,15 @@ describe('batch, recovery and lifecycle', () => {
       projection.value({
         sources: { document },
         build: () => {
-          runtime.update(tx => tx.write.title.set('bad'));
+          runtime.update(tx => (tx.title = 'bad'));
           return { value: 1, update: () => ({ kind: 'unchanged' }) };
         },
       })
     ).toThrow('re-entered');
   });
-
   it('enforces graph disposal, invalidates retained handles and releases subscriptions', () => {
     const { projection, runtime, source } = setup();
-    const mapped = projection.map(source, (_id, entry) => entry.value.get());
+    const mapped = projection.map(source, (_id, entry) => entry.value);
     const item = mapped.item('a');
     const child = projection.value({
       sources: { mapped },
@@ -737,32 +766,31 @@ describe('batch, recovery and lifecycle', () => {
       subscriptions: 0,
       pending: 0,
     });
-    expect(() => runtime.update(tx => tx.write.title.set('two'))).not.toThrow();
+    expect(() => runtime.update(tx => (tx.title = 'two'))).not.toThrow();
   });
-
   it('invalidates nodes when their document is disposed', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     const notify = vi.fn();
     view.all.subscribe(notify);
     runtime.dispose();
     expect(() => view.all.current()).toThrow();
     expect(notify).toHaveBeenCalledTimes(1);
   });
-
-  it('does not observe rejected or prepared mutations and follows undo/redo', () => {
+  it('does not observe rejected mutations and follows undo/redo', () => {
     const { projection, runtime, source } = setup();
-    const view = projection.map(source, (_id, entry) => entry.value.get());
+    const view = projection.map(source, (_id, entry) => entry.value);
     const notify = vi.fn();
     view.subscribe(notify);
-    runtime.prepare(tx => tx.write.items.item('a').value.set(7));
     runtime.update(tx => {
-      tx.write.items.item('a').value.set(7);
-      tx.reject({ code: 'no', message: 'no' });
+      tx.items.get('a')!.value = 7;
+      (() => {
+        throw new TransactionRejected({ code: 'no', message: 'no' });
+      })();
     });
     expect(view.item('a').current()).toBe(1);
     expect(notify).not.toHaveBeenCalled();
-    runtime.update(tx => tx.write.items.item('a').value.set(7));
+    runtime.update(tx => (tx.items.get('a')!.value = 7));
     runtime.history.undo();
     expect(view.item('a').current()).toBe(1);
     runtime.history.redo();

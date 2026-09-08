@@ -1,28 +1,18 @@
 import React, { StrictMode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import {
-  createDocument,
-  createProjectionRuntime,
-  field,
-  object,
-  schema,
-  table,
-  snapshot,
-} from 'doxum';
+import { createDocument, createProjectionRuntime, field, object, table, snapshot } from 'doxum';
 import { useDocumentSelector, useReadable } from '../src';
 import { renderToString } from 'react-dom/server';
-
-const documentSchema = schema({
+const documentSchema = object({
   title: field<string>(),
   count: field<number>(),
 });
 const text = (value: unknown) => React.createElement('span', null, String(value));
 const valueOf = (renderer: ReactTestRenderer) => renderer.root.findByType('span').children.join('');
-
 describe('doxum/react', () => {
   it('tracks subtree snapshots and entity membership across dynamic selection', () => {
-    const model = schema({
+    const model = object({
       selected: field<string>(),
       rows: table(object({ n: field<number>() })),
     });
@@ -34,7 +24,7 @@ describe('doxum/react', () => {
     function Probe() {
       renders++;
       const row = useDocumentSelector(runtime, read => {
-        const item = read.rows.get(read.selected.get());
+        const item = read.rows.get(read.selected);
         return item ? snapshot(item) : undefined;
       });
       return text(row?.n ?? 'missing');
@@ -45,15 +35,15 @@ describe('doxum/react', () => {
     });
     const baseline = renders;
     act(() => {
-      runtime.update(tx => tx.write.rows.item('b').n.update(n => n + 1));
+      runtime.update(tx => (tx.rows.get('b')!.n = (n => n + 1)(tx.rows.get('b')!.n)));
     });
     expect(renders).toBe(baseline);
     act(() => {
-      runtime.update(tx => tx.write.selected.set('b'));
+      runtime.update(tx => (tx.selected = 'b'));
     });
     expect(valueOf(renderer)).toBe('3');
     act(() => {
-      runtime.update(tx => tx.write.rows.remove('b'));
+      runtime.update(tx => tx.rows.remove('b'));
     });
     expect(valueOf(renderer)).toBe('missing');
     act(() => {
@@ -69,7 +59,7 @@ describe('doxum/react', () => {
     function Probe({ prefix }: { prefix: string }) {
       renders++;
       const value = useDocumentSelector(runtime, read => ({
-        title: `${prefix}:${read.title.get()}`,
+        title: `${prefix}:${read.title}`,
       }));
       return text(value.title);
     }
@@ -81,7 +71,7 @@ describe('doxum/react', () => {
     expect(renders).toBeLessThan(5);
     const before = renders;
     act(() => {
-      runtime.update(tx => tx.write.count.set(1));
+      runtime.update(tx => (tx.count = 1));
     });
     expect(renders).toBe(before);
     act(() => {
@@ -89,17 +79,16 @@ describe('doxum/react', () => {
     });
     expect(valueOf(renderer)).toBe('B:one');
     act(() => {
-      runtime.update(tx => tx.write.title.set('two'));
+      runtime.update(tx => (tx.title = 'two'));
     });
     expect(valueOf(renderer)).toBe('B:two');
     act(() => renderer.unmount());
     runtime.dispose();
   });
-
   it('uses Object.is for signed zero and NaN selector notifications', () => {
     const runtime = createDocument({ schema: documentSchema, initial: { title: '', count: 0 } });
     function Probe() {
-      const n = useDocumentSelector(runtime, read => read.count.get());
+      const n = useDocumentSelector(runtime, read => read.count);
       return text(Object.is(n, -0) ? '-0' : String(n));
     }
     let renderer!: ReactTestRenderer;
@@ -107,11 +96,11 @@ describe('doxum/react', () => {
       renderer = create(React.createElement(Probe));
     });
     act(() => {
-      runtime.update(tx => tx.write.count.set(-0));
+      runtime.update(tx => (tx.count = -0));
     });
     expect(valueOf(renderer)).toBe('-0');
     act(() => {
-      runtime.update(tx => tx.write.count.set(NaN));
+      runtime.update(tx => (tx.count = NaN));
     });
     expect(valueOf(renderer)).toBe('NaN');
     act(() => renderer.unmount());
@@ -134,7 +123,14 @@ describe('doxum/react', () => {
         };
       },
     });
-    class Boundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+    class Boundary extends React.Component<
+      {
+        children: React.ReactNode;
+      },
+      {
+        failed: boolean;
+      }
+    > {
       state = { failed: false };
       static getDerivedStateFromError() {
         return { failed: true };
@@ -165,7 +161,7 @@ describe('doxum/react', () => {
     projection.dispose();
   });
   it('renders keyed projection items precisely and leaves ownership with the service', () => {
-    const model = schema({ rows: table(object({ label: field<string>() })) });
+    const model = object({ rows: table(object({ label: field<string>() })) });
     const runtime = createDocument({
       schema: model,
       initial: { rows: { ids: ['a', 'b'], byId: { a: { label: 'A' }, b: { label: 'B' } } } },
@@ -177,7 +173,7 @@ describe('doxum/react', () => {
     });
     const rows = projection.map(
       projection.document(runtime).collection(path => path.rows),
-      (_id, row) => row.label.get()
+      (_id, row) => row.label
     );
     let renders = 0;
     function Probe() {
@@ -191,19 +187,19 @@ describe('doxum/react', () => {
     });
     const baseline = renders;
     act(() => {
-      runtime.update(tx => tx.write.rows.item('b').label.set('BB'));
+      runtime.update(tx => (tx.rows.get('b')!.label = 'BB'));
     });
     expect(renders).toBe(baseline);
     act(() => {
       projection.batch(() => {
-        runtime.update(tx => tx.write.rows.item('a').label.set('AA'));
-        runtime.update(tx => tx.write.rows.item('a').label.set('AAA'));
+        runtime.update(tx => (tx.rows.get('a')!.label = 'AA'));
+        runtime.update(tx => (tx.rows.get('a')!.label = 'AAA'));
       });
     });
     expect(valueOf(renderer)).toBe('AAA');
     expect(renders).toBe(baseline + 1);
     act(() => renderer.unmount());
-    runtime.update(tx => tx.write.rows.item('a').label.set('after unmount'));
+    runtime.update(tx => (tx.rows.get('a')!.label = 'after unmount'));
     expect(rows.item('a').current()).toBe('after unmount');
     expect(renders).toBe(baseline + 1);
     projection.dispose();
@@ -217,7 +213,7 @@ describe('doxum/react', () => {
     let renders = 0;
     function Probe() {
       renders += 1;
-      return text(useDocumentSelector(runtime, read => read.title.get()));
+      return text(useDocumentSelector(runtime, read => read.title));
     }
     let renderer!: ReactTestRenderer;
     act(() => {
@@ -225,12 +221,12 @@ describe('doxum/react', () => {
     });
     const initialRenders = renders;
     act(() => {
-      runtime.update(tx => tx.write.count.set(1));
+      runtime.update(tx => (tx.count = 1));
     });
     expect(valueOf(renderer)).toBe('one');
     expect(renders).toBe(initialRenders);
     act(() => {
-      runtime.update(tx => tx.write.title.set('two'));
+      runtime.update(tx => (tx.title = 'two'));
     });
     expect(valueOf(renderer)).toBe('two');
     expect(renders).toBe(initialRenders + 1);
@@ -246,8 +242,8 @@ describe('doxum/react', () => {
       renders += 1;
       return text(
         useDocumentSelector(runtime, read => {
-          const count = read.count.get();
-          return count > 0 ? read.title.get() : String(count);
+          const count = read.count;
+          return count > 0 ? read.title : String(count);
         })
       );
     }
@@ -256,33 +252,28 @@ describe('doxum/react', () => {
       renderer = create(React.createElement(Probe));
     });
     const initialRenders = renders;
-
     act(() => {
-      runtime.update(tx => tx.write.title.set('ignored'));
+      runtime.update(tx => (tx.title = 'ignored'));
     });
     expect(valueOf(renderer)).toBe('0');
     expect(renders).toBe(initialRenders);
-
     act(() => {
-      runtime.update(tx => tx.write.count.set(1));
+      runtime.update(tx => (tx.count = 1));
     });
     expect(valueOf(renderer)).toBe('ignored');
     expect(renders).toBe(initialRenders + 1);
-
     act(() => {
-      runtime.update(tx => tx.write.title.set('observed'));
+      runtime.update(tx => (tx.title = 'observed'));
     });
     expect(valueOf(renderer)).toBe('observed');
     expect(renders).toBe(initialRenders + 2);
-
     act(() => {
-      runtime.update(tx => tx.write.count.set(0));
+      runtime.update(tx => (tx.count = 0));
     });
     expect(valueOf(renderer)).toBe('0');
     expect(renders).toBe(initialRenders + 3);
-
     act(() => {
-      runtime.update(tx => tx.write.title.set('ignored again'));
+      runtime.update(tx => (tx.title = 'ignored again'));
     });
     expect(valueOf(renderer)).toBe('0');
     expect(renders).toBe(initialRenders + 3);
@@ -294,14 +285,14 @@ describe('doxum/react', () => {
       initial: { title: 'one', count: 0 },
     });
     function Probe() {
-      return text(useDocumentSelector(runtime, read => read.title.get()));
+      return text(useDocumentSelector(runtime, read => read.title));
     }
     let renderer!: ReactTestRenderer;
     act(() => {
       renderer = create(React.createElement(StrictMode, null, React.createElement(Probe)));
     });
     act(() => {
-      runtime.update(tx => tx.write.title.set('two'));
+      runtime.update(tx => (tx.title = 'two'));
     });
     expect(valueOf(renderer)).toBe('two');
     renderer.unmount();

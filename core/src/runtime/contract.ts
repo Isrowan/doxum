@@ -1,38 +1,25 @@
-import type { DocumentAddress, DocumentSchema, ImpactTarget, Infer } from '../schema';
+import type { DocumentAddress, ObjectNode, PathPick, Infer } from '../schema';
 import type { AddressRef } from '../address';
-import type { DocumentOperation } from '../operations';
+import type { ChangeSet } from '../changes';
 import type { DocumentImpact } from '../impact';
-import type { DocumentReader } from '../access/reader';
-import type { DocumentWriter } from '../access/writer';
+import type { Draft } from '../access/scope';
 import type { MutationIssue } from '../mutation/issue';
-import type { CommandFootprint } from '../mutation/footprint';
 import type { Readable } from '../projection/readable';
-
 export type Unsubscribe = () => void;
 export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';
-
 export class DocumentReentrancyError extends Error {
   constructor() {
     super('Document writes cannot be re-entered during an update or notification.');
     this.name = 'DocumentReentrancyError';
   }
 }
-
 export class DocumentDisposedError extends Error {
   constructor() {
     super('Doxum runtime has been disposed.');
     this.name = 'DocumentDisposedError';
   }
 }
-export type DocumentCommit<TSchema extends DocumentSchema> = {
-  readonly revision: number;
-  readonly kind: 'operations' | 'replace';
-  readonly source: CommitSource;
-  readonly operations: readonly DocumentOperation[];
-  readonly inverse: readonly DocumentOperation[];
-  readonly impact: DocumentImpact<TSchema>;
-};
 export type DiagnosticInput = {
   readonly code: string;
   readonly message: string;
@@ -40,52 +27,53 @@ export type DiagnosticInput = {
 };
 export type DocumentDiagnostic = DiagnosticInput & { readonly source: 'application' };
 export type DocumentProblem = DocumentDiagnostic | MutationIssue;
+export class TransactionRejected extends Error {
+  readonly issues: readonly DocumentDiagnostic[];
+  constructor(input: DiagnosticInput | readonly DiagnosticInput[]) {
+    super('Document update rejected.');
+    this.name = 'TransactionRejected';
+    const issues: readonly DiagnosticInput[] = Array.isArray(input)
+      ? input
+      : [input as DiagnosticInput];
+    this.issues = Object.freeze(
+      issues.map(issue =>
+        Object.freeze({
+          code: issue.code,
+          message: issue.message,
+          source: 'application' as const,
+          ...(issue.address === undefined ? {} : { address: Object.freeze([...issue.address]) }),
+        })
+      )
+    );
+  }
+}
+export type DocumentCommit<S extends ObjectNode> = {
+  readonly revision: number;
+  readonly source: CommitSource;
+  readonly changes: ChangeSet;
+  readonly impact: DocumentImpact<S>;
+};
 export type ObserverError = {
   readonly phase: 'processor' | 'flush' | 'listener';
   readonly error: unknown;
 };
-export type TransactionResult<TValue, TCommit> =
+export type TransactionResult<V, C> =
   | {
       readonly status: 'committed';
-      readonly value: TValue;
-      readonly commit: TCommit;
-      readonly reports: readonly DocumentDiagnostic[];
+      readonly value: V;
+      readonly commit: C;
       readonly observerErrors: readonly ObserverError[];
     }
-  | {
-      readonly status: 'unchanged';
-      readonly value: TValue;
-      readonly revision: number;
-      readonly reports: readonly DocumentDiagnostic[];
-    }
+  | { readonly status: 'unchanged'; readonly value: V; readonly revision: number }
   | {
       readonly status: 'rejected';
       readonly issues: readonly DocumentProblem[];
       readonly revision: number;
     };
-export type PreparedUpdateResult<TValue, TSchema extends DocumentSchema> =
-  | {
-      readonly status: 'prepared';
-      readonly value: TValue;
-      readonly operations: readonly DocumentOperation[];
-      readonly inverse: readonly DocumentOperation[];
-      readonly impact: DocumentImpact<TSchema>;
-      readonly footprint: CommandFootprint;
-      readonly reports: readonly DocumentDiagnostic[];
-    }
-  | {
-      readonly status: 'unchanged';
-      readonly value: TValue;
-      readonly reports: readonly DocumentDiagnostic[];
-    }
-  | {
-      readonly status: 'rejected';
-      readonly issues: readonly DocumentProblem[];
-    };
-export type OperationResult<TCommit> =
+export type OperationResult<C> =
   | {
       readonly status: 'committed';
-      readonly commit: TCommit;
+      readonly commit: C;
       readonly observerErrors: readonly ObserverError[];
     }
   | { readonly status: 'unchanged'; readonly revision: number }
@@ -94,69 +82,51 @@ export type OperationResult<TCommit> =
       readonly issues: readonly MutationIssue[];
       readonly revision: number;
     };
-
-export type HistoryState = {
-  readonly undoDepth: number;
-  readonly redoDepth: number;
-};
-export type LocalHistory<TCommit> = Readable<HistoryState> & {
-  undo(): OperationResult<TCommit>;
-  redo(): OperationResult<TCommit>;
+export type HistoryState = { readonly undoDepth: number; readonly redoDepth: number };
+export type LocalHistory<C> = Readable<HistoryState> & {
+  undo(): OperationResult<C>;
+  redo(): OperationResult<C>;
   clear(): void;
-  group(): { end(): void; cancel(): OperationResult<TCommit> };
+  group(): { end(): void; cancel(): OperationResult<C> };
 };
-
-export type DocumentTransaction<TSchema extends DocumentSchema> = {
-  readonly read: DocumentReader<TSchema>;
-  readonly write: DocumentWriter<TSchema>;
-  readonly reject: (issue: DiagnosticInput | readonly DiagnosticInput[]) => never;
-  readonly report: (issue: DiagnosticInput) => void;
-};
-export type CommitListener<TSchema extends DocumentSchema> = (
-  commit: DocumentCommit<TSchema>
-) => void;
-
-export type DocumentReadable<TSchema extends DocumentSchema> = {
+export type CommitListener<S extends ObjectNode> = (commit: DocumentCommit<S>) => void;
+export type DocumentReadable<S extends ObjectNode> = {
   readonly address: {
-    readonly resolve: (address: DocumentAddress) => AddressRef | undefined;
-    readonly read: (address: DocumentAddress) => unknown;
-    readonly contains: (parent: DocumentAddress, child: DocumentAddress) => boolean;
-    readonly overlaps: (left: DocumentAddress, right: DocumentAddress) => boolean;
-    readonly debugKey: (address: DocumentAddress) => string;
+    resolve(address: DocumentAddress): AddressRef | undefined;
+    read(address: DocumentAddress): unknown;
+    contains(parent: DocumentAddress, child: DocumentAddress): boolean;
+    overlaps(left: DocumentAddress, right: DocumentAddress): boolean;
+    debugKey(address: DocumentAddress): string;
   };
   revision(): number;
-  subscribe(listener: CommitListener<TSchema>): Unsubscribe;
+  subscribe(listener: CommitListener<S>): Unsubscribe;
   subscribe(
-    target: ImpactTarget<unknown> | readonly [ImpactTarget<unknown>, ...ImpactTarget<unknown>[]],
-    listener: CommitListener<TSchema>
+    pick: PathPick<S> | readonly [PathPick<S>, ...PathPick<S>[]],
+    listener: CommitListener<S>
   ): Unsubscribe;
 };
-
-export type DocumentRuntime<TSchema extends DocumentSchema> = DocumentReadable<TSchema> & {
-  /** Schema configuration captured when this runtime was created. */
-  readonly schema: TSchema;
-  update<TResult>(
-    run: (transaction: DocumentTransaction<TSchema>) => Synchronous<TResult>,
+export type DocumentRuntime<S extends ObjectNode> = DocumentReadable<S> & {
+  readonly schema: S;
+  update<V>(
+    run: (draft: Draft<S>) => Synchronous<V>,
     options?: {
       readonly source?: Extract<CommitSource, 'local' | 'system'>;
       readonly history?: boolean;
     }
-  ): TransactionResult<TResult, DocumentCommit<TSchema>>;
-  prepare<TResult>(
-    run: (transaction: DocumentTransaction<TSchema>) => Synchronous<TResult>
-  ): PreparedUpdateResult<TResult, TSchema>;
+  ): TransactionResult<V, DocumentCommit<S>>;
   apply(
-    operations: unknown,
-    options?: {
+    changes: unknown,
+    options: {
+      readonly expectedRevision: number;
       readonly source?: Exclude<CommitSource, 'history'>;
       readonly history?: boolean;
     }
-  ): OperationResult<DocumentCommit<TSchema>>;
+  ): OperationResult<DocumentCommit<S>>;
   replace(
-    document: Infer<TSchema>,
+    value: Infer<S>,
     options?: { readonly source?: Extract<CommitSource, 'system' | 'remote'> }
-  ): OperationResult<DocumentCommit<TSchema>>;
-  snapshot(): Infer<TSchema>;
-  readonly history: LocalHistory<DocumentCommit<TSchema>>;
+  ): OperationResult<DocumentCommit<S>>;
+  snapshot(): Infer<S>;
+  readonly history: LocalHistory<DocumentCommit<S>>;
   dispose(): void;
 };

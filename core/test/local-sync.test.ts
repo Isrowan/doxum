@@ -1,28 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-import {
-  createDocument,
-  createProjectionRuntime,
-  field,
-  object,
-  schema,
-  select,
-  table,
-} from '../src';
+import { createDocument, createProjectionRuntime, field, object, select, table } from '../src';
 import {
   attachLocalSync,
   LocalSyncDataError,
   LocalSyncReadOnlyError,
   LocalSyncUnsupportedOperationError,
 } from '../src/local-sync';
-
 class TestLockManager {
   readonly #tails = new Map<string, Promise<void>>();
   readonly #requests = new Map<string, number>();
-
   request<TResult>(
     name: string,
-    options: { readonly mode: 'exclusive'; readonly ifAvailable?: boolean },
+    options: {
+      readonly mode: 'exclusive';
+      readonly ifAvailable?: boolean;
+    },
     callback: (lock: unknown | null) => TResult | PromiseLike<TResult>
   ): Promise<TResult> {
     if (options.ifAvailable && (this.#requests.get(name) ?? 0) > 0)
@@ -47,33 +40,27 @@ class TestLockManager {
       });
   }
 }
-
 class TestBroadcastChannel {
   static readonly channels = new Map<string, Set<TestBroadcastChannel>>();
-
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   readonly #listeners: Set<TestBroadcastChannel>;
-
   constructor(readonly name: string) {
     this.#listeners = TestBroadcastChannel.channels.get(name) ?? new Set();
     this.#listeners.add(this);
     TestBroadcastChannel.channels.set(name, this.#listeners);
   }
-
   postMessage(message: unknown): void {
     for (const listener of this.#listeners)
       if (listener !== this)
         queueMicrotask(() => listener.onmessage?.({ data: message } as MessageEvent));
   }
-
   close(): void {
     this.#listeners.delete(this);
     if (this.#listeners.size === 0) TestBroadcastChannel.channels.delete(this.name);
   }
 }
-
 const task = object({ title: field<string>(), complete: field<boolean>() });
-const documentSchema = schema({
+const documentSchema = object({
   title: field<string>(),
   tasks: table(task),
 });
@@ -81,14 +68,12 @@ const initial = {
   title: 'one',
   tasks: { ids: ['a'], byId: { a: { title: 'A', complete: false } } },
 };
-
 const globals = {
   indexedDB: Object.getOwnPropertyDescriptor(globalThis, 'indexedDB'),
   keyRange: Object.getOwnPropertyDescriptor(globalThis, 'IDBKeyRange'),
   navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
   broadcastChannel: Object.getOwnPropertyDescriptor(globalThis, 'BroadcastChannel'),
 };
-
 beforeAll(() => {
   Object.defineProperty(globalThis, 'indexedDB', {
     configurable: true,
@@ -107,7 +92,6 @@ beforeAll(() => {
     value: TestBroadcastChannel,
   });
 });
-
 afterAll(() => {
   const names = {
     indexedDB: 'indexedDB',
@@ -125,12 +109,9 @@ afterAll(() => {
   restore('navigator');
   restore('broadcastChannel');
 });
-
 let sequence = 0;
 const database = (): string => `doxum-local-sync-${sequence++}`;
-
 const runtime = () => createDocument({ schema: documentSchema, initial });
-
 const waitFor = async (condition: () => boolean): Promise<void> => {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (condition()) return;
@@ -138,8 +119,40 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
   }
   throw new Error('Timed out waiting for local sync.');
 };
-
 describe('local sync', () => {
+  it('rejects the previous storage format without upgrading or deleting its data', async () => {
+    const name = database();
+    const old = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 2);
+      request.onupgradeneeded = () => request.result.createObjectStore('legacy');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = old.transaction('legacy', 'readwrite');
+      tx.objectStore('legacy').put('keep', 'sentinel');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    old.close();
+    const documentRuntime = runtime();
+    await expect(
+      attachLocalSync({ runtime: documentRuntime, database: name, documentId: 'old' })
+    ).rejects.toThrow('Unsupported Doxum storage format');
+    const retained = await new Promise<IDBDatabase>((resolve, reject) => {
+      const r = indexedDB.open(name, 2);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    const value = await new Promise<unknown>((resolve, reject) => {
+      const r = retained.transaction('legacy').objectStore('legacy').get('sentinel');
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    expect(value).toBe('keep');
+    retained.close();
+    documentRuntime.dispose();
+  });
   it('exposes stable observable state through persistence, leadership transfer and disposal', async () => {
     const name = database();
     const leaderRuntime = runtime();
@@ -178,7 +191,7 @@ describe('local sync', () => {
       const state = leader.state.current();
       if (state.status !== 'disposed') heads.push(state.headSeq);
     });
-    leaderRuntime.update(tx => tx.write.title.set('persisted'));
+    leaderRuntime.update(tx => (tx.title = 'persisted'));
     await leader.flush();
     expect(heads).toEqual([1]);
     expect(errors).toHaveLength(1);
@@ -204,24 +217,25 @@ describe('local sync', () => {
       database: name,
       documentId: 'document',
     });
-
     expect(first.state.current()).toEqual({ status: 'leader', headSeq: 0, checkpointSeq: 0 });
     expect(() => firstRuntime.replace(initial)).toThrow(LocalSyncUnsupportedOperationError);
-    expect(() => firstRuntime.apply([], { source: 'remote' })).toThrow(
-      LocalSyncUnsupportedOperationError
-    );
+    expect(() =>
+      firstRuntime.apply(
+        { changes: [] },
+        { expectedRevision: firstRuntime.revision(), source: 'remote' }
+      )
+    ).toThrow(LocalSyncUnsupportedOperationError);
     const update = firstRuntime.update(tx => {
-      tx.write.title.set('two');
-      return tx.read.title.get();
+      tx.title = 'two';
+      return tx.title;
     });
     expect(update.status).toBe('committed');
     if (update.status === 'committed') expect(update.value).toBe('two');
-    expect(select(firstRuntime, read => read.title.get())).toBe('two');
+    expect(select(firstRuntime, read => read.title)).toBe('two');
     await first.flush();
     expect(first.state.current()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
     await first.dispose();
-    expect(firstRuntime.update(tx => tx.write.title.set('detached')).status).toBe('committed');
-
+    expect(firstRuntime.update(tx => (tx.title = 'detached')).status).toBe('committed');
     const restoredRuntime = runtime();
     const restored = await attachLocalSync({
       runtime: restoredRuntime,
@@ -229,10 +243,9 @@ describe('local sync', () => {
       documentId: 'document',
     });
     expect(restored.state.current()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
-    expect(select(restoredRuntime, read => read.title.get())).toBe('two');
+    expect(select(restoredRuntime, read => read.title)).toBe('two');
     await restored.dispose();
   });
-
   it('allows one leader, applies ordered commands in followers, and transfers leadership', async () => {
     const name = database();
     const leaderRuntime = runtime();
@@ -247,33 +260,28 @@ describe('local sync', () => {
       database: name,
       documentId: 'document',
     });
-
     expect(leader.state.current().status).toBe('leader');
     expect(follower.state.current()).toEqual({ status: 'follower', headSeq: 0, checkpointSeq: 0 });
-    expect(() => followerRuntime.update(tx => tx.write.title.set('forbidden'))).toThrow(
+    expect(() => followerRuntime.update(tx => (tx.title = 'forbidden'))).toThrow(
       LocalSyncReadOnlyError
     );
-    expect(() => followerRuntime.prepare(tx => tx.write.title.set('forbidden'))).toThrow(
-      LocalSyncReadOnlyError
-    );
-    expect(() => followerRuntime.apply([])).toThrow(LocalSyncReadOnlyError);
+    expect(() =>
+      followerRuntime.apply({ changes: [] }, { expectedRevision: followerRuntime.revision() })
+    ).toThrow(LocalSyncReadOnlyError);
     expect(() => followerRuntime.replace(initial)).toThrow(LocalSyncReadOnlyError);
-
-    leaderRuntime.update(tx => tx.write.title.set('two'));
+    leaderRuntime.update(tx => (tx.title = 'two'));
     await leader.flush();
-    await waitFor(() => select(followerRuntime, read => read.title.get()) === 'two');
+    await waitFor(() => select(followerRuntime, read => read.title) === 'two');
     expect(follower.state.current()).toEqual({ status: 'follower', headSeq: 1, checkpointSeq: 0 });
     expect(followerRuntime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
-
     await leader.dispose();
     await waitFor(() => follower.state.current().status === 'leader');
-    followerRuntime.update(tx => tx.write.tasks.item('a').title.set('AA'));
+    followerRuntime.update(tx => (tx.tasks.get('a')!.title = 'AA'));
     await follower.flush();
     expect(follower.state.current()).toEqual({ status: 'leader', headSeq: 2, checkpointSeq: 0 });
-    expect(select(followerRuntime, read => read.tasks.get('a')?.title.get())).toBe('AA');
+    expect(select(followerRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await follower.dispose();
   });
-
   it('uses runtime history directly and persists undo and redo as commands', async () => {
     const documentRuntime = runtime();
     const localSync = await attachLocalSync({
@@ -281,34 +289,29 @@ describe('local sync', () => {
       database: database(),
       documentId: 'document',
     });
-
-    documentRuntime.update(tx => tx.write.title.set('two'));
-    documentRuntime.update(tx => tx.write.title.set('three'));
+    documentRuntime.update(tx => (tx.title = 'two'));
+    documentRuntime.update(tx => (tx.title = 'three'));
     expect(documentRuntime.history.undo().status).toBe('committed');
-    expect(select(documentRuntime, read => read.title.get())).toBe('two');
+    expect(select(documentRuntime, read => read.title)).toBe('two');
     expect(documentRuntime.history.redo().status).toBe('committed');
-    expect(select(documentRuntime, read => read.title.get())).toBe('three');
+    expect(select(documentRuntime, read => read.title)).toBe('three');
     await localSync.flush();
     expect(localSync.state.current()).toEqual({ status: 'leader', headSeq: 4, checkpointSeq: 0 });
     expect(documentRuntime.history.current()).toEqual({ undoDepth: 2, redoDepth: 0 });
     await localSync.dispose();
   });
-
   it('clears history that predates attachment', async () => {
     const documentRuntime = runtime();
-    documentRuntime.update(tx => tx.write.title.set('two'));
+    documentRuntime.update(tx => (tx.title = 'two'));
     expect(documentRuntime.history.current()).toEqual({ undoDepth: 1, redoDepth: 0 });
-
     const localSync = await attachLocalSync({
       runtime: documentRuntime,
       database: database(),
       documentId: 'document',
     });
-
     expect(documentRuntime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
     await localSync.dispose();
   });
-
   it('persists system commits because they are runtime commits too', async () => {
     const documentRuntime = runtime();
     const localSync = await attachLocalSync({
@@ -316,15 +319,13 @@ describe('local sync', () => {
       database: database(),
       documentId: 'document',
     });
-
-    expect(
-      documentRuntime.update(tx => tx.write.title.set('two'), { source: 'system' }).status
-    ).toBe('committed');
+    expect(documentRuntime.update(tx => (tx.title = 'two'), { source: 'system' }).status).toBe(
+      'committed'
+    );
     await localSync.flush();
     expect(localSync.state.current()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
     await localSync.dispose();
   });
-
   it('reports non-JSON local commands after their synchronous runtime commit', async () => {
     const documentRuntime = runtime();
     const localSync = await attachLocalSync({
@@ -332,11 +333,8 @@ describe('local sync', () => {
       database: database(),
       documentId: 'document',
     });
-
-    expect(documentRuntime.update(tx => tx.write.title.set(new Date() as never)).status).toBe(
-      'committed'
-    );
-    expect(select(documentRuntime, read => read.title.get())).toBeInstanceOf(Date);
+    expect(documentRuntime.update(tx => (tx.title = new Date() as never)).status).toBe('committed');
+    expect(select(documentRuntime, read => read.title)).toBeInstanceOf(Date);
     await waitFor(() => localSync.state.current().status === 'error');
     expect(localSync.state.current()).toMatchObject({
       status: 'error',
@@ -346,24 +344,22 @@ describe('local sync', () => {
     await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
     await localSync.dispose();
   });
-
   it('reports command-limit failures after the document has committed synchronously', async () => {
     const documentRuntime = runtime();
     const localSync = await attachLocalSync({
       runtime: documentRuntime,
       database: database(),
       documentId: 'document',
-      commandLimits: { maxOperations: 1 },
+      changeLimits: { maxChanges: 1 },
     });
-
     expect(
       documentRuntime.update(tx => {
-        tx.write.title.set('two');
-        tx.write.tasks.item('a').title.set('AA');
+        tx.title = 'two';
+        tx.tasks.get('a')!.title = 'AA';
       }).status
     ).toBe('committed');
-    expect(select(documentRuntime, read => read.title.get())).toBe('two');
-    expect(select(documentRuntime, read => read.tasks.get('a')?.title.get())).toBe('AA');
+    expect(select(documentRuntime, read => read.title)).toBe('two');
+    expect(select(documentRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await waitFor(() => localSync.state.current().status === 'error');
     await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
     await localSync.dispose();

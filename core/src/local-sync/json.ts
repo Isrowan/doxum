@@ -4,22 +4,22 @@ export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue =
   JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
-export type JsonCommandLimits = {
-  readonly maxOperations?: number;
+export type JsonChangeLimits = {
+  readonly maxChanges?: number;
   readonly maxBytes?: number;
   readonly maxDepth?: number;
   readonly maxStringLength?: number;
 };
 
 type ResolvedJsonLimits = {
-  readonly maxOperations: number;
+  readonly maxChanges: number;
   readonly maxBytes: number;
   readonly maxDepth: number;
   readonly maxStringLength: number;
 };
 
-export const defaultJsonCommandLimits: Readonly<ResolvedJsonLimits> = Object.freeze({
-  maxOperations: 1_000,
+export const defaultJsonChangeLimits: Readonly<ResolvedJsonLimits> = Object.freeze({
+  maxChanges: 1_000,
   maxBytes: 1_000_000,
   maxDepth: 64,
   maxStringLength: 256_000,
@@ -41,17 +41,13 @@ const limit = (value: number | undefined, fallback: number, label: string): numb
   throw new TypeError(`${label} must be a positive safe integer.`);
 };
 
-const resolveLimits = (input: JsonCommandLimits | undefined): ResolvedJsonLimits => ({
-  maxOperations: limit(
-    input?.maxOperations,
-    defaultJsonCommandLimits.maxOperations,
-    'maxOperations'
-  ),
-  maxBytes: limit(input?.maxBytes, defaultJsonCommandLimits.maxBytes, 'maxBytes'),
-  maxDepth: limit(input?.maxDepth, defaultJsonCommandLimits.maxDepth, 'maxDepth'),
+const resolveLimits = (input: JsonChangeLimits | undefined): ResolvedJsonLimits => ({
+  maxChanges: limit(input?.maxChanges, defaultJsonChangeLimits.maxChanges, 'maxChanges'),
+  maxBytes: limit(input?.maxBytes, defaultJsonChangeLimits.maxBytes, 'maxBytes'),
+  maxDepth: limit(input?.maxDepth, defaultJsonChangeLimits.maxDepth, 'maxDepth'),
   maxStringLength: limit(
     input?.maxStringLength,
-    defaultJsonCommandLimits.maxStringLength,
+    defaultJsonChangeLimits.maxStringLength,
     'maxStringLength'
   ),
 });
@@ -107,15 +103,15 @@ export const json = (value: unknown, label: string): JsonValue =>
 export const jsonArray = (
   value: unknown,
   label: string,
-  input?: JsonCommandLimits
+  input?: JsonChangeLimits
 ): readonly JsonValue[] => {
   const limits = resolveLimits(input);
   const parsed = validate(value, [label], limits, 0, new WeakSet());
   if (!Array.isArray(parsed)) throw new LocalSyncDataError(`${label} must be a JSON array.`);
-  if (parsed.length > limits.maxOperations)
-    throw new LocalSyncDataError(`${label} exceeds the maximum operation count.`);
+  if (parsed.length > limits.maxChanges)
+    throw new LocalSyncDataError(`${label} exceeds the maximum change count.`);
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > limits.maxBytes)
-    throw new LocalSyncDataError(`${label} exceeds the maximum command size.`);
+    throw new LocalSyncDataError(`${label} exceeds the maximum ChangeSet size.`);
   return parsed;
 };

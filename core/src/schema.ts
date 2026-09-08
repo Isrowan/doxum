@@ -1,4 +1,5 @@
 import type { Validator } from './schema-value';
+import { checkKey } from './schema-value';
 export type DocumentAddress = readonly string[];
 
 export type DocumentListConfig<TItem> = {
@@ -31,7 +32,7 @@ export type OptionalNode<TNode extends DocumentNode> =
 export interface ObjectShape {
   readonly [key: string]: DocumentNode;
 }
-export type ObjectNode<TShape extends ObjectShape> = BaseNode<'object'> & {
+export type ObjectNode<TShape extends ObjectShape = ObjectShape> = BaseNode<'object'> & {
   readonly shape: TShape;
 };
 export interface VariantShape {
@@ -52,26 +53,18 @@ export type TableNode<
   readonly key?: Validator<TKey>;
 };
 export type MapNode<
-  TValue extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>,
+  TValue extends ValueSchemaNode,
   TKey extends string = string,
 > = BaseNode<'map'> & {
   readonly value: TValue;
   readonly key?: Validator<TKey>;
 };
-export type DictNode<TKey extends string, TValue> = BaseNode<'dict'> & {
-  readonly __key?: TKey;
-  readonly __value?: TValue;
-  readonly key?: Validator<TKey>;
-  readonly validator?: Validator<TValue>;
-};
 export type ListNode<TItem> = BaseNode<'list'> & {
-  readonly __item?: TItem;
+  readonly value: FieldNode<TItem, boolean>;
   keyOf(item: TItem): string;
-  readonly validator?: Validator<TItem>;
 };
 export type TreeNode<TValue> = BaseNode<'tree'> & {
-  readonly __value?: TValue;
-  readonly validator?: Validator<TValue>;
+  readonly value: FieldNode<TValue, boolean>;
 };
 
 export type DocumentNode =
@@ -80,8 +73,7 @@ export type DocumentNode =
   | ObjectNode<ObjectShape>
   | VariantNode<string, VariantShape>
   | TableNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
-  | MapNode<ObjectNode<ObjectShape> | VariantNode<string, VariantShape>>
-  | DictNode<string, unknown>
+  | MapNode<ValueSchemaNode>
   | ListNode<unknown>
   | TreeNode<unknown>;
 
@@ -89,12 +81,9 @@ export type DocumentNode =
 type SchemaObject<T> = { [K in keyof T]: T[K] } & {};
 
 /** Infer a document or node value, including optional node presence. */
-export type Infer<T extends DocumentNode | DocumentSchema> =
-  T extends DocumentSchema<infer S>
-    ? ShapeValue<S>
-    : T extends { readonly optional: true }
-      ? NodeValue<T> | undefined
-      : NodeValue<T>;
+export type Infer<T extends DocumentNode> = T extends { readonly optional: true }
+  ? NodeValue<T> | undefined
+  : NodeValue<T>;
 
 type NodeValue<N> =
   N extends FieldNode<infer T, infer O>
@@ -114,13 +103,11 @@ type NodeValue<N> =
             }
           : N extends MapNode<infer V, infer K>
             ? Readonly<Record<K, NodeValue<V>>>
-            : N extends DictNode<infer K, infer T>
-              ? Readonly<Partial<Record<K, T>>>
-              : N extends ListNode<infer I>
-                ? readonly I[]
-                : N extends TreeNode<infer T>
-                  ? DocumentTreeValue<T>
-                  : never;
+            : N extends ListNode<infer I>
+              ? readonly I[]
+              : N extends TreeNode<infer T>
+                ? DocumentTreeValue<T>
+                : never;
 
 type OptionalKeys<S extends ObjectShape> = {
   [K in keyof S]: S[K] extends { readonly optional: true } ? K : never;
@@ -133,13 +120,16 @@ type ShapeValue<S extends ObjectShape> = SchemaObject<
 >;
 
 export type EntitySchemaNode = ObjectNode<ObjectShape> | VariantNode<string, VariantShape>;
+export type ValueSchemaNode = EntitySchemaNode | FieldNode<unknown, boolean>;
+export type DocumentAnchor<K extends string = string> =
+  { readonly at: 'start' | 'end' } | { readonly before: K } | { readonly after: K };
 
 export type CollectionSelector<
   TId extends string = string,
-  TNode extends EntitySchemaNode = EntitySchemaNode,
+  TNode extends ValueSchemaNode = ValueSchemaNode,
 > = {
   readonly kind: 'collection';
-  readonly schema: DocumentSchema;
+  readonly schema: ObjectNode;
   readonly address: DocumentAddress;
   readonly __id?: TId;
   /** Compile-time entry schema carried by schema selectors. */
@@ -147,7 +137,7 @@ export type CollectionSelector<
 };
 export type ValueSelector<TResult = unknown> = {
   readonly kind: 'value';
-  readonly schema: DocumentSchema;
+  readonly schema: ObjectNode;
   readonly address: DocumentAddress;
   readonly __value?: TResult;
 };
@@ -169,18 +159,10 @@ type SchemaPathFor<S extends ObjectShape = ObjectShape, TValue = unknown> = {
   readonly [K in keyof S]: PathValue<S[K]>;
 } & PathMarker<TValue>;
 
-export type DocumentSchema<TShape extends ObjectShape = {}> = {
-  readonly kind: 'schema';
-  readonly shape: TShape;
-  collection<TPath extends CollectionPath>(
-    pick: (path: SchemaPath<TShape>) => TPath
-  ): CollectionSelector<CollectionId<TPath>, CollectionNode<TPath>>;
-  value<TPath extends PathMarker<unknown>>(
-    pick: (path: SchemaPath<TShape>) => TPath
-  ): ValueSelector<PathValueResult<TPath>>;
-};
-
-export type SchemaPath<S extends ObjectShape = {}> = SchemaPathFor<S, ShapeValue<S>>;
+export type SchemaPath<S extends ObjectShape = ObjectShape> = SchemaPathFor<S, ShapeValue<S>>;
+export type PathPick<S extends ObjectNode = ObjectNode> = (
+  path: SchemaPath<S['shape']>
+) => PathMarker<unknown>;
 
 type VariantKeys<V extends VariantShape> = {
   [K in keyof V & string]: keyof (V[K] extends ObjectNode<infer S> ? S : {});
@@ -196,18 +178,12 @@ type VariantFieldPath<V extends VariantShape, K extends string> = {
 type VariantPath<T extends string, V extends VariantShape, TValue> = {
   readonly [K in VariantKeys<V>]: VariantFieldPath<V, K>;
 } & { readonly [K in T]: PathMarker<keyof V & string> } & PathMarker<TValue>;
-type EntityPath<N extends ObjectNode<ObjectShape> | VariantNode<string, VariantShape>> =
-  N extends ObjectNode<infer S>
-    ? SchemaPathFor<S, Infer<N>>
-    : N extends VariantNode<infer T, infer V>
-      ? VariantPath<T, V, Infer<N>>
-      : never;
 export type CollectionPath<
-  N extends EntitySchemaNode = EntitySchemaNode,
+  N extends ValueSchemaNode = ValueSchemaNode,
   TValue = unknown,
   K extends string = string,
 > = PathMarker<TValue> & {
-  item(id: K): EntityPath<N>;
+  item(id: K): PathValue<N>;
   readonly [collectionNode]: N;
   readonly [collectionKey]: K;
 };
@@ -217,11 +193,13 @@ type PathValue<N extends DocumentNode> =
     ? SchemaPathFor<S, Infer<N>>
     : N extends VariantNode<infer TTag, infer V>
       ? VariantPath<TTag, V, Infer<N>>
-      : N extends TableNode<infer V, infer K> | MapNode<infer V, infer K>
+      : N extends TableNode<infer V, infer K>
         ? CollectionPath<V, Infer<N>, K>
-        : PathMarker<Infer<N>>;
+        : N extends MapNode<infer V, infer K>
+          ? CollectionPath<V, Infer<N>, K>
+          : PathMarker<Infer<N>>;
 type CollectionInfo<T> = T extends {
-  readonly [collectionNode]: infer TNode extends EntitySchemaNode;
+  readonly [collectionNode]: infer TNode extends ValueSchemaNode;
   readonly [collectionKey]: infer K extends string;
 }
   ? { readonly id: K; readonly node: TNode }
@@ -229,22 +207,11 @@ type CollectionInfo<T> = T extends {
 export type CollectionId<T> =
   CollectionInfo<T> extends { readonly id: infer TId extends string } ? TId : string;
 export type CollectionNode<T> =
-  CollectionInfo<T> extends { readonly node: infer TNode extends EntitySchemaNode }
+  CollectionInfo<T> extends { readonly node: infer TNode extends ValueSchemaNode }
     ? TNode
-    : EntitySchemaNode;
-export type CollectionValue<T> = PathValueResult<T>;
-type PathValueResult<T> = T extends PathMarker<infer TValue> ? TValue : unknown;
+    : ValueSchemaNode;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
-const roots = new WeakMap<object, ObjectNode<ObjectShape>>();
-export const schemaRoot = (schema: DocumentSchema): ObjectNode<ObjectShape> => {
-  let root = roots.get(schema);
-  if (!root) {
-    root = object(schema.shape);
-    roots.set(schema, root);
-  }
-  return root;
-};
 export const field = <T>(
   validator?: Validator<T>,
   options?: { snapshot(value: T): T }
@@ -252,40 +219,34 @@ export const field = <T>(
 type OptionalLeaf =
   | FieldNode<unknown, boolean>
   | VariantNode<string, VariantShape>
-  | DictNode<string, unknown>
+  | MapNode<ValueSchemaNode>
   | ListNode<unknown>
   | TreeNode<unknown>;
 export const optional = <T extends OptionalLeaf>(value: T): OptionalNode<T> => {
-  if (!['field', 'variant', 'dict', 'list', 'tree'].includes(value.kind))
-    throw new TypeError(
-      'Only field, variant, dict, list and tree nodes support optional presence.'
-    );
+  if (!['field', 'variant', 'map', 'list', 'tree'].includes(value.kind))
+    throw new TypeError('Only field, variant, map, list and tree nodes support optional presence.');
   return node({ ...value, optional: true } as OptionalNode<T>);
 };
 export const object = <S extends ObjectShape>(shape: S): ObjectNode<S> =>
-  node({ kind: 'object', shape });
+  node({ kind: 'object', shape: Object.freeze({ ...shape }) });
 export const variant = <T extends string, V extends VariantShape>(
   tag: T,
   variants: V
-): VariantNode<T, V> => node({ kind: 'variant', tag, variants });
+): VariantNode<T, V> => node({ kind: 'variant', tag, variants: Object.freeze({ ...variants }) });
 export const table = <V extends EntitySchemaNode, K extends string = string>(
   value: V,
   options?: { readonly key: Validator<K> }
 ): TableNode<V, K> => node({ kind: 'table', value, ...options });
-export const map = <V extends EntitySchemaNode, K extends string = string>(
+export const map = <V extends ValueSchemaNode, K extends string = string>(
   value: V,
   options?: { readonly key: Validator<K> }
 ): MapNode<V, K> => node({ kind: 'map', value, ...options });
-export const dict = <TKey extends string = string, TValue = unknown>(options?: {
-  readonly key?: Validator<TKey>;
-  readonly value?: Validator<TValue>;
-}): DictNode<TKey, TValue> => node({ kind: 'dict', key: options?.key, validator: options?.value });
 export const list = <TItem>(
-  config: DocumentListConfig<TItem> & { readonly value?: Validator<TItem> }
-): ListNode<TItem> =>
-  ({ kind: 'list', keyOf: config.keyOf, validator: config.value }) as ListNode<TItem>;
-export const tree = <TValue = unknown>(validator?: Validator<TValue>): TreeNode<TValue> =>
-  node({ kind: 'tree', validator });
+  value: FieldNode<TItem, boolean>,
+  config: DocumentListConfig<TItem>
+): ListNode<TItem> => node({ kind: 'list', keyOf: config.keyOf, value });
+export const tree = <TValue>(value: FieldNode<TValue, boolean>): TreeNode<TValue> =>
+  node({ kind: 'tree', value });
 
 const paths = new WeakMap<
   object,
@@ -295,17 +256,6 @@ const paths = new WeakMap<
     readonly owner: object;
   }
 >();
-const collectionSchemas = new WeakMap<
-  object,
-  TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode>
->();
-export const collectionSchema = (
-  selector: CollectionSelector
-): TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode> => {
-  const node = collectionSchemas.get(selector);
-  if (!node) throw new TypeError('Expected a schema-owned collection selector.');
-  return node;
-};
 
 const pathProxy = (
   nodes: readonly DocumentNode[],
@@ -321,6 +271,11 @@ const pathProxy = (
         if (collection && property === 'item')
           return (id: string) => {
             if (typeof id !== 'string') throw new TypeError('Collection keys must be strings.');
+            for (const node of nodes)
+              if (node.kind === 'table' || node.kind === 'map') {
+                const invalid = checkKey(node.key, id, [...address, id]);
+                if (invalid) throw new TypeError(invalid.message);
+              }
             return pathProxy(
               nodes.map(node => (node as TableNode<EntitySchemaNode>).value),
               [...address, id],
@@ -328,11 +283,12 @@ const pathProxy = (
             );
           };
         const children = nodes.flatMap(node => {
-          if (node.kind === 'object') return node.shape[property] ? [node.shape[property]] : [];
+          if (node.kind === 'object')
+            return Object.hasOwn(node.shape, property) ? [node.shape[property]] : [];
           if (node.kind !== 'variant') return [];
           if (property === node.tag) return [field<string>()];
           return Object.values(node.variants).flatMap(branch =>
-            branch.shape[property] ? [branch.shape[property]] : []
+            Object.hasOwn(branch.shape, property) ? [branch.shape[property]] : []
           );
         });
         if (!children.length) throw new TypeError(`Invalid schema path segment: ${property}`);
@@ -344,13 +300,13 @@ const pathProxy = (
   return proxy;
 };
 
-const select = <S extends ObjectShape>(
-  owner: DocumentSchema<S>,
+export const compilePath = <S extends ObjectShape>(
+  owner: ObjectNode<S>,
   kind: 'collection' | 'value',
   pick: (path: SchemaPath<S>) => unknown
 ): CollectionSelector | ValueSelector => {
   const scope = {};
-  const value = pick(pathProxy([object(owner.shape)], [], scope) as SchemaPath<S>);
+  const value = pick(pathProxy([owner], [], scope) as SchemaPath<S>);
   const selected = typeof value === 'object' && value !== null ? paths.get(value) : undefined;
   if (!selected || selected.owner !== scope)
     throw new TypeError('Selector must return a path from its callback.');
@@ -364,25 +320,5 @@ const select = <S extends ObjectShape>(
     schema: owner,
     address: Object.freeze([...selected.address]),
   }) as CollectionSelector | ValueSelector;
-  if (kind === 'collection')
-    collectionSchemas.set(
-      result,
-      selected.nodes[0] as TableNode<EntitySchemaNode> | MapNode<EntitySchemaNode>
-    );
   return result;
-};
-
-export const schema = <S extends ObjectShape>(shape: S): DocumentSchema<S> => {
-  const result: DocumentSchema<S> = {
-    kind: 'schema',
-    shape,
-    collection: <TPath extends CollectionPath>(pick: (path: SchemaPath<S>) => TPath) =>
-      select(result, 'collection', pick) as CollectionSelector<
-        CollectionId<TPath>,
-        CollectionNode<TPath>
-      >,
-    value: <TPath extends PathMarker<unknown>>(pick: (path: SchemaPath<S>) => TPath) =>
-      select(result, 'value', pick) as ValueSelector<PathValueResult<TPath>>,
-  };
-  return Object.freeze(result);
 };

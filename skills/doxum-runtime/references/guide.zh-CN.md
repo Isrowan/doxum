@@ -1,306 +1,78 @@
-# Doxum Runtime 使用指南
+# Doxum 使用指南
 
-这是 Doxum 面向任务的公开使用指南。它说明如何借助 `doxum` 建模、读取、修改、观察和派生一个内存文档，如何通过 `doxum/local-sync` 持久化并同步同一浏览器 origin 的文档，以及如何通过 `doxum/react` 将读模型接入 React。
-
-`doxum` core 负责类型化文档状态、原子修改、历史记录、影响范围、订阅和派生视图。`doxum/local-sync` 是可选的浏览器适配器，提供 IndexedDB 离线持久化和同一 origin 的跨标签页同步。网络顺序、授权和冲突解决仍由应用负责。
-
-## 先选择正确入口
-
-| 目标                       | 使用方式                                              |
-| -------------------------- | ----------------------------------------------------- |
-| 定义文档结构               | `schema`、`field`、`object` 和集合构造器              |
-| 创建 canonical runtime     | `createDocument`                                      |
-| 持久化并同步一个浏览器文档 | 从 `doxum/local-sync` 导入 `attachLocalSync`          |
-| 一次性读取                 | `select(runtime, read => ...)`                        |
-| 执行本地业务修改           | `runtime.update(tx => ...)`                           |
-| 回放持久化或远端 operation | `runtime.apply(operations, options)`                  |
-| 整体替换可信快照           | `runtime.replace(document, options)`                  |
-| 监听一个 schema 位置       | `schema.value` + `runtime.subscribe`                  |
-| 监听 table 或 map          | `schema.collection` + `runtime.subscribe`             |
-| 维护映射后的集合数据       | `projection.map`                                      |
-| 维护聚合或索引             | `projection.value / projection.collection`            |
-| 在 React 中读取            | `useDocumentSelector`、`useReadable` 或 `useReadable` |
-
-不要再维护一份可写的文档副本。`createDocument` 是 canonical state 的唯一所有者。
-
-## 从 schema 开始
-
-schema 同时定义文档的 TypeScript 结构，以及 writer、operation、selector 和 subscription 共用的权威地址模型。只定义一次，并让它靠近所描述的领域。
+## 定义、修改与读取
 
 ```ts
-import { createDocument, field, object, schema, table } from 'doxum';
+import { createDocument, field, map, object, select, snapshot, type Infer } from 'doxum';
 
-const task = object({
-  title: field<string>(),
-  completed: field<boolean>(),
+const task = object({ title: field<string>(), done: field<boolean>() });
+const model = object({ tasks: map(task) });
+type DocumentValue = Infer<typeof model>;
+const document = createDocument({
+  schema: model,
+  initial: { tasks: { a: { title: 'Write', done: false } } },
 });
-
-const taskSchema = schema({
-  title: field<string>(),
-  tasks: table(task),
+document.update(draft => {
+  const task = draft.tasks.a;
+  if (task) task.done = !task.done;
+  draft.tasks.b = { title: 'Review', done: false };
+  return { warnings: [] };
 });
-
-const runtime = createDocument({
-  schema: taskSchema,
-  initial: {
-    title: 'Launch Doxum',
-    tasks: {
-      ids: ['write-guide'],
-      byId: {
-        'write-guide': { title: 'Write the guide', completed: false },
-      },
-    },
-  },
-});
-```
-
-`table` 通过 `{ ids, byId }` 保留应用可见的顺序；`map` 存储无顺序的 id 索引实体。单个结构化实体用 `object`，标量键值数据用 `dict`，带应用稳定 key 的有序序列用 `list`，经过校验的单根层级结构用 `tree`。建模取舍见 [patterns.zh-CN.md](patterns.zh-CN.md)。
-
-## 通过 reader 读取
-
-需要完整子树时，在 select、transaction、React selector 或 projection 映射中调用
-`snapshot(read.subtree)`，返回对应 Infer 的即时独立值，不是惰性 reader。只读少量字段仍使用细粒度 reader。
-类实例和函数需要字段快照复制器。`field(validator)` 从验证器推导并校验标量，
-`parse(nodeOrSchema, unknown)` 解析外部数据；验证器必须同步且不转换值，仅有类型参数的字段无法验证 unknown。
-集合的 `{ key: validator }` 保留领域字符串键，贯穿访问、selector、impact 和 projection。
-字段 writer 的 `update(value => next)` 使用原有事务、回滚、history 和通知；回调不得嵌套写入或返回 Promise。
-完整契约见源码仓库 README 和 docs/value-boundaries.md。
-
-用 `import type { Infer } from 'doxum'` 命名 schema 推导的值类型：节点使用
-`Infer<typeof task>`，整份文档使用 `Infer<typeof taskSchema>`。生成的对象与 variant
-分支是展平的结构，属性和判别字段均为 readonly。可选节点包含 undefined，对象中的可选成员
-可以省略。用户提供的标量载荷类型保留原本的结构和可变性。Infer 接收节点或 schema，不直接接收原始 shape 对象。
-
-runtime 不会暴露可变的 canonical document，应通过回调读取：
-
-```ts
-import { select } from 'doxum';
-
-const openTitles = select(runtime, read =>
-  read.tasks.ids().flatMap(id => {
-    const task = read.tasks.get(id);
-    return task && !task.completed.get() ? [task.title.get()] : [];
-  })
+const done = select(document, state => state.tasks.a?.done);
+const tasks = select(document, state => snapshot(state.tasks));
+document.subscribe(
+  path => path.tasks.item('a').done,
+  commit => console.log(commit.changes)
 );
 ```
 
-reader 的形状由 schema 决定：
+根 object 是定义身份，runtime 拥有状态与 revision。事务同步且原子，修改立即可读。
+结构作用域在回调结束后失效。预期拒绝抛 TransactionRejected；普通异常完整恢复后
+原样抛出。正常返回 false/undefined 是业务结果，不表示拒绝。
 
-- field 使用 `get()`。
-- table 或 map 使用 `ids()`、`has(id)` 和 `get(id)`。
-- list 使用 `values()`、`length()` 和 `at(index)`。
-- tree 使用 `rootId()`、`has(id)`、`value(id)`、`parent(id)` 和 `children(id)`。
+object 暴露可编辑成员；field 是原子值，包括对象和数组。作用域内原子值深只读；
+canonical 复制保留原子引用，调用方必须遵守所有权边界，不能继续修改已传入的 payload。
+snapshot 返回独立值。需要使用字段 copier 时对所属结构取快照；
+单独原子值没有 schema 信息，只进行通用复制。
 
-结构化 reader 返回 snapshot。不要在 `runtime.update` 返回后保留 transaction reader；它只在该回调期间有效。
+Infer 保留 optional 属性和扁平 variant 联合。Read/Draft 带集合方法；
+含 table/list/tree 数据的整体替换使用 assign(scope, key, inferValue)。
 
-## 原子地修改
+## 容器与校验
 
-本地、类型化的领域行为使用 `runtime.update`。回调获得短生命周期的 `tx.read` 和 `tx.write`。writer 在一个原子 session 中产生 operation，而不是直接暴露 canonical state 的写入。
+| 声明                             | 数据          | Draft 方法                                                    |
+| -------------------------------- | ------------- | ------------------------------------------------------------- |
+| map(valueSchema, { key }?)       | record        | 索引、赋值、delete                                            |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move                                |
+| list(field, { keyOf })           | 普通数组      | get/has/ids/insert/set/remove/move/replace                    |
+| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/set/remove/move/replace |
 
-```ts
-const result = runtime.update(tx => {
-  const task = tx.read.tasks.get('write-guide');
-  if (!task) {
-    tx.reject({
-      code: 'task-not-found',
-      message: 'The requested task no longer exists.',
-      address: ['tasks', 'write-guide'],
-    });
-  }
+Read 只暴露读取方法。map 支持 field/object/variant。list 替换项必须保持寻址键。
+简单数组与笔画可作为一个原子 field。optional 支持 field/variant/map/list/tree，
+缺失与存在的 undefined 不同。variant tag 只读，通过整体替换切换分支。
 
-  tx.write.tasks.item('write-guide').completed.set(true);
-  return task.title.get();
-});
+校验器支持同步、不转换值的函数与 Standard Schema v1。parse(model, unknown)
+返回独立校验值；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 访问、
+符号路径和 impact。路径回调描述地址，包括缺失键，订阅注册时解析。
+React useDocumentSelector 追踪实际读取，并在选择分支改变时更新依赖。
 
-if (result.status === 'committed') {
-  console.log(result.value, result.commit.revision);
-} else if (result.status === 'rejected') {
-  console.error(result.issues);
-}
-```
+## 变化与消费者
 
-一次 update 是同步且原子的：
+commit 包含 revision/source/changes/impact。ChangeSet 只包含最终值/存在性、
+顺序与触及树节点事实，净零事务不发布。
+apply(changes, { expectedRevision }) 拒绝缺失或不匹配的本地基线；来包 before
+不作为本地 undo 真值，记录真实旧状态。history 重放完整 ChangeSet，分组原子旅行。
+本地 replace 是可撤销根重置，remote commit 使 history 失效。
+observerErrors 属于已提交结果。
 
-- writer 产生语义上无效的 operation 时，Doxum 回滚整个 session，并以 `MutationIssue` 返回 `status: 'rejected'`。
-- `tx.reject(...)` 回滚并返回应用层的 `DocumentDiagnostic`。
-- 普通 `throw` 同样回滚，但错误会继续抛给调用方。
-- 净变化为零时，返回 `status: 'unchanged'`，且不会发布 commit。
+集合映射使用 projection.document(document).collection(path => path.tasks)
+和 projection.map。纯派生值使用 projection.value(sources, compute)；
+有状态算法使用 value spec 或 projection.collection<T>()(spec)，sources 显式声明。
+input/fromReadable 接入外部边界值。随所属服务 dispose。
+batch 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
+不提供跨文档回滚。
 
-非阻断的应用诊断使用 `tx.report(...)`。committed 与 unchanged 结果通过 `reports` 暴露它们；report 与诊断地址在发布前会被复制并冻结。
-
-## 用 writer，而不是局部拼 operation
-
-普通应用行为优先调用 writer API；它更清晰，也能保留 schema 的领域语义：
-
-```ts
-runtime.update(tx => {
-  tx.write.title.set('Ship Doxum');
-  tx.write.tasks.create(
-    { id: 'release', value: { title: 'Publish the package', completed: false } },
-    { after: 'write-guide' }
-  );
-  tx.write.tasks.item('release').title.set('Publish doxum');
-  tx.write.tasks.move('release', { at: 'start' });
-  tx.write.tasks.remove('write-guide');
-});
-```
-
-table 支持 `create`、`item`、`remove` 和 `move`。map 与之相同，但没有 `move`，因为它无顺序。list 支持 `insert`、`move`、`remove` 与 `replace`；其身份来自 schema 中的 `keyOf`。完整的集合与 tree 模式见 [patterns.zh-CN.md](patterns.zh-CN.md)。
-
-optional 的 field、variant、dict、list 和 tree writer 提供 `clear()`；其中结构化叶子也可
-在当前缺失时直接调用 `replace()` 建立值。schema 构造器和类型均拒绝 optional object、table 和 map，
-这些容器应保持存在，通过子 writer 或集合操作修改。variant reader 的 get() 返回判别联合；
-dict reader 提供 get(key)、has(key)、keys() 和 values()，list 也支持 get(key)/has(key)。
-
-一次动作跨越多个 update 时，打开 `runtime.history.group()`，结束后调用 end() 保留一个撤销项，
-或调用 cancel() 撤销整次动作。group 不能嵌套。history 实现 Readable，localSync.state 也是
-Readable，两者都可以直接接入 useReadable 和 projection.fromReadable。
-
-## 在边界回放 operation
-
-来自持久化、网络适配器或其他外部边界的 operation batch 应通过 `apply` 回放。Doxum 会在 mutation code 看到数据前解码未知 operation payload，按 schema 解析每个地址，并原子地执行整个 batch。
-
-```ts
-const result = runtime.apply([{ type: 'field.set', at: ['title'], value: 'Restored title' }], {
-  source: 'remote',
-  history: false,
-});
-
-if (result.status === 'rejected') {
-  // 文档与 revision 均保持不变。
-  console.error(result.issues);
-}
-```
-
-外部 operation 输入即便在 TypeScript 中看似合法，也应视作不可信。不要在 Doxum 之外再写一套 path parser，也不要以局部回放方式自行校验 operation。远端 commit 与每次 `replace` 都会建立新的基线，因此会使本地 undo/redo history 失效。
-
-## 理解结果与 history
-
-所有 mutation 入口都会返回三种状态之一：
-
-| 状态        | 含义                                      |
-| ----------- | ----------------------------------------- |
-| `committed` | canonical state 已变化；结果含有 commit。 |
-| `unchanged` | 净状态未变化；revision 不变。             |
-| `rejected`  | 整个 batch 已回滚；检查 `issues`。        |
-
-已提交的 operation 包含 forward operation、inverse operation、revision 和 `DocumentImpact`。本地与 system commit 默认会记录到 local history。使用 `runtime.history.undo()` 与 `runtime.history.redo()`；它们仍通过同一 mutation pipeline 回放 inverse 或 forward batch。
-
-committed 结果中的 `observerErrors` 是 canonical state 和 history 已稳定后，processor、flush 或 listener 发生的失败。它们不是 mutation 失败，调用方不能因此重复写入。
-
-## 附着浏览器本地同步
-
-`attachLocalSync` 是可选的浏览器 attachment。runtime 仍由应用创建并持有；在使用
-文档前必须等待 attach 完成。它会从 IndexedDB 的 checkpoint 与 append-only command
-tail 恢复传入 runtime，随后以 Web Lock 为一个 document 选出唯一可写标签页。`leader`
-可继续使用同步的 runtime 写入 API；其他已附着标签页都是只读的 `follower` mirror。
-follower 直接调用 `update`、`prepare`、`apply` 或 `replace` 会抛出
-`LocalSyncReadOnlyError`。
-
-leader 已完成的 local、system 与 history commit 会被监听，并按顺序异步写入
-IndexedDB。BroadcastChannel 只传递新的 head 提示；follower 从 IndexedDB 补读 durable
-tail，并以 `remote` source 顺序 apply，因此其内存 history 会失效。leader dispose
-之后，已经 catch-up 的 follower 会接管锁并成为新的 leader。
-
-local-sync 只持久化 operation command，不接受任意的新基线。附着期间，
-`runtime.replace()` 与由应用提供的 `runtime.apply(..., { source: 'remote' })` 会抛出
-`LocalSyncUnsupportedOperationError`；内部 hydration 与 tail replay 使用受信任的
-attachment path。
-
-```ts
-import { attachLocalSync } from 'doxum/local-sync';
-
-const runtime = createDocument({ schema: taskSchema, initial });
-const localSync = await attachLocalSync({
-  runtime,
-  database: 'my-app',
-  documentId: 'project-1',
-});
-
-if (localSync.state.current().status === 'leader') {
-  runtime.update(tx => tx.write.title.set('Ship Doxum'));
-  runtime.history.undo();
-}
-
-await localSync.flush(); // 持久化已观察到的 leader command，或让 follower 追赶
-await localSync.dispose();
-```
-
-开始使用前必须等待 attachment，因为它会用 IndexedDB 恢复传入 runtime。这是“同步可见、
-异步持久化”而不是严格 durable：崩溃、存储失败或非 JSON payload，都可能让已经可见的
-leader commit 未持久化。用 `localSync.state.current()` 与 `onError` 显示该状态，`flush()` 是显式
-的持久化/追赶边界。attachment 不拥有也不会 dispose runtime，且不提供另一套 undo API：
-leader 使用 `runtime.history.undo()` 与 `runtime.history.redo()`。history 有意只在内存中
-存在；attachment 恢复及 remote tail apply 都会使它失效，因此不会跨重开或 leader 交接保留。
-
-## 通过 schema 所有的 target 订阅
-
-从 schema 创建稳定 selector，再订阅 selector。这是整个 runtime 共用的 address 与 impact 模型。
-
-```ts
-const title = taskSchema.value(path => path.title);
-const tasks = taskSchema.collection(path => path.tasks);
-
-const stopTitle = runtime.subscribe(title, commit => {
-  console.log('title changed at revision', commit.revision);
-});
-
-const stopTasks = runtime.subscribe(tasks, commit => {
-  const change = commit.impact.collection(tasks);
-  if (change.kind === 'incremental') {
-    console.log(change.added, change.removed, change.updated, change.orderChanged);
-  }
-});
-
-stopTitle();
-stopTasks();
-```
-
-value selector 使用 `commit.impact.affects(target)`；table 或 map selector 使用 `commit.impact.collection(selector)`，它在增量更新时返回精确变更，在 replace 后返回 `reset`。不要在应用模块中重写 path 比较 helper。
-
-## 构建派生读模型
-
-```ts
-const projection = createProjectionRuntime({ onError: error => console.error(error) });
-const document = projection.document(runtime);
-const notes = document.collection(path => path.notes);
-const noteSummaries = projection.map(
-  notes,
-  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
-  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
-);
-const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
-```
-
-projection.map 提供稳定的 ids/item readable 和惰性 all，也能接入上游投影集合。DocumentCollectionSource 可直接用于自定义 processor 的 sources；有状态算法使用 `projection.value({ sources, build }, { isEqual }?)` 或 `projection.collection<Item>()(spec)`。document collection context 提供整个批次的 `candidates.keys`、`candidates.orderDirty` 和 `reset`。不自动跟踪 keyed 依赖。sources 属于同一 projection owner，但可接入不同 document runtime。
-
-projection.input(initial, { isEqual }) 用于边界值；应用保留 set，processor 只接收 source。fromReadable 接入已有外部 source，不取得其生命周期所有权。多 source 同步更新应在首次 commit 前进入 batch。projection 随 service 销毁，React unmount 只取消订阅，disposed handle 明确抛错。
-
-## React 集成
-
-`doxum/react` 基于 `useSyncExternalStore` 与 Doxum 读取依赖。组件只会在 commit 可能影响其 selector 读取结果时重新渲染。
-
-```tsx
-import { useDocumentSelector } from 'doxum/react';
-
-function OpenTaskCount() {
-  const count = useDocumentSelector(
-    runtime,
-    read => read.tasks.ids().filter(id => !read.tasks.get(id)?.completed.get()).length
-  );
-
-  return <output>{count}</output>;
-}
-```
-
-`Readable` 使用 `useReadable(view.all)`，单个 keyed value 使用 `useReadable(view.item(id))`，undo/redo state 与 action 使用 `useHistory(runtime.history)`。`core` 必须保持不导入 React；React 相关代码应属于 adapter 或应用层。
-
-## 生命周期与所有权
-
-- `createDocument` 启动时会克隆 initial document。
-- 经由 operation 传入的结构化 payload 会转移到 canonical state。除非有意修改 canonical state，否则调用后不要再修改它。
-- 已发布的 commit、history payload、diagnostic 和 selector address 都是不可变 snapshot。
-- tree 的 replace snapshot 会经过校验并克隆，以维持结构完整性。
-- runtime 不再使用时调用 `runtime.dispose()`；现有 subscription、history state 和 view 应随其所属对象一同 dispose。
-
-决策规则与反模式见 [invariants.zh-CN.md](invariants.zh-CN.md)，可直接复用的实现模式见 [patterns.zh-CN.md](patterns.zh-CN.md)。
+doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入，
+follower 连续重放 durable seq。先可见后异步落盘，flush 等待持久化。
+附着期间禁止外部 replace 和外部标记 remote 的 apply。版本 3 / 格式 1 拒绝旧存储，
+保留数据且不迁移。适配器仅接收 JSON 值。

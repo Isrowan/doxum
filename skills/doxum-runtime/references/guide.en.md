@@ -1,387 +1,85 @@
-# Doxum Runtime Guide
+# Doxum Guide
 
-This is the task-oriented public guide for Doxum. It describes how to model,
-read, mutate, observe, and project one in-memory document with `doxum`, persist
-one browser-origin document with `doxum/local-sync`, and bind read models with
-`doxum/react`.
-
-The `doxum` core entry owns typed document state, atomic mutation, history,
-impact, subscriptions, and derived views. `doxum/local-sync` is the optional
-browser adapter for IndexedDB-backed offline editing and same-origin cross-tab
-sync. Your application still owns network ordering, authorization, and conflict
-resolution.
-
-## Choose the right entry point
-
-| Goal                                  | Use                                                      |
-| ------------------------------------- | -------------------------------------------------------- |
-| Define document shape                 | `schema`, `field`, `object`, and collection constructors |
-| Create the canonical runtime          | `createDocument`                                         |
-| Persist and sync one browser document | `attachLocalSync` from `doxum/local-sync`                |
-| Read once                             | `select(runtime, read => ...)`                           |
-| Make local business changes           | `runtime.update(tx => ...)`                              |
-| Replay persisted or remote operations | `runtime.apply(operations, options)`                     |
-| Replace an entire trusted snapshot    | `runtime.replace(document, options)`                     |
-| Observe one schema location           | `schema.value` plus `runtime.subscribe`                  |
-| Observe a table or map                | `schema.collection` plus `runtime.subscribe`             |
-| Maintain mapped collection data       | `projection.map`                                         |
-| Maintain an aggregate or index        | `projection.value / projection.collection`               |
-| Read in React                         | `useDocumentSelector`, `useReadable`, or `useReadable`   |
-
-Do not write a second mutable copy of the document. `createDocument` is the
-only owner of canonical state.
-
-## Start with a schema
-
-A schema is both the TypeScript shape of the document and the authoritative
-address model for writers, operations, selectors, and subscriptions. Define it
-once and keep it close to the domain it describes.
+## Define, Update And Read
 
 ```ts
-import { createDocument, field, object, schema, table } from 'doxum';
+import { createDocument, field, map, object, select, snapshot, type Infer } from 'doxum';
 
-const task = object({
-  title: field<string>(),
-  completed: field<boolean>(),
+const task = object({ title: field<string>(), done: field<boolean>() });
+const model = object({ tasks: map(task) });
+type DocumentValue = Infer<typeof model>;
+const document = createDocument({
+  schema: model,
+  initial: { tasks: { a: { title: 'Write', done: false } } },
 });
-
-const taskSchema = schema({
-  title: field<string>(),
-  tasks: table(task),
+document.update(draft => {
+  const task = draft.tasks.a;
+  if (task) task.done = !task.done;
+  draft.tasks.b = { title: 'Review', done: false };
+  return { warnings: [] };
 });
-
-const runtime = createDocument({
-  schema: taskSchema,
-  initial: {
-    title: 'Launch Doxum',
-    tasks: {
-      ids: ['write-guide'],
-      byId: {
-        'write-guide': { title: 'Write the guide', completed: false },
-      },
-    },
-  },
-});
-```
-
-`table` preserves application-visible order through `{ ids, byId }`. `map`
-stores id-indexed entities without order. Use `object` for one structured
-entity, `dict` for scalar key/value data, `list` for an ordered
-sequence with an application-supplied stable key, and `tree` for a validated
-single-root hierarchy. See [patterns.en.md](patterns.en.md) for modelling
-guidance.
-
-## Read through readers
-
-Use `snapshot(read.subtree)` inside select, transactions, React selectors or
-projection mapping when the complete inferred subtree value is needed. It is
-an immediate independent value, not a live reader; field readers remain cheaper
-for small selections. Snapshotting classes/functions requires a field copier.
-Use `field(validator)` to infer and enforce a scalar type, and
-`parse(nodeOrSchema, unknown)` for external data. Validators are synchronous and
-value-preserving; a type-only field cannot validate unknown input. Collection
-`{ key: validator }` options retain domain string types through access and
-projections. Field writers support `update(value => next)` with ordinary
-transaction rollback, history and notifications; callbacks cannot write or be
-async. Consult README and docs/value-boundaries.md in the source repository for
-the complete contracts.
-
-Use `import type { Infer } from 'doxum'` to name schema-derived values:
-`Infer<typeof task>` for a node and `Infer<typeof taskSchema>` for a document.
-Generated object types and variant branches are flat, with readonly fields
-and discriminants. Optional nodes include undefined; optional object members
-can be omitted. User-provided scalar payload types retain their own structure
-and mutability. Infer accepts nodes and schemas, not a raw shape object.
-
-The runtime does not expose its mutable document. Read through a callback:
-
-```ts
-import { select } from 'doxum';
-
-const openTitles = select(runtime, read =>
-  read.tasks.ids().flatMap(id => {
-    const task = read.tasks.get(id);
-    return task && !task.completed.get() ? [task.title.get()] : [];
-  })
+const done = select(document, state => state.tasks.a?.done);
+const tasks = select(document, state => snapshot(state.tasks));
+document.subscribe(
+  path => path.tasks.item('a').done,
+  commit => console.log(commit.changes)
 );
 ```
 
-Readers are intentionally shaped by the schema:
+Root object is definition identity; runtime owns its data/revision. Updates are
+synchronous and atomic. Reads see preceding writes. Structural scopes expire at
+callback return. Throw TransactionRejected for expected rejection; ordinary throws
+restore all work and rethrow unchanged. False/undefined returns are business values.
 
-- A field has `get()`.
-- A table or map has `ids()`, `has(id)`, and `get(id)`.
-- A list has `values()`, `length()`, and `at(index)`.
-- A tree has `rootId()`, `has(id)`, `value(id)`, `parent(id)`, and
-  `children(id)`.
+Object exposes editable members; field is atomic, including arrays and objects.
+Scoped atomic values are deeply readonly. Canonical copies preserve atomic references:
+honor their ownership contract and stop mutating supplied payloads. Snapshot detaches
+values. Snapshot a structural subtree to invoke configured field copiers; a raw atomic
+value has no schema association and uses generic copying.
 
-Reader values for structural data are snapshots. Do not retain a transaction
-reader after `runtime.update` returns; it is only valid during that callback.
+Infer preserves optional properties and flat variant unions. Read/Draft contain
+collection tools; assign(scope, key, inferValue) handles plain replacements containing
+nested table/list/tree data.
 
-## Mutate atomically
+## Containers And Validation
 
-Use `runtime.update` for local, typed domain behavior. Its callback receives a
-short-lived `tx.read` and `tx.write`. Writers create operations for one atomic
-session; they never expose direct canonical mutation.
+| Definition                       | Data          | Draft methods                                                 |
+| -------------------------------- | ------------- | ------------------------------------------------------------- |
+| map(valueSchema, { key }?)       | record        | indexing, assignment, delete                                  |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move                                |
+| list(field, { keyOf })           | array         | get/has/ids/insert/set/remove/move/replace                    |
+| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/set/remove/move/replace |
 
-```ts
-const result = runtime.update(tx => {
-  const task = tx.read.tasks.get('write-guide');
-  if (!task) {
-    tx.reject({
-      code: 'task-not-found',
-      message: 'The requested task no longer exists.',
-      address: ['tasks', 'write-guide'],
-    });
-  }
+Read scopes expose only read methods. Map supports field/object/variant values.
+List replacement retains the addressed key. Simple arrays and strokes can be one
+atomic field. Optional supports field/variant/map/list/tree. Absent differs from
+present undefined. Variant tags are readonly; change branch by whole replacement.
 
-  tx.write.tasks.item('write-guide').completed.set(true);
-  return task.title.get();
-});
+Synchronous value-preserving functions and Standard Schema v1 validators are supported.
+parse(model, unknown) returns independent validated data; strict parse requires atomic
+validators. Branded map/table keys flow through access, symbolic paths and impact.
+Path callbacks describe locations, including absent entries, and compile at registration.
+React useDocumentSelector tracks actual reads and changes dependencies when branching.
 
-if (result.status === 'committed') {
-  console.log(result.value, result.commit.revision);
-} else if (result.status === 'rejected') {
-  console.error(result.issues);
-}
-```
+## Changes And Consumers
 
-An update is synchronous and atomic:
+Commits contain revision/source/changes/impact. ChangeSet holds final value/presence,
+order and touched tree-node facts. Net-zero changes do not publish.
+apply(changes, { expectedRevision }) rejects a missing or mismatched local baseline.
+Received before values are untrusted; local undo records actual old state.
+History travels complete ChangeSets; grouped travel is atomic. Local replace is a
+reversible root reset; remote commits invalidate local history. Observer errors occur
+after acceptance.
 
-- If a writer emits a semantically invalid operation, Doxum rolls back the
-  entire session and returns `status: 'rejected'` with `MutationIssue` values.
-- `tx.reject(...)` rolls back and returns your application
-  `DocumentDiagnostic` values.
-- A normal thrown error also rolls back, then is rethrown to the caller.
-- Net-zero work returns `status: 'unchanged'` and publishes no commit.
+Use projection.document(document).collection(path => path.tasks) and projection.map
+for incremental mapping. Pure values use projection.value(sources, compute); stateful
+algorithms use value specs or projection.collection<T>()(spec). Sources are explicit.
+Input/fromReadable connect external boundary values. Dispose with the owning service.
+Batch defers projection settlement/listeners, not document commits/listeners. Reads
+inside a batch see the last publication; no cross-document rollback is provided.
 
-Use `tx.report(...)` for non-blocking application diagnostics. Committed and
-unchanged transaction results expose them as `reports`; reports and diagnostic
-addresses are copied and frozen before they are published.
-
-## Use writers instead of constructing local operations
-
-For normal application behavior, writer APIs are clearer and preserve the
-schema domain:
-
-```ts
-runtime.update(tx => {
-  tx.write.title.set('Ship Doxum');
-  tx.write.tasks.create(
-    { id: 'release', value: { title: 'Publish the package', completed: false } },
-    { after: 'write-guide' }
-  );
-  tx.write.tasks.item('release').title.set('Publish doxum');
-  tx.write.tasks.move('release', { at: 'start' });
-  tx.write.tasks.remove('write-guide');
-});
-```
-
-For a table, `create`, `item`, `remove`, and `move` are available. A map has
-the same API except `move`, because it is unordered. Lists offer `insert`,
-`move`, `remove`, and `replace`; list identity comes from the `keyOf` function
-specified in the schema. See [patterns.en.md](patterns.en.md) for complete
-collection and tree examples.
-
-Optional field, variant, dict, list, and tree writers expose `clear()`. Optional
-structured leaves can also be initialized from an absent state with `replace()`.
-Optional objects, tables, and maps are rejected by the schema constructor and
-types. Model those containers as present and use their child or collection operations.
-Variant readers expose get() as a discriminated union. Dictionary readers use
-get(key), has(key), keys() and values(); lists also provide get(key)/has(key).
-
-For one action spanning several updates, open `runtime.history.group()` and
-call its `end()` to retain one undo entry or `cancel()` to revert the action.
-Groups cannot nest. History implements Readable, and `localSync.state` is also
-a Readable: both work with useReadable and projection.fromReadable.
-
-## Replay operations at the boundary
-
-Use `apply` for operation batches that came from persistence, a network
-adapter, or another external boundary. Doxum decodes unknown operation payloads
-before mutation code observes them, resolves every address against the schema,
-and applies the batch atomically.
-
-```ts
-const result = runtime.apply([{ type: 'field.set', at: ['title'], value: 'Restored title' }], {
-  source: 'remote',
-  history: false,
-});
-
-if (result.status === 'rejected') {
-  // The document and revision remain unchanged.
-  console.error(result.issues);
-}
-```
-
-Treat external operation input as untrusted, even if TypeScript types make it
-look valid. Do not write a second path parser or validate operations by
-partially replaying them outside Doxum. A remote commit and every `replace`
-establish a new baseline, so they invalidate local undo/redo history.
-
-## Interpret results and history
-
-Every mutation entry point returns one of three states:
-
-| Status      | Meaning                                                  |
-| ----------- | -------------------------------------------------------- |
-| `committed` | Canonical state changed; the result contains a commit.   |
-| `unchanged` | The net state did not change; the revision is unchanged. |
-| `rejected`  | The whole batch rolled back; inspect `issues`.           |
-
-Committed operations carry forward operations, inverse operations, a revision,
-and a `DocumentImpact`. Local history records local and system commits by
-default. Use `runtime.history.undo()` and `runtime.history.redo()`; they replay
-the inverse or forward operation batch through the same mutation pipeline.
-
-`observerErrors` on a committed result are failures from processors, flushes,
-or listeners after canonical state and history settled. They are not mutation
-failures and must not cause the caller to repeat the write.
-
-## Attach local browser sync
-
-`attachLocalSync` is an optional browser attachment. Create and keep the
-runtime yourself, then await attachment before allowing the document to be used.
-It hydrates that runtime from an IndexedDB checkpoint and append-only command
-tail, then uses a Web Lock to choose exactly one writable tab. The `leader`
-uses normal synchronous runtime writes; every other attached tab is a
-`follower` read-only mirror. A direct follower write through `update`,
-`prepare`, `apply`, or `replace` throws `LocalSyncReadOnlyError`.
-
-The leader's local, system, and history commits are observed after they have
-settled and persisted to IndexedDB in order. BroadcastChannel carries only a
-new-head hint. Followers reload the durable tail and apply it as `remote`; this
-keeps their document ordered and invalidates their in-memory history. When the
-leader disposes, a caught-up follower takes the lock and becomes leader.
-
-Local-sync persists operation commands, not arbitrary new baselines. While it
-is attached, `runtime.replace()` and an externally supplied
-`runtime.apply(..., { source: 'remote' })` throw
-`LocalSyncUnsupportedOperationError`; internal hydration and tail replay use a
-trusted attachment path instead.
-
-```ts
-import { attachLocalSync } from 'doxum/local-sync';
-
-const runtime = createDocument({ schema: taskSchema, initial });
-const localSync = await attachLocalSync({
-  runtime,
-  database: 'my-app',
-  documentId: 'project-1',
-});
-
-if (localSync.state.current().status === 'leader') {
-  runtime.update(tx => tx.write.title.set('Ship Doxum'));
-  runtime.history.undo();
-}
-
-await localSync.flush(); // persist observed leader commands or catch up a follower
-await localSync.dispose();
-```
-
-This is synchronous visibility with asynchronous persistence, not strict
-durability: a crash, storage failure, or invalid JSON payload can leave a
-visible leader commit unpersisted. Use `localSync.state.current()` and `onError` to show
-that condition. `flush()` is the explicit persistence/catch-up boundary. The
-attachment does not own or dispose the runtime and it does not expose an undo
-API: use `runtime.history.undo()` and `runtime.history.redo()` while the tab is
-leader. Runtime history is intentionally in-memory only; attachment hydration
-and remote tail replay invalidate it, so it is not transferred across reopening
-or leader handoff.
-
-## Subscribe through schema-owned targets
-
-Create stable selectors from the schema, then subscribe to them. This is the
-shared address and impact model for the whole runtime.
-
-```ts
-const title = taskSchema.value(path => path.title);
-const tasks = taskSchema.collection(path => path.tasks);
-
-const stopTitle = runtime.subscribe(title, commit => {
-  console.log('title changed at revision', commit.revision);
-});
-
-const stopTasks = runtime.subscribe(tasks, commit => {
-  const change = commit.impact.collection(tasks);
-  if (change.kind === 'incremental') {
-    console.log(change.added, change.removed, change.updated, change.orderChanged);
-  }
-});
-
-stopTitle();
-stopTasks();
-```
-
-For value selectors, use `commit.impact.affects(target)`. For table or map
-selectors, use `commit.impact.collection(selector)`, which returns either a
-precise incremental change or `reset` after replacement. Do not recreate path
-comparison helpers in application modules.
-
-## Build derived read models
-
-```ts
-const projection = createProjectionRuntime({ onError: error => console.error(error) });
-const document = projection.document(runtime);
-const notes = document.collection(path => path.notes);
-const noteSummaries = projection.map(
-  notes,
-  (id, note) => ({ id, preview: note.body.get().slice(0, 80) }),
-  { isEqual: (a, b) => a.id === b.id && a.preview === b.preview }
-);
-const noteCount = projection.value({ notes }, ({ notes }) => notes.read.ids().length);
-```
-
-projection.map produces stable ids/item readables and lazy all. Declare a
-DocumentCollectionSource directly in any processor's sources, or use
-`projection.value({ sources, build }, { isEqual }?)` and
-`projection.collection<Item>()(spec)` for explicit incremental logic.
-Map also accepts upstream projection collections. Document collection contexts
-provide batch-wide `candidates.keys`, `candidates.orderDirty` and `reset`.
-There is no automatic keyed dependency tracking. All sources belong to the
-same projection owner, but may refer to different document runtimes.
-
-Use projection.input(initial, { isEqual }) for boundary values; give processors
-its source and keep set at the application boundary. fromReadable attaches an
-existing external source without taking ownership of it. Batch synchronous
-multi-source changes before the first commit. Dispose the projection at service
-shutdown; React unmount only unsubscribes. Disposed handles throw.
-
-## React integration
-
-`doxum/react` uses `useSyncExternalStore` and tracked Doxum dependencies. A
-component re-renders only for commits that can affect the selector it read.
-
-```tsx
-import { useDocumentSelector } from 'doxum/react';
-
-function OpenTaskCount() {
-  const count = useDocumentSelector(
-    runtime,
-    read => read.tasks.ids().filter(id => !read.tasks.get(id)?.completed.get()).length
-  );
-
-  return <output>{count}</output>;
-}
-```
-
-Use `useReadable(view.all)` for a `Readable`, `useReadable(view.item(id))`
-for one keyed value, and `useHistory(runtime.history)` for undo/redo state and
-actions. Keep `core` free of React imports; React-specific code belongs in the
-adapter or application layer.
-
-## Lifecycle and ownership
-
-- The initial document is cloned when `createDocument` starts.
-- Structural payloads passed through operations are transferred into canonical
-  state. Do not mutate them afterwards unless you intentionally want to mutate
-  the canonical document.
-- Published commits, history payloads, diagnostics, and selector addresses are
-  immutable snapshots.
-- Tree replacement snapshots are validated and cloned to preserve structural
-  integrity.
-- Call `runtime.dispose()` when the runtime is no longer usable. Existing
-  subscriptions, history state, and views should be disposed with their owners.
-
-For decision rules and anti-patterns, read
-[invariants.en.md](invariants.en.md). For copyable implementation patterns,
-read [patterns.en.md](patterns.en.md).
+doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;
+followers replay contiguous durable sequence. Writes become visible before async
+persistence; flush waits for durability. External replace and external remote-marked
+apply are forbidden while attached. Version 3 / format 1 rejects old storage without
+deleting or migrating it. The adapter accepts JSON values only.

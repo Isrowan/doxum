@@ -1,5 +1,4 @@
-import type { DocumentAddress, DocumentNode, DocumentSchema, ObjectShape } from './schema';
-import { schemaRoot } from './schema';
+import type { DocumentAddress, DocumentNode, ObjectNode } from './schema';
 import { profile } from './profile';
 
 /** The only resolved address representation used inside the runtime. */
@@ -21,23 +20,13 @@ type Registry = {
 
 const registries = new WeakMap<object, Registry>();
 const registryNode = (): RegistryNode => ({ static: new Map() });
-const registryFor = (schema: DocumentSchema): Registry => {
+const registryFor = (schema: ObjectNode): Registry => {
   const cached = registries.get(schema as object);
   if (cached) return cached;
   const registry: Registry = { root: registryNode(), nextPath: 0 };
   registries.set(schema as object, registry);
   return registry;
 };
-
-const hashText = (value: string, seed: number): number => {
-  let hash = seed;
-  for (let index = 0; index < value.length; index += 1)
-    hash = Math.imul(hash ^ value.charCodeAt(index), 16_777_619);
-  return hash >>> 0;
-};
-
-const appendAddressHash = (hash: number, segment: string): number =>
-  hashText(segment, hashText('/', hash));
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -61,22 +50,22 @@ const step = (
     node = variantNode(node, value);
   }
   if (!node) return undefined;
-  if (node.kind === 'object') return node.shape[segment];
+  if (node.kind === 'object')
+    return Object.hasOwn(node.shape, segment) ? node.shape[segment] : undefined;
   if (node.kind === 'table' || node.kind === 'map') return node.value;
-  // These nodes use operation-specific keys rather than address segments, but
-  // accepting a dynamic step keeps address resolution total for user targets.
-  if (node.kind === 'dict' || node.kind === 'list' || node.kind === 'tree') return node;
+  // List items use stable keys; tree topology remains a structural unit.
+  if (node.kind === 'list') return node.value;
   return undefined;
 };
 
 const pathFor = (
-  schema: DocumentSchema,
+  schema: ObjectNode,
   address: DocumentAddress,
   document?: unknown
 ): number | undefined => {
   const registry = registryFor(schema);
   let trie = registry.root;
-  let node: DocumentNode | undefined = schemaRoot(schema);
+  let node: DocumentNode | undefined = schema;
   let value: unknown = document;
   for (const segment of address) {
     profile.address.schemaStep();
@@ -85,11 +74,7 @@ const pathFor = (
     if (!resolved) return undefined;
     const next =
       node &&
-      (node.kind === 'table' ||
-        node.kind === 'map' ||
-        node.kind === 'dict' ||
-        node.kind === 'list' ||
-        node.kind === 'tree')
+      (node.kind === 'table' || node.kind === 'map' || node.kind === 'list' || node.kind === 'tree')
         ? (trie.dynamic ??= registryNode())
         : (() => {
             const existing = trie.static.get(segment);
@@ -99,15 +84,15 @@ const pathFor = (
             return created;
           })();
     trie = next;
+    value = readSegment(value, segment, node);
     node = resolved;
-    value = readSegment(value, segment);
   }
   if (trie.path === undefined) trie.path = registry.nextPath++;
   return trie.path;
 };
 
 export const resolveAddress = (
-  schema: DocumentSchema,
+  schema: ObjectNode,
   address: DocumentAddress,
   document?: unknown
 ): AddressRef | undefined => {
@@ -120,70 +105,60 @@ export const resolveAddress = (
 };
 
 export const nodeAt = (
-  schema: DocumentSchema,
+  schema: ObjectNode,
   address: DocumentAddress,
   document?: unknown
 ): DocumentNode | undefined => {
-  let node: DocumentNode | undefined = schemaRoot(schema);
+  let node: DocumentNode | undefined = schema;
   let value = document;
   for (const segment of address) {
     const resolved = step(node, value, segment);
+    value = readSegment(value, segment, node);
     node = resolved;
-    value = readSegment(value, segment);
     if (!node) return undefined;
   }
   return node;
 };
 
-export const readSegment = (value: unknown, segment: string): unknown => {
+export const readSegment = (value: unknown, segment: string, node?: DocumentNode): unknown => {
   if (!isRecord(value) && !Array.isArray(value)) return undefined;
-  if (isRecord(value) && 'byId' in value && isRecord(value.byId)) {
-    const entity = value.byId[segment];
-    if (entity !== undefined || Object.prototype.hasOwnProperty.call(value.byId, segment))
-      return entity;
+  if (node?.kind === 'list' && Array.isArray(value))
+    return value.find(item => node.keyOf(item) === segment);
+  if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId)) {
+    return Object.hasOwn(value.byId, segment) ? value.byId[segment] : undefined;
   }
-  return (value as Record<string, unknown>)[segment];
+  return Object.prototype.hasOwnProperty.call(value, segment)
+    ? (value as Record<string, unknown>)[segment]
+    : undefined;
 };
 
-export const read = (root: unknown, address: DocumentAddress): unknown => {
+export const read = (root: unknown, address: DocumentAddress, schema: DocumentNode): unknown => {
   let value = root;
+  let node: DocumentNode | undefined = schema;
   for (const segment of address) {
-    value = readSegment(value, segment);
+    const next = step(node, value, segment);
+    value = readSegment(value, segment, node);
+    node = next;
     if (value === undefined) return undefined;
   }
   return value;
 };
 
-export type Located = {
+export type ResolvedAddress = {
   readonly parent: Record<string, unknown> | unknown[];
   readonly key: string | number;
-  readonly value: unknown;
-};
-
-type ResolvedCollection = {
-  readonly address: DocumentAddress;
-  readonly addressHash: number;
-  readonly id: string;
-  readonly node: Extract<DocumentNode, { kind: 'table' | 'map' }>;
-  readonly parent?: ResolvedCollection;
-};
-
-export type ResolvedAddress = Located & {
-  readonly addressHash: number;
   readonly node: DocumentNode;
-  readonly collection?: ResolvedCollection;
+  readonly parentNode: DocumentNode;
 };
 
 type ResolutionPrefix = {
   segment: string;
   node: DocumentNode;
   value: unknown;
-  hash: number;
-  collection: ResolvedCollection | undefined;
 };
 
 /** One recent path per transaction; structural writes invalidate all retained locations. */
-export const createAddressResolver = (schema: DocumentSchema, root: unknown) => {
+export const createAddressResolver = (schema: ObjectNode, root: unknown) => {
   const prefix: ResolutionPrefix[] = [];
   return {
     resolve: (address: DocumentAddress) => resolveWithPrefix(schema, root, address, prefix),
@@ -195,22 +170,20 @@ export const createAddressResolver = (schema: DocumentSchema, root: unknown) => 
 
 /** Resolves schema and document location in one address traversal. */
 export const resolveLocated = (
-  schema: DocumentSchema,
+  schema: ObjectNode,
   root: unknown,
   address: DocumentAddress
 ): ResolvedAddress | undefined => resolveWithPrefix(schema, root, address);
 
 const resolveWithPrefix = (
-  schema: DocumentSchema,
+  schema: ObjectNode,
   root: unknown,
   address: DocumentAddress,
   prefix?: ResolutionPrefix[]
 ): ResolvedAddress | undefined => {
   if (address.length === 0) return undefined;
-  let node: DocumentNode | undefined = schemaRoot(schema);
+  let node: DocumentNode | undefined = schema;
   let current: unknown = root;
-  let collection: ResolvedCollection | undefined;
-  let addressHash = 2_166_136_261;
   let start = 0;
   if (prefix) {
     while (
@@ -224,8 +197,6 @@ const resolveWithPrefix = (
       const retained = prefix[start - 1];
       node = retained.node;
       current = retained.value;
-      addressHash = retained.hash;
-      collection = retained.collection;
     }
   }
   let cacheable = true;
@@ -236,24 +207,13 @@ const resolveWithPrefix = (
     if (!resolved) return undefined;
     if (node?.kind !== 'object' && node?.kind !== 'table' && node?.kind !== 'map')
       cacheable = false;
-    if (node?.kind === 'table' || node?.kind === 'map')
-      collection = {
-        address: address.slice(0, index),
-        addressHash,
-        id: address[index],
-        node,
-        ...(collection ? { parent: collection } : {}),
-      };
-    addressHash = appendAddressHash(addressHash, address[index]);
+    current = readSegment(current, address[index], node);
     node = resolved;
-    current = readSegment(current, address[index]);
     if (prefix && cacheable)
       prefix.push({
         segment: address[index],
         node: resolved,
         value: current,
-        hash: addressHash,
-        collection,
       });
     if (!node) return undefined;
   }
@@ -262,63 +222,22 @@ const resolveWithPrefix = (
   const last = address[address.length - 1];
   const resolved = step(node, current, last);
   if (!resolved || (!isRecord(current) && !Array.isArray(current))) return undefined;
-  if (node?.kind === 'table' || node?.kind === 'map')
-    collection = {
-      address: address.slice(0, -1),
-      addressHash,
-      id: last,
-      node,
-      ...(collection ? { parent: collection } : {}),
-    };
-  addressHash = appendAddressHash(addressHash, last);
-  if (isRecord(current) && 'byId' in current && isRecord(current.byId) && last in current.byId)
+  if (node?.kind === 'table' && isRecord(current) && isRecord(current.byId))
     return {
-      addressHash,
       node: resolved,
+      parentNode: node!,
       parent: current.byId,
       key: last,
-      value: current.byId[last],
-      ...(collection ? { collection } : {}),
     };
   return {
-    addressHash,
     node: resolved,
+    parentNode: node!,
     parent: current,
-    key: Array.isArray(current) && /^\d+$/.test(last) ? Number(last) : last,
-    value: readSegment(current, last),
-    ...(collection ? { collection } : {}),
+    key:
+      node?.kind === 'list' && Array.isArray(current)
+        ? current.findIndex(item => node.keyOf(item) === last)
+        : last,
   };
-};
-
-export const locate = (root: unknown, address: DocumentAddress): Located | undefined => {
-  if (address.length === 0) return undefined;
-  let current: unknown = root;
-  for (let index = 0; index < address.length - 1; index += 1)
-    current = readSegment(current, address[index]);
-  if (!isRecord(current) && !Array.isArray(current)) return undefined;
-  const last = address[address.length - 1];
-  if (isRecord(current) && 'byId' in current && isRecord(current.byId) && last in current.byId)
-    return { parent: current.byId, key: last, value: current.byId[last] };
-  return {
-    parent: current,
-    key: Array.isArray(current) && /^\d+$/.test(last) ? Number(last) : last,
-    value: readSegment(current, last),
-  };
-};
-
-export const set = (root: unknown, address: DocumentAddress, value: unknown): boolean => {
-  const target = locate(root, address);
-  if (!target) return false;
-  (target.parent as Record<string | number, unknown>)[target.key] = value;
-  return true;
-};
-
-export const remove = (root: unknown, address: DocumentAddress): boolean => {
-  const target = locate(root, address);
-  if (!target || !Object.prototype.hasOwnProperty.call(target.parent, target.key)) return false;
-  if (Array.isArray(target.parent)) target.parent.splice(Number(target.key), 1);
-  else delete target.parent[String(target.key)];
-  return true;
 };
 
 export const contains = (parent: DocumentAddress, child: DocumentAddress): boolean => {

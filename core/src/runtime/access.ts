@@ -1,27 +1,26 @@
-import type { DocumentSchema, Infer } from '../schema';
-import type { DocumentReader } from '../access/reader';
-import { documentReader } from '../access/reader';
+import type { ObjectNode, Infer } from '../schema';
+import { createAccess, type Read } from '../access/scope';
 import type { DependencyTracker } from '../access/dependency';
 import { DocumentDisposedError } from './contract';
 import type { DocumentReadable } from './contract';
 
-export type RuntimeAccessState<TSchema extends DocumentSchema> = {
+export type RuntimeAccessState<TSchema extends ObjectNode> = {
   readonly schema: TSchema;
   document: Infer<TSchema>;
   disposed: boolean;
   projectionLocks?: number;
 };
 
-const states = new WeakMap<object, RuntimeAccessState<DocumentSchema>>();
+const states = new WeakMap<object, RuntimeAccessState<ObjectNode>>();
 
-export const bindRuntimeAccess = <TSchema extends DocumentSchema>(
+export const bindRuntimeAccess = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>,
   state: RuntimeAccessState<TSchema>
 ): void => {
-  states.set(runtime as object, state as RuntimeAccessState<DocumentSchema>);
+  states.set(runtime as object, state as RuntimeAccessState<ObjectNode>);
 };
 
-export const accessOf = <TSchema extends DocumentSchema>(
+export const accessOf = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>
 ): RuntimeAccessState<TSchema> => {
   const state = states.get(runtime as object);
@@ -29,33 +28,34 @@ export const accessOf = <TSchema extends DocumentSchema>(
   return state as RuntimeAccessState<TSchema>;
 };
 
-export const schemaOf = <TSchema extends DocumentSchema>(
-  runtime: DocumentReadable<TSchema>
-): TSchema => accessOf(runtime).schema;
+export const schemaOf = <TSchema extends ObjectNode>(runtime: DocumentReadable<TSchema>): TSchema =>
+  accessOf(runtime).schema;
 
-export const documentOf = <TSchema extends DocumentSchema>(
+export const documentOf = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>
 ): Infer<TSchema> => accessOf(runtime).document;
 
-export const readWith = <TSchema extends DocumentSchema, TResult>(
+export const readWith = <TSchema extends ObjectNode, TResult>(
   runtime: DocumentReadable<TSchema>,
-  run: (read: DocumentReader<TSchema>) => TResult,
+  run: (read: Read<TSchema>) => TResult,
   dependencies?: DependencyTracker
 ): TResult => {
   const state = accessOf(runtime);
   if (state.disposed) throw new DocumentDisposedError();
   let active = true;
-  const reader = documentReader(
-    state.schema,
-    () => state.document,
-    () => active,
-    dependencies
-  );
+  state.projectionLocks = (state.projectionLocks ?? 0) + 1;
   try {
+    const reader = createAccess({
+      schema: state.schema,
+      root: () => state.document,
+      active: () => active,
+      dependencies,
+    }) as Read<TSchema>;
     return run(reader);
   } finally {
     // Readers are transaction-scoped; retaining one cannot expose later
     // mutable canonical state outside the coordinating operation.
     active = false;
+    state.projectionLocks!--;
   }
 };

@@ -1,633 +1,532 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  createProjectionRuntime,
-  createDocument,
+  assign,
   asReadable,
-  dict,
+  createDocument,
   field,
   list,
   map,
   object,
   optional,
-  schema,
   select,
+  snapshot,
   table,
-  target,
+  TransactionRejected,
   tree,
   variant,
-  type CollectionSelector,
-  type CollectionReader,
-  type DictionaryWriter,
-  type DictionaryReader,
-  type DocumentReader,
-  type DocumentWriter,
-  type FieldReader,
-  type FieldWriter,
-  type ListReader,
-  type ListWriter,
-  type TreeReader,
-  type TreeWriter,
-  type ReaderOfNode,
-  type ValueSelector,
+  type Draft,
+  type SchemaPath,
 } from '../src';
-import { commandFootprint, footprintsOverlap } from '../src/integration';
 
-const project = object({ name: field<string>(), archived: field<boolean>() });
-const projectSchema = schema({
-  title: field<string>(),
-  projects: table(project),
+const row = object({ n: field<number>(), title: field<string>() });
+const model = object({
+  n: field<number>(),
+  rows: map(row),
+  ordered: table(row),
+  note: optional(field<string>()),
 });
-const initial = {
-  title: 'one',
-  projects: { ids: ['a'], byId: { a: { name: 'A', archived: false } } },
-};
+const initial = () => ({
+  n: 0,
+  rows: { a: { n: 1, title: 'A' } },
+  ordered: { ids: ['a', 'b'], byId: { a: { n: 1, title: 'A' }, b: { n: 2, title: 'B' } } },
+});
+const setup = () => createDocument({ schema: model, initial: initial() });
 
-type SelectorValue<T> = T extends ValueSelector<infer TValue> ? TValue : never;
-type CollectionTypes<T> =
-  T extends CollectionSelector<infer TId, infer TNode>
-    ? { id: TId; entry: import('../src').Infer<TNode> }
-    : never;
-
-describe('mutable Doxum runtime', () => {
-  it('derives collection entry access from schema nodes', () => {
-    const entry = object({
-      title: field<string>(),
-      note: optional(field<string>()),
-      outline: optional(tree<string>()),
-      tags: optional(list<string>({ keyOf: value => value })),
-      attrs: optional(dict<string, number>()),
-    });
-    const documentSchema = schema({ items: table(entry) });
-    type Writer = DocumentWriter<typeof documentSchema>;
-    type ItemWriter = ReturnType<Writer['items']['item']>;
-    expectTypeOf<ItemWriter['title']>().toEqualTypeOf<FieldWriter<string>>();
-    expectTypeOf<ItemWriter['note']>().toEqualTypeOf<FieldWriter<string | undefined, true>>();
-    expectTypeOf<ItemWriter['outline']>().toMatchTypeOf<TreeWriter<string>>();
-    expectTypeOf<ItemWriter['outline']['clear']>().toEqualTypeOf<() => void>();
-    expectTypeOf<ItemWriter['tags']>().toMatchTypeOf<ListWriter<string>>();
-    expectTypeOf<ItemWriter['tags']['clear']>().toEqualTypeOf<() => void>();
-    expectTypeOf<ItemWriter['attrs']>().toMatchTypeOf<DictionaryWriter<string, number>>();
-    expectTypeOf<ItemWriter['attrs']['clear']>().toEqualTypeOf<() => void>();
-
-    type Reader = DocumentReader<typeof documentSchema>;
-    expectTypeOf<Reader['items']>().toMatchTypeOf<CollectionReader<string, typeof entry>>();
-    expectTypeOf<Reader['items']['get']>().toEqualTypeOf<
-      (id: string) => ReaderOfNode<typeof entry> | undefined
-    >();
-    type EntryReader = ReaderOfNode<typeof entry>;
-    expectTypeOf<EntryReader['title']>().toMatchTypeOf<FieldReader<string>>();
-    expectTypeOf<EntryReader['note']>().toMatchTypeOf<FieldReader<string | undefined>>();
-    expectTypeOf<EntryReader['outline']>().toMatchTypeOf<TreeReader<string>>();
-    expectTypeOf<EntryReader['tags']>().toMatchTypeOf<ListReader<string>>();
-    expectTypeOf<EntryReader['attrs']>().toMatchTypeOf<DictionaryReader<string, number>>();
-  });
-
-  it('infers selector and collection types from schema paths', () => {
-    const title = projectSchema.value(path => path.title);
-    const name = projectSchema.value(path => path.projects.item('a').name);
-    const projects = projectSchema.collection(path => path.projects);
-    expectTypeOf<SelectorValue<typeof title>>().toEqualTypeOf<string>();
-    expectTypeOf<SelectorValue<typeof name>>().toEqualTypeOf<string>();
-    const collectionTypes: CollectionTypes<typeof projects> = {
-      id: '',
-      entry: { name: '', archived: false },
-    };
-    expect(collectionTypes).toEqual({ id: '', entry: { name: '', archived: false } });
-
-    const otherSchema = schema({
-      entries: map(project),
-      numbers: list<number>({ keyOf: value => String(value) }),
-      outline: tree<{ label: string }>(),
-    });
-    const entries = otherSchema.collection(path => path.entries);
-    const numbers = otherSchema.value(path => path.numbers);
-    const outline = otherSchema.value(path => path.outline);
-    const entryTypes: CollectionTypes<typeof entries> = {
-      id: '',
-      entry: { name: '', archived: false },
-    };
-    expect(entryTypes.entry.archived).toBe(false);
-    expectTypeOf<SelectorValue<typeof numbers>>().toEqualTypeOf<readonly number[]>();
-    const outlineValue: SelectorValue<typeof outline> = {
-      rootId: 'root',
-      nodes: { root: { children: [], value: { label: 'root' } } },
-    };
-    expect(outlineValue.rootId).toBe('root');
-  });
-  it('infers value selectors through variant branch fields', () => {
-    const variantSchema = schema({
-      card: variant('kind', {
-        note: object({ kind: field<'note'>(), text: field<string>() }),
-        task: object({ kind: field<'task'>(), done: field<boolean>() }),
-      }),
-    });
-    const text = variantSchema.value(path => path.card.text);
-    const done = variantSchema.value(path => path.card.done);
-    expectTypeOf<SelectorValue<typeof text>>().toEqualTypeOf<string>();
-    expectTypeOf<SelectorValue<typeof done>>().toEqualTypeOf<boolean>();
-  });
-  it('updates in place and rolls back rejected batches', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    expect(
-      runtime.update(tx => {
-        tx.write.title.set('two');
-        return tx.read.title.get();
-      })
-    ).toMatchObject({ status: 'committed', value: 'two' });
-    expect(select(runtime, read => read.title.get())).toBe('two');
-    const rejected = runtime.apply([
-      { type: 'field.set', at: ['title'], value: 'three' },
-      {
-        type: 'entity.create',
-        at: ['projects'],
-        entries: [{ id: 'a', value: {} }],
-      } as never,
-    ]);
-    expect(rejected.status).toBe('rejected');
-    expect(select(runtime, read => read.title.get())).toBe('two');
-    expect(() =>
-      runtime.update(tx => {
-        tx.write.title.set('temporary');
-        throw new Error('stop');
-      })
-    ).toThrow('stop');
-    expect(select(runtime, read => read.title.get())).toBe('two');
-  });
-  it('prepares a typed update without publishing or mutating the runtime', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const listener = vi.fn();
+describe('draft transactions', () => {
+  it('reads writes immediately and publishes only one final fact per field', () => {
+    const runtime = setup(),
+      listener = vi.fn();
     runtime.subscribe(listener);
-    const prepared = runtime.prepare(tx => {
-      tx.write.title.set('two');
-      tx.write.projects.create({
-        id: 'b',
-        value: { name: 'B', archived: false },
-      });
-      return tx.read.title.get();
+    const result = runtime.update(draft => {
+      draft.n = 1;
+      draft.n += 2;
+      draft.rows.a!.n = draft.n;
+      return { warnings: ['review'], n: draft.n };
     });
-    expect(prepared.status).toBe('prepared');
-    if (prepared.status !== 'prepared') return;
-    expect(prepared.value).toBe('two');
-    expect(prepared.operations).toHaveLength(2);
-    expect(prepared.inverse).toHaveLength(2);
+    expect(result.status).toBe('committed');
+    if (result.status !== 'committed') throw new Error('commit');
+    expect(result.value).toEqual({ warnings: ['review'], n: 3 });
+    expect(result.commit.changes.changes).toHaveLength(2);
+    expect(result.commit.changes.changes[0]).toEqual({
+      kind: 'value',
+      at: ['n'],
+      before: { present: true, value: 0 },
+      after: { present: true, value: 3 },
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial());
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(runtime.snapshot().n).toBe(3);
+  });
+  it('elides net-zero transactions without revision, history, or notifications', () => {
+    const runtime = setup(),
+      listener = vi.fn();
+    runtime.subscribe(listener);
+    expect(
+      runtime.update(d => {
+        d.n++;
+        d.n--;
+        d.rows.b = { n: 5, title: 'B' };
+        delete d.rows.b;
+      }).status
+    ).toBe('unchanged');
     expect(runtime.revision()).toBe(0);
-    expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
+    expect(runtime.history.current().undoDepth).toBe(0);
     expect(listener).not.toHaveBeenCalled();
-    expect(select(runtime, read => read.title.get())).toBe('one');
-    expect(select(runtime, read => read.projects.has('b'))).toBe(false);
-
-    expect(runtime.apply(prepared.operations).status).toBe('committed');
-    expect(select(runtime, read => read.title.get())).toBe('two');
-    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('B');
-    expect(runtime.update(tx => tx.write.projects.item('b').name.set('BB')).status).toBe(
-      'committed'
-    );
-    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('BB');
   });
-  it('returns typed unchanged and rejected prepare outcomes without a revision', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const unchanged = runtime.prepare(tx => {
-      tx.write.title.set('one');
-      return tx.read.title.get();
-    });
-    expect(unchanged).toEqual({ status: 'unchanged', value: 'one', reports: [] });
-    const rejected = runtime.prepare(tx => tx.reject({ code: 'invalid', message: 'No.' }));
-    expect(rejected).toEqual({
-      status: 'rejected',
-      issues: [{ source: 'application', code: 'invalid', message: 'No.' }],
-    });
-    expect(runtime.revision()).toBe(0);
-  });
-  it('publishes immutable prepared payloads that can safely cross an async durable boundary', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const payload = { name: 'B', archived: false };
-    const prepared = runtime.prepare(tx => {
-      tx.write.projects.create({ id: 'b', value: payload });
-    });
-    expect(prepared.status).toBe('prepared');
-    if (prepared.status !== 'prepared') return;
-    payload.name = 'mutated';
-    expect(runtime.apply(prepared.operations).status).toBe('committed');
-    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('B');
-    const operation = prepared.operations[0] as unknown as {
-      readonly entries: readonly [{ readonly value: object }];
-    };
-    expect(Object.isFrozen(operation.entries[0].value)).toBe(true);
-  });
-  it('exports a frozen document snapshot and a read-only runtime capability', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const snapshot = runtime.snapshot();
-    expect(snapshot).toEqual(initial);
-    expect(Object.isFrozen(snapshot)).toBe(true);
-    expect(Object.isFrozen(snapshot.projects)).toBe(true);
-    expect(Object.isFrozen(snapshot.projects.byId.a)).toBe(true);
-    const readable = asReadable(runtime);
-    expect(select(readable, read => read.title.get())).toBe('one');
-    expect('update' in readable).toBe(false);
-    runtime.update(tx => tx.write.title.set('two'));
-    expect(select(readable, read => read.title.get())).toBe('two');
-  });
-  it('derives stable operation footprints for persisted command conflict checks', () => {
-    const update = commandFootprint([
-      { type: 'field.set', at: ['projects', 'a', 'name'], value: 'AA' },
-    ]);
-    const remove = commandFootprint([{ type: 'entity.remove', at: ['projects'], ids: ['a'] }]);
-    const other = commandFootprint([
-      { type: 'field.set', at: ['projects', 'b', 'name'], value: 'BB' },
-    ]);
-    expect(Object.isFrozen(update)).toBe(true);
-    expect(Object.isFrozen(update[0])).toBe(true);
-    expect(footprintsOverlap(update, remove)).toBe(true);
-    expect(footprintsOverlap(update, other)).toBe(false);
-  });
-  it('rejects malformed operation envelopes before touching document state', () => {
-    const cases = [
-      {
-        operation: { type: 'field.set' },
-        code: 'invalid-address',
-        message: 'Operation address is malformed.',
-      },
-      {
-        operation: { type: 'entity.create', at: ['projects'], entries: {} },
-        code: 'invalid-operation',
-        message: 'Entity create payload is malformed.',
-      },
-      {
-        operation: { type: 'not.real', at: [] },
-        code: 'unknown-operation',
-        message: 'Unknown document operation.',
-      },
-    ] as const;
-    for (const entry of cases) {
-      const runtime = createDocument({ schema: projectSchema, initial });
-      const result = runtime.apply([entry.operation]);
-      expect(result.status).toBe('rejected');
-      if (result.status !== 'rejected') continue;
-      expect(result.issues).toEqual([
-        {
-          source: 'mutation',
-          code: entry.code,
-          address: [],
-          message: entry.message,
-        },
-      ]);
-      expect(runtime.revision()).toBe(0);
-      expect(select(runtime, read => read.title.get())).toBe('one');
+  it.each([false, undefined, { error: 'business result' }])(
+    'normal return values commit, including %j',
+    value => {
+      const runtime = setup();
+      expect(
+        runtime.update(d => {
+          d.n++;
+          return value;
+        })
+      ).toMatchObject({ status: 'committed', value });
     }
-  });
-  it('resolves string addresses through the runtime address domain', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const ref = runtime.address.resolve(['projects', 'a', 'name']);
-    expect(ref?.address).toEqual(['projects', 'a', 'name']);
-    expect(runtime.address.read(['projects', 'a', 'name'])).toBe('A');
-    expect(runtime.address.contains(['projects'], ['projects', 'a', 'name'])).toBe(true);
-    expect(runtime.address.overlaps(['title'], ['projects'])).toBe(false);
-    expect(runtime.address.resolve(['missing', 'path'])).toBeUndefined();
-  });
-  it('rejects a non-array apply batch at the unknown boundary', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const result = runtime.apply({ type: 'field.set', at: ['title'], value: 'ignored' });
+  );
+  it.each([new Error('ordinary'), 42, null, 'failed'])(
+    'rolls back and rethrows ordinary failures unchanged: %j',
+    error => {
+      const runtime = setup();
+      let thrown: unknown = Symbol();
+      try {
+        runtime.update(d => {
+          d.n = 9;
+          delete d.rows.a;
+          d.ordered.remove('b');
+          throw error;
+        });
+      } catch (value) {
+        thrown = value;
+      }
+      expect(thrown).toBe(error);
+      expect(runtime.snapshot()).toEqual(initial());
+      expect(runtime.revision()).toBe(0);
+    }
+  );
+  it('copies structured rejection issues and restores all partial work', () => {
+    const runtime = setup(),
+      address = ['n'];
+    const error = new TransactionRejected({ code: 'no', message: 'No', address });
+    address[0] = 'other';
+    const result = runtime.update(d => {
+      d.n++;
+      d.ordered.remove('a');
+      throw error;
+    });
     expect(result).toMatchObject({
       status: 'rejected',
       revision: 0,
-      issues: [
-        {
-          source: 'mutation',
-          code: 'invalid-operation',
-          address: [],
-          message: 'Operation batch must be an array.',
-        },
-      ],
+      issues: [{ source: 'application', address: ['n'], code: 'no' }],
     });
-    if (result.status !== 'rejected') return;
-    expect(Object.isFrozen(result.issues)).toBe(true);
-    expect(Object.isFrozen(result.issues[0])).toBe(true);
-    expect(Object.isFrozen(result.issues[0].address)).toBe(true);
-    expect(runtime.revision()).toBe(0);
-    expect(select(runtime, read => read.title.get())).toBe('one');
+    expect(Object.isFrozen(error.issues[0].address)).toBe(true);
+    expect(runtime.snapshot()).toEqual(initial());
   });
-  it('publishes fine grained inverse and history', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const result = runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
-    expect(result.status).toBe('committed');
-    if (result.status === 'committed') {
-      expect((result.commit as { document?: unknown }).document).toBeUndefined();
-      expect(result.commit.inverse[0]).toMatchObject({
-        type: 'field.set',
-        value: 'A',
-      });
-    }
-    expect(runtime.history.undo().status).toBe('committed');
-    expect(select(runtime, read => read.projects.get('a')?.name.get())).toBe('A');
-    expect(runtime.history.redo().status).toBe('committed');
-  });
-  it('filters subscriptions and deduplicates multi-target matches', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const listener = vi.fn();
-    const title = projectSchema.value(path => path.title);
-    const name = projectSchema.value(path => path.projects.item('a').name);
-    runtime.subscribe([title, name], listener);
-    runtime.update(tx => tx.write.title.set('two'));
-    runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
-    expect(listener).toHaveBeenCalledTimes(2);
-  });
-  it('keeps schema identity in shared impact target equality', () => {
-    const otherSchema = schema({
-      title: field<string>(),
-      projects: table(project),
+  it('expires drafts and reads, keeps identities stable within a scope, and rejects structural escape use', () => {
+    const runtime = setup();
+    let escaped!: Draft<typeof model>;
+    runtime.update(d => {
+      escaped = d;
+      expect(d.rows.a).toBe(d.rows.a);
+      d.n++;
     });
-    const own = projectSchema.value(path => path.title);
-    const foreign = otherSchema.value(path => path.title);
-    expect(target.same(own, foreign)).toBe(false);
-    expect(Object.isFrozen(own.address)).toBe(true);
+    expect(() => escaped.n).toThrow('expired');
+    expect(() => {
+      escaped.n = 4;
+    }).toThrow('expired');
+    const read = select(runtime, state => state.rows);
+    expect(() => Object.keys(read)).toThrow('expired');
+    const copy = select(runtime, state => snapshot(state.rows.a));
+    expect(copy).toEqual({ n: 1, title: 'A' });
+    runtime.update(d => d.rows.a!.n++);
+    expect(copy?.n).toBe(1);
   });
-
-  it('caches collection item handles and makes disposed handles inert', () => {
-    const projection = createProjectionRuntime({ onError: () => undefined });
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const source = projectSchema.collection(path => path.projects);
-    const collection = projection.map(
-      projection.document(runtime).collection(path => path.projects),
-      (_id, entry) => entry.name.get()
-    );
-    const item = collection.item('a');
-    expect(collection.item('a')).toBe(item);
-    const listener = vi.fn();
-    item.subscribe(listener);
-    projection.dispose();
-    expect(() => item.current()).toThrow('disposed');
-    runtime.update(tx => tx.write.title.set('two'));
-    expect(listener).not.toHaveBeenCalled();
-    expect(() => item.subscribe(listener)).toThrow('disposed');
-    runtime.dispose();
+  it('re-resolves retained child drafts after deletion and recreation', () => {
+    const runtime = setup();
+    runtime.update(d => {
+      const a = d.rows.a!;
+      delete d.rows.a;
+      expect(a.n).toBeUndefined();
+      d.rows.a = { n: 8, title: 'new' };
+      a.n = 9;
+      expect(d.rows.a.n).toBe(9);
+    });
+    expect(runtime.snapshot().rows.a.n).toBe(9);
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial());
   });
-  it('stops history and subscribers after runtime disposal', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const listener = vi.fn();
-    runtime.subscribe(listener);
-    runtime.update(tx => tx.write.title.set('two'));
-    runtime.dispose();
-    expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
-    expect(() => runtime.history.undo()).toThrow('disposed');
-    expect(() => runtime.subscribe(() => undefined)).toThrow('disposed');
-    expect(listener).toHaveBeenCalledTimes(1);
-  });
-  it('transfers structural payloads and snapshots published history', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const payload = { name: 'B', archived: false };
-    const address = ['projects'];
-    const result = runtime.apply([
-      {
-        type: 'entity.create',
-        at: address,
-        entries: [{ id: 'b', value: payload }],
-      },
-    ]);
-    address[0] = 'title';
-    payload.name = 'mutated';
-    expect(select(runtime, read => read.projects.get('b')?.name.get())).toBe('mutated');
-    expect(result.status).toBe('committed');
-    if (result.status === 'committed')
-      expect(
-        (
-          result.commit.operations[0] as unknown as {
-            entries: readonly [{ value: { name: string } }];
-          }
-        ).entries[0].value.name
-      ).toBe('B');
-    if (result.status === 'committed')
-      expect(
-        Object.isFrozen(
-          (
-            result.commit.operations[0] as unknown as {
-              entries: readonly [{ value: object }];
-            }
-          ).entries[0].value
-        )
-      ).toBe(true);
-    if (result.status === 'committed') expect(result.commit.operations[0].at).toEqual(['projects']);
-    expect(runtime.history.undo().status).toBe('committed');
-    expect(select(runtime, read => read.projects.has('b'))).toBe(false);
-    runtime.update(tx => tx.write.title.set('changed'));
-    expect(runtime.replace(initial).status).toBe('committed');
-    expect(runtime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
-  });
-
-  it('detects net-zero tree moves without cloning or comparing the whole tree', () => {
-    const mindmapSchema = schema({ mindmap: tree<string>() });
-    const runtime = createDocument({
-      schema: mindmapSchema,
-      initial: {
-        mindmap: {
-          rootId: 'root',
-          nodes: {
-            root: { children: ['a', 'b'], value: 'root' },
-            a: { parentId: 'root', children: [], value: 'a' },
-            b: { parentId: 'root', children: [], value: 'b' },
-          },
-        },
-      },
-    });
-    const result = runtime.update(tx => {
-      tx.write.mindmap.move('a', { parentId: 'root', index: 1 });
-      tx.write.mindmap.move('a', { parentId: 'root', index: 0 });
-    });
-    expect(result.status).toBe('unchanged');
-    expect(select(runtime, read => read.mindmap.children('root'))).toEqual(['a', 'b']);
-  });
-  it('preserves single-root tree integrity for operations and replacement snapshots', () => {
-    const mindmapSchema = schema({ mindmap: tree<string>() });
-    const runtime = createDocument({
-      schema: mindmapSchema,
-      initial: {
-        mindmap: {
-          rootId: 'root',
-          nodes: {
-            root: { children: ['a'], value: 'root' },
-            a: { parentId: 'root', children: [], value: 'a' },
-          },
-        },
-      },
-    });
-    const expectRejected = (operation: unknown) => {
-      const result = runtime.apply([operation]);
-      expect(result.status).toBe('rejected');
-      expect(select(runtime, read => read.mindmap.rootId())).toBe('root');
-      expect(select(runtime, read => read.mindmap.parent('a'))).toBe('root');
-    };
-
-    expectRejected({
-      type: 'tree.insert',
-      at: ['mindmap'],
-      treeNodeId: 'orphan',
-      value: 'orphan',
-    });
-    expectRejected({
-      type: 'tree.move',
-      at: ['mindmap'],
-      treeNodeId: 'a',
-    });
-    expectRejected({
-      type: 'tree.replace',
-      at: ['mindmap'],
-      value: {
-        rootId: 'loop',
-        nodes: { loop: { children: ['loop'], value: 'loop' } },
-      },
-    });
-    const document = {
-      mindmap: {
-        rootId: 'loop',
-        nodes: { loop: { children: ['loop'], value: 'loop' } },
-      },
-    };
-    expect(runtime.replace(document).status).toBe('rejected');
-    expect(select(runtime, read => read.mindmap.children('root'))).toEqual(['a']);
-
-    const replacement = {
-      rootId: 'next',
-      nodes: { next: { children: [] as string[], value: 'next' } },
-    };
+  it('rejects writes through a detached entity and rolls back prior deletion', () => {
+    const runtime = setup();
     expect(
-      runtime.apply([{ type: 'tree.replace', at: ['mindmap'], value: replacement }]).status
-    ).toBe('committed');
-    replacement.nodes.next.children.push('next');
-    expect(select(runtime, read => read.mindmap.children('next'))).toEqual([]);
+      runtime.update(d => {
+        const a = d.rows.a!;
+        delete d.rows.a;
+        a.n = 9;
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial());
   });
-  it('allows an absent optional tree while still validating present trees', () => {
-    const optionalTreeSchema = schema({
-      mindmap: optional(tree<string>()),
+  it('does not reserve business fields on object access or infer containers from byId', () => {
+    const schema = object({
+      get: field<string>(),
+      set: field<number>(),
+      update: field<number>(),
+      item: field<string>(),
+      byId: object({ get: field<string>() }),
     });
-    expect(() => createDocument({ schema: optionalTreeSchema, initial: {} })).not.toThrow();
+    const runtime = createDocument({
+      schema,
+      initial: { get: 'business', set: 1, update: 2, item: 'x', byId: { get: 'nested' } },
+    });
+    runtime.update(d => {
+      d.get = 'updated';
+      d.byId.get = d.get;
+    });
+    expect(select(runtime, d => snapshot(d))).toMatchObject({
+      get: 'updated',
+      byId: { get: 'updated' },
+    });
+    expect(runtime.address.read(['get'])).toBe('updated');
+  });
+  it('distinguishes missing map entries from present undefined and handles prototype-like keys', () => {
+    const schema = object({ values: map(field<number | undefined>()) });
+    const runtime = createDocument({ schema, initial: { values: {} } });
+    runtime.update(d => {
+      d.values.a = undefined;
+      d.values.__proto__ = 1;
+      assign(d.values, 'constructor', 2);
+    });
+    expect(select(runtime, d => 'a' in d.values)).toBe(true);
+    expect(select(runtime, d => Object.keys(d.values))).toEqual(['a', '__proto__', 'constructor']);
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual({ values: {} });
+    runtime.history.redo();
+    runtime.update(d => {
+      delete d.values.a;
+    });
+    expect(select(runtime, d => 'a' in d.values)).toBe(false);
+  });
+  it('supports optional deletion and reverses absent versus undefined', () => {
+    const runtime = setup();
+    runtime.update(d => {
+      d.note = undefined;
+    });
+    expect(Object.hasOwn(runtime.snapshot(), 'note')).toBe(true);
+    runtime.history.undo();
+    expect(Object.hasOwn(runtime.snapshot(), 'note')).toBe(false);
+    runtime.history.redo();
+    runtime.update(d => {
+      delete d.note;
+    });
+    expect(Object.hasOwn(runtime.snapshot(), 'note')).toBe(false);
+  });
+  it('forbids undeclared writes, ordinary object replacement and meta operations', () => {
+    const runtime = setup();
+    expect(
+      runtime.update(d => {
+        Reflect.set(d, 'unknown', 1);
+      }).status
+    ).toBe('rejected');
+    expect(
+      runtime.update(d => {
+        Reflect.set(d, 'rows', {});
+      }).status
+    ).toBe('rejected');
+    for (const run of [
+      (d: object) => Object.defineProperty(d, 'n', { value: 2 }),
+      (d: object) => Object.setPrototypeOf(d, {}),
+      (d: object) => Object.freeze(d),
+    ])
+      expect(() =>
+        runtime.update(d => {
+          d.n++;
+          run(d);
+        })
+      ).toThrow();
+    expect(runtime.snapshot()).toEqual(initial());
+  });
+  it('forbids writes in reads, nested transactions and asynchronous callbacks', () => {
+    const runtime = setup();
+    expect(() => select(runtime, d => Reflect.set(d, 'n', 1))).toThrow('read-only');
     expect(() =>
-      createDocument({
-        schema: optionalTreeSchema,
-        initial: {
-          mindmap: {
-            rootId: 'loop',
-            nodes: { loop: { children: ['loop'], value: 'loop' } },
-          },
-        },
+      runtime.update(d => {
+        d.n++;
+        runtime.update(inner => inner.n++);
       })
-    ).toThrow('Invalid tree');
+    ).toThrow('re-entered');
+    expect(() =>
+      // @ts-expect-error Transactions are synchronous.
+      runtime.update(async d => {
+        d.n++;
+      })
+    ).toThrow('synchronous');
+    expect(runtime.snapshot()).toEqual(initial());
   });
-  it('initializes, clears, and undoes optional structured leaves', () => {
-    const optionalSchema = schema({
-      outline: optional(tree<string>()),
-      tags: optional(list<string>({ keyOf: value => value })),
-      attrs: optional(dict<string, number>()),
-    });
-    const runtime = createDocument({ schema: optionalSchema, initial: {} });
-    const outline = {
-      rootId: 'root',
-      nodes: { root: { children: [], value: 'root' } },
-    };
-    expect(
-      runtime.update(tx => {
-        tx.write.outline.replace(outline);
-        tx.write.tags.replace(['one', 'two']);
-        tx.write.attrs.replace({ count: 2 });
-      }).status
-    ).toBe('committed');
-    expect(select(runtime, read => read.outline.rootId())).toBe('root');
-    expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
-    expect(select(runtime, read => read.attrs.values())).toEqual({ count: 2 });
+});
 
-    expect(
-      runtime.update(tx => {
-        tx.write.outline.clear();
-        tx.write.tags.clear();
-        tx.write.attrs.clear();
-      }).status
-    ).toBe('committed');
-    expect(select(runtime, read => read.outline.rootId())).toBeUndefined();
-    expect(select(runtime, read => read.tags.values())).toEqual([]);
-    expect(select(runtime, read => read.attrs.values())).toEqual({});
-    expect(runtime.history.undo().status).toBe('committed');
-    expect(select(runtime, read => read.outline.rootId())).toBe('root');
-    expect(select(runtime, read => read.tags.values())).toEqual(['one', 'two']);
-    expect(select(runtime, read => read.attrs.values())).toEqual({ count: 2 });
-  });
-  it('reports observer errors on committed results without rolling back', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    runtime.subscribe(() => {
-      throw new Error('root listener failure');
+describe('structural transitions', () => {
+  it('absorbs child changes into entry replacement and restoration', () => {
+    const runtime = setup();
+    const result = runtime.update(d => {
+      d.rows.a!.n = 5;
+      delete d.rows.a;
+      d.rows.a = { n: 6, title: 'new' };
+      d.rows.a.n = 7;
     });
-    runtime.subscribe(
-      projectSchema.value(path => path.title),
-      () => {
-        throw new Error('target listener failure');
-      }
-    );
-    const result = runtime.update(tx => tx.write.title.set('two'));
+    if (result.status !== 'committed') throw new Error('commit');
+    expect(result.commit.changes.changes).toHaveLength(2);
+    expect(result.commit.changes.changes[0]).toMatchObject({
+      at: ['rows', 'a', 'n'],
+      before: { value: 1 },
+      after: { value: 7 },
+    });
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial());
+  });
+  it('coalesces table entry restoration and order restoration', () => {
+    const runtime = setup();
+    expect(
+      runtime.update(d => {
+        d.ordered.get('a')!.n = 9;
+        d.ordered.remove('a');
+        d.ordered.create({ id: 'a', value: { n: 1, title: 'A' } }, { at: 'start' });
+        d.ordered.move('a', { at: 'end' });
+        d.ordered.move('a', { at: 'start' });
+      }).status
+    ).toBe('unchanged');
+    const result = runtime.update(d => d.ordered.remove(['b', 'a']));
     expect(result.status).toBe('committed');
-    if (result.status !== 'committed') return;
-    expect(result.observerErrors).toHaveLength(2);
-    expect(result.observerErrors.map(entry => entry.phase)).toEqual(['listener', 'listener']);
-    expect(select(runtime, read => read.title.get())).toBe('two');
-    expect(runtime.history.current()).toEqual({ undoDepth: 1, redoDepth: 0 });
-    expect(runtime.update(tx => tx.write.title.set('three')).status).toBe('committed');
-    expect(select(runtime, read => read.title.get())).toBe('three');
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial());
   });
-  it('publishes copied, frozen application diagnostics', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const address = ['title'];
-    const result = runtime.update(tx => {
-      tx.report({
-        code: 'title-warning',
-        message: 'Review the title.',
-        address,
-      });
-      return tx.read.title.get();
+  it('rolls back a duplicate table create after preceding writes and validates anchors', () => {
+    const runtime = setup();
+    expect(
+      runtime.update(d => {
+        d.n++;
+        d.ordered.create([
+          { id: 'c', value: { n: 3, title: 'C' } },
+          { id: 'a', value: { n: 8, title: 'duplicate' } },
+        ]);
+      }).status
+    ).toBe('rejected');
+    expect(runtime.update(d => d.ordered.move('a', { before: 'missing' })).status).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial());
+  });
+  it('protects variant discriminants and re-resolves old branch proxies', () => {
+    const choice = variant('kind', {
+      a: object({ n: field<number>() }),
+      b: object({ text: field<string>() }),
     });
-    address[0] = 'projects';
-    expect(result.status).toBe('unchanged');
-    if (result.status !== 'unchanged') return;
-    expect(result.reports).toEqual([
-      {
-        source: 'application',
-        code: 'title-warning',
-        message: 'Review the title.',
-        address: ['title'],
+    const schema = object({ choice: optional(choice) });
+    const runtime = createDocument({ schema, initial: {} });
+    runtime.update(d => {
+      d.choice = { kind: 'a', n: 1 };
+    });
+    expect(() =>
+      runtime.update(d => {
+        Reflect.set(d.choice!, 'kind', 'b');
+      })
+    ).toThrow('discriminant');
+    expect(
+      runtime.update(d => {
+        const old = d.choice!;
+        d.choice = { kind: 'b', text: 'B' };
+        Reflect.set(old, 'n', 2);
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot().choice).toEqual({ kind: 'a', n: 1 });
+    runtime.update(d => {
+      if (d.choice?.kind === 'a') d.choice.n = 2;
+      d.choice = { kind: 'b', text: 'B' };
+    });
+    runtime.history.undo();
+    expect(runtime.snapshot().choice).toEqual({ kind: 'a', n: 1 });
+  });
+  it('absorbs nested table order and entry facts before replacing a variant', () => {
+    const schema = object({
+      content: variant('kind', { rows: object({ rows: table(row) }), empty: object({}) }),
+    });
+    const value = { content: { kind: 'rows' as const, rows: initial().ordered } };
+    const runtime = createDocument({ schema, initial: value });
+    expect(
+      runtime.update(d => {
+        if (d.content.kind === 'rows') {
+          d.content.rows.remove('a');
+          d.content.rows.get('b')!.n = 9;
+        }
+        assign(d, 'content', value.content);
+      }).status
+    ).toBe('unchanged');
+    runtime.update(d => {
+      if (d.content.kind === 'rows') d.content.rows.move('a');
+      d.content = { kind: 'empty' };
+    });
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(value);
+  });
+  it('keeps root replacement reversible and observable through the same ChangeSet', () => {
+    const runtime = setup(),
+      other = { ...initial(), n: 9 };
+    const result = runtime.replace(other);
+    expect(result.status).toBe('committed');
+    if (result.status !== 'committed') throw new Error('commit');
+    expect(result.commit.impact.kind).toBe('reset');
+    expect(result.commit.changes.changes[0].at).toEqual([]);
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial());
+    runtime.history.redo();
+    expect(runtime.snapshot()).toEqual(other);
+  });
+  it('keeps list identity, replacement and ordering reversible', () => {
+    const schema = object({
+      rows: list(field<{ id: string; n: number }>(), { keyOf: item => item.id }),
+    });
+    const initial = {
+        rows: [
+          { id: 'a', n: 1 },
+          { id: 'b', n: 2 },
+        ],
       },
-    ]);
-    expect(Object.isFrozen(result.reports)).toBe(true);
-    expect(Object.isFrozen(result.reports[0])).toBe(true);
-    expect(Object.isFrozen(result.reports[0].address)).toBe(true);
-  });
-
-  it('coalesces net-zero entity changes without publishing a commit', () => {
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const listener = vi.fn();
-    runtime.subscribe(listener);
-    const result = runtime.update(tx => {
-      tx.write.projects.create({
-        id: 'b',
-        value: { name: 'B', archived: false },
-      });
-      tx.write.projects.remove('b');
+      runtime = createDocument({ schema, initial });
+    expect(
+      runtime.update(d => {
+        const a = d.rows.get('a')!;
+        d.rows.remove('a');
+        d.rows.insert(a, { at: 'start' });
+      }).status
+    ).toBe('unchanged');
+    runtime.update(d => {
+      d.rows.set('a', { id: 'a', n: 3 });
+      d.rows.move('b', { at: 'start' });
+      d.rows.insert({ id: 'c', n: 4 });
     });
-    expect(result.status).toBe('unchanged');
-    expect(runtime.revision()).toBe(0);
-    expect(listener).not.toHaveBeenCalled();
-    expect(select(runtime, read => read.projects.has('b'))).toBe(false);
+    expect(runtime.snapshot().rows.map(i => i.id)).toEqual(['b', 'a', 'c']);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(runtime.update(d => d.rows.set('a', { id: 'x', n: 1 })).status).toBe('rejected');
+    const before = runtime.snapshot();
+    expect(
+      runtime.update(d => {
+        d.rows.remove('a');
+        d.rows.insert({ id: 'b', n: 1 });
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(before);
+    runtime.update(d => {
+      d.rows.set('a', { id: 'a', n: 8 });
+      d.rows.replace(initial.rows);
+    });
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(before);
   });
+  it('records only touched tree nodes and restores topology, root and payloads', () => {
+    const schema = object({ outline: tree(field<string>()) });
+    const runtime = createDocument({ schema, initial: { outline: { nodes: {} } } });
+    runtime.update(d => {
+      d.outline.insert('root', 'R');
+      d.outline.insert('a', 'A', { parentId: 'root' });
+      d.outline.insert('b', 'B', { parentId: 'root' });
+      d.outline.insert('c', 'C', { parentId: 'a' });
+    });
+    const initial = runtime.snapshot();
+    expect(
+      runtime.update(d => {
+        d.outline.move('a', { parentId: 'root', index: 1 });
+        d.outline.move('a', { parentId: 'root', index: 0 });
+      }).status
+    ).toBe('unchanged');
+    expect(
+      runtime.update(d => {
+        d.outline.set('a', 'changed');
+        d.outline.move('a', { parentId: 'c' });
+      }).status
+    ).toBe('rejected');
+    expect(runtime.snapshot()).toEqual(initial);
+    runtime.update(d => d.outline.remove('a'));
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial);
+    runtime.update(d => {
+      d.outline.set('a', 'temporary');
+      d.outline.replace({ nodes: {} });
+    });
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial);
+    runtime.update(d => d.outline.remove('root'));
+    expect(runtime.snapshot().outline).toEqual({ nodes: {} });
+    runtime.history.undo();
+    expect(runtime.snapshot()).toEqual(initial);
+  });
+});
 
-  it('materializes collection all lazily and keeps the snapshot stable', () => {
-    const projection = createProjectionRuntime({ onError: () => undefined });
-    const runtime = createDocument({ schema: projectSchema, initial });
-    const source = projectSchema.collection(path => path.projects);
-    const view = projection.map(
-      projection.document(runtime).collection(path => path.projects),
-      (_id, entry) => entry.name.get()
-    );
-    runtime.update(tx => tx.write.projects.item('a').name.set('AA'));
-    const first = view.all.current();
-    expect(first).toEqual(['AA']);
-    runtime.update(tx => tx.write.projects.item('a').name.set('AAA'));
-    expect(view.item('a').current()).toBe('AAA');
-    expect(view.all.current()).toEqual(['AAA']);
-    expect(view.all.current()).toBe(view.all.current());
-    projection.dispose();
+describe('subscriptions and ownership', () => {
+  it('does not notify unchanged fields after an entry is deleted and recreated', () => {
+    const runtime = setup(),
+      title = vi.fn(),
+      n = vi.fn();
+    runtime.subscribe(p => p.rows.item('a').title, title);
+    runtime.subscribe(p => p.rows.item('a').n, n);
+    runtime.update(d => {
+      d.rows.a!.n = 2;
+      delete d.rows.a;
+      d.rows.a = { n: 3, title: 'A' };
+    });
+    expect(title).not.toHaveBeenCalled();
+    expect(n).toHaveBeenCalledTimes(1);
+  });
+  it('parses single and multiple paths once and notifies each registration once', () => {
+    const runtime = setup(),
+      pick = vi.fn((path: SchemaPath<typeof model.shape>) => path.n);
+    const listener = vi.fn();
+    runtime.subscribe(pick, listener);
+    const both = vi.fn();
+    runtime.subscribe([p => p.rows, p => p.rows.item('a').n], both);
+    runtime.update(d => {
+      d.n++;
+      d.rows.a!.n++;
+    });
+    runtime.update(d => d.n++);
+    expect(pick).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(both).toHaveBeenCalledTimes(1);
+  });
+  it('shares root schema identity while isolating data and subscriptions', () => {
+    const a = setup(),
+      b = setup(),
+      listener = vi.fn();
+    b.subscribe(p => p.n, listener);
+    expect(a.schema).toBe(model);
+    expect(b.schema).toBe(model);
+    expect(Object.isFrozen(model.shape)).toBe(true);
+    a.update(d => d.n++);
+    expect(b.snapshot().n).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+    const read = asReadable(a);
+    expect('update' in read).toBe(false);
+    expect(select(read, s => s.n)).toBe(1);
+  });
+  it('returns observer errors after commit and forbids writes while notifying', () => {
+    const runtime = setup();
+    runtime.subscribe(() => {
+      throw new Error('listener');
+    });
+    runtime.subscribe(() => runtime.update(d => d.n++));
+    const result = runtime.update(d => d.n++);
+    expect(result.status).toBe('committed');
+    if (result.status === 'committed') expect(result.observerErrors).toHaveLength(2);
+    expect(runtime.snapshot().n).toBe(1);
+  });
+  it('makes runtime lifecycle checks consistent', () => {
+    const runtime = setup();
+    runtime.dispose();
+    runtime.dispose();
+    expect(() => runtime.snapshot()).toThrow('disposed');
+    expect(() => select(runtime, d => d.n)).toThrow('disposed');
+    expect(() => runtime.subscribe(() => {})).toThrow('disposed');
+    expect(() => runtime.history.undo()).toThrow('disposed');
   });
 });

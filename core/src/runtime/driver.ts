@@ -1,9 +1,8 @@
 import type { CommitSource, DocumentRuntime } from './contract';
-import type { DocumentSchema } from '../schema';
+import type { ObjectNode } from '../schema';
 
 export type RuntimeWriteIntent =
   | { readonly kind: 'update'; readonly source: Extract<CommitSource, 'local' | 'system'> }
-  | { readonly kind: 'prepare' }
   | { readonly kind: 'apply'; readonly source: CommitSource }
   | { readonly kind: 'replace'; readonly source: Extract<CommitSource, 'system' | 'remote'> };
 
@@ -38,7 +37,7 @@ export const assertRuntimeWritable = (runtime: object, intent: RuntimeWriteInten
   if (state.bypassDepth === 0) state.driver?.assertWritable(intent);
 };
 
-export const installRuntimeWriteDriver = <TSchema extends DocumentSchema>(
+export const installRuntimeWriteDriver = <TSchema extends ObjectNode>(
   runtime: DocumentRuntime<TSchema>,
   driver: RuntimeWriteDriver
 ): RuntimeWriteDriverLease => {

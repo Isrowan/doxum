@@ -1,6 +1,6 @@
-import type { DocumentSchema } from '../schema';
+import type { ObjectNode } from '../schema';
 import type { DocumentRuntime } from '../runtime/contract';
-import type { JsonCommandLimits } from './json';
+import type { JsonChangeLimits } from './json';
 import type { Readable } from '../projection/readable';
 
 export class LocalSyncUnavailableError extends Error {
@@ -36,7 +36,7 @@ export class LocalSyncReadOnlyError extends Error {
 export class LocalSyncUnsupportedOperationError extends Error {
   constructor() {
     super(
-      'Local sync persists operation commands. runtime.replace() and externally supplied remote operations are unavailable while it is attached.'
+      'Local sync appends committed changes. runtime.replace() and externally supplied remote changes are unavailable while it is attached.'
     );
     this.name = 'LocalSyncUnsupportedOperationError';
   }
@@ -69,11 +69,11 @@ export type LocalSync = {
   dispose(): Promise<void>;
 };
 
-export type AttachLocalSyncOptions<TSchema extends DocumentSchema> = {
+export type AttachLocalSyncOptions<TSchema extends ObjectNode> = {
   readonly runtime: DocumentRuntime<TSchema>;
   readonly database: string;
   readonly documentId: string;
   readonly schemaVersion?: number;
-  readonly commandLimits?: JsonCommandLimits;
+  readonly changeLimits?: JsonChangeLimits;
   readonly onError?: (error: unknown) => void;
 };

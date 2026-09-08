@@ -1,12 +1,12 @@
-import { createDocument, field, object, map, schema, select } from 'doxum';
-import { performance } from 'node:perf_hooks';
+import { createDocument, field, object, map, select } from 'doxum';
+import { performance, PerformanceObserver } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 const entity = object({
   position: object({ x: field(), y: field() }),
   health: field(),
   name: field(),
 });
-const definition = schema({ entities: map(entity) });
+const definition = object({ entities: map(entity) });
 const rows = [];
 for (const [count, fraction, listeners] of [
   [1000, 1, 0],
@@ -18,6 +18,9 @@ for (const [count, fraction, listeners] of [
   const changed = Math.max(1, Math.floor(count * fraction));
   const samples = [];
   const means = [];
+  const memory = [];
+  let gcCount = 0;
+  let gcMs = 0;
   let notices = 0;
   for (let trial = 0; trial < 3; trial++) {
     const ids = Array.from({ length: count }, (_, i) => `entity:${i}`);
@@ -32,17 +35,16 @@ for (const [count, fraction, listeners] of [
     const unsubscribers = [];
     runtime.subscribe(() => observed++);
     for (let i = 0; i < listeners; i++) {
-      const target = definition.value(p => p.entities.item(ids[i]).position.x);
+      const target = p => p.entities.item(ids[i]).position.x;
       unsubscribers.push(runtime.subscribe(target, () => notices++));
     }
     const tick = () => {
-      const result = runtime.update(tx => {
+      const result = runtime.update(draft => {
         for (let i = 0; i < changed; i++) {
           const id = ids[(frame * changed + i) % count];
-          const read = tx.read.entities.get(id);
-          const write = tx.write.entities.item(id);
-          write.position.x.set(read.position.x.get() + 1);
-          write.position.y.set(read.position.y.get() + 2);
+          const position = draft.entities[id].position;
+          position.x += 1;
+          position.y += 2;
         }
       });
       assert.equal(result.status, 'committed');
@@ -50,16 +52,31 @@ for (const [count, fraction, listeners] of [
       frame++;
     };
     for (let i = 0; i < 20; i++) tick();
+    const gcEvents = [];
+    const observer = new PerformanceObserver(list => gcEvents.push(...list.getEntries()));
+    observer.observe({ entryTypes: ['gc'] });
+    const heapBefore = process.memoryUsage().heapUsed;
+    const measuredStart = performance.now();
     const trialSamples = [];
     for (let i = 0; i < 60; i++) {
       const start = performance.now();
       tick();
       trialSamples.push(performance.now() - start);
     }
+    const measuredEnd = performance.now();
+    memory.push(process.memoryUsage().heapUsed - heapBefore);
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    observer.disconnect();
+    for (const event of gcEvents) {
+      if (event.startTime < measuredStart || event.startTime > measuredEnd) continue;
+      gcCount++;
+      gcMs += event.duration;
+    }
     samples.push(...trialSamples);
     means.push(trialSamples.reduce((a, b) => a + b, 0) / trialSamples.length);
     const total = select(runtime, read =>
-      ids.reduce((sum, id) => sum + read.entities.get(id).position.x.get(), 0)
+      ids.reduce((sum, id) => sum + read.entities[id].position.x, 0)
     );
     assert.equal(total, 80 * changed);
     assert.equal(observed, 80);
@@ -80,6 +97,9 @@ for (const [count, fraction, listeners] of [
     max: samples.at(-1),
     trials: means,
     notices,
+    gcCount,
+    gcMs,
+    heapDeltaBytes: memory,
   };
   rows.push(row);
   console.log(JSON.stringify(row));

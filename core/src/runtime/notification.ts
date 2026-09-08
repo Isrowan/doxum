@@ -1,4 +1,4 @@
-import type { DocumentSchema, ImpactTarget } from '../schema';
+import type { ObjectNode, ImpactTarget } from '../schema';
 import type {
   CommitListener,
   DocumentCommit,
@@ -9,27 +9,28 @@ import type {
 } from './contract';
 import * as target from '../impact-target';
 import { AddressIndex } from '../address';
+import { affectsTarget } from '../impact';
 
-export type ProjectionAttachment<TSchema extends DocumentSchema> = {
+export type ProjectionAttachment<TSchema extends ObjectNode> = {
   capture(commit: DocumentCommit<TSchema>): void;
   settle(): void;
   flush(): readonly ObserverError[];
   dispose(): void;
 };
-type ProcessorEntry<TSchema extends DocumentSchema> = {
+type ProcessorEntry<TSchema extends ObjectNode> = {
   readonly processor: ProjectionAttachment<TSchema>;
   active: boolean;
 };
-type RootEntry<TSchema extends DocumentSchema> = {
+type RootEntry<TSchema extends ObjectNode> = {
   readonly listener: CommitListener<TSchema>;
   active: boolean;
 };
-type FilteredEntry<TSchema extends DocumentSchema> = {
+type FilteredEntry<TSchema extends ObjectNode> = {
   readonly targets: readonly ImpactTarget<unknown>[];
   readonly listener: CommitListener<TSchema>;
   active: boolean;
 };
-export type RuntimeNotification<TSchema extends DocumentSchema> = {
+export type RuntimeNotification<TSchema extends ObjectNode> = {
   readonly root: Set<RootEntry<TSchema>>;
   readonly filtered: Set<FilteredEntry<TSchema>>;
   readonly index: AddressIndex<FilteredEntry<TSchema>>;
@@ -40,20 +41,19 @@ export type RuntimeNotification<TSchema extends DocumentSchema> = {
   notifying: boolean;
 };
 
-const notifications = new WeakMap<object, RuntimeNotification<DocumentSchema>>();
-const readableOwners = new WeakMap<object, DocumentReadable<DocumentSchema>>();
+const notifications = new WeakMap<object, RuntimeNotification<ObjectNode>>();
+const readableOwners = new WeakMap<object, DocumentReadable<ObjectNode>>();
 
 export const bindDocumentReadable = (
   readable: object,
-  runtime: DocumentReadable<DocumentSchema>
+  runtime: DocumentReadable<ObjectNode>
 ): void => {
   readableOwners.set(readable, runtime);
 };
-export const documentReadableOwner = (
-  readable: object
-): DocumentReadable<DocumentSchema> | undefined => readableOwners.get(readable);
+export const documentReadableOwner = (readable: object): DocumentReadable<ObjectNode> | undefined =>
+  readableOwners.get(readable);
 
-export const createNotification = <TSchema extends DocumentSchema>(
+export const createNotification = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>
 ): RuntimeNotification<TSchema> => {
   const notification: RuntimeNotification<TSchema> = {
@@ -66,11 +66,11 @@ export const createNotification = <TSchema extends DocumentSchema>(
     rootSnapshot: [],
     notifying: false,
   };
-  notifications.set(runtime as object, notification as RuntimeNotification<DocumentSchema>);
+  notifications.set(runtime as object, notification as RuntimeNotification<ObjectNode>);
   return notification;
 };
 
-const notificationOf = <TSchema extends DocumentSchema>(
+const notificationOf = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>
 ): RuntimeNotification<TSchema> => {
   const value = notifications.get(runtime as object);
@@ -78,17 +78,14 @@ const notificationOf = <TSchema extends DocumentSchema>(
   return value as RuntimeNotification<TSchema>;
 };
 
-export const shareNotification = <TSchema extends DocumentSchema>(
+export const shareNotification = <TSchema extends ObjectNode>(
   source: DocumentRuntime<TSchema>,
   target: DocumentReadable<TSchema>
 ): void => {
-  notifications.set(
-    target as object,
-    notificationOf(source) as RuntimeNotification<DocumentSchema>
-  );
+  notifications.set(target as object, notificationOf(source) as RuntimeNotification<ObjectNode>);
 };
 
-export const attachProjection = <TSchema extends DocumentSchema>(
+export const attachProjection = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>,
   processor: ProjectionAttachment<TSchema>
 ): Unsubscribe => {
@@ -105,7 +102,7 @@ export const attachProjection = <TSchema extends DocumentSchema>(
   };
 };
 
-export const subscribeRoot = <TSchema extends DocumentSchema>(
+export const subscribeRoot = <TSchema extends ObjectNode>(
   notification: RuntimeNotification<TSchema>,
   listener: CommitListener<TSchema>
 ): Unsubscribe => {
@@ -121,7 +118,7 @@ export const subscribeRoot = <TSchema extends DocumentSchema>(
   };
 };
 
-export const subscribeTargets = <TSchema extends DocumentSchema>(
+export const subscribeTargets = <TSchema extends ObjectNode>(
   notification: RuntimeNotification<TSchema>,
   targets: readonly ImpactTarget<unknown>[],
   listener: CommitListener<TSchema>
@@ -146,7 +143,7 @@ export const subscribeTargets = <TSchema extends DocumentSchema>(
   };
 };
 
-export const notify = <TSchema extends DocumentSchema>(
+export const notify = <TSchema extends ObjectNode>(
   notification: RuntimeNotification<TSchema>,
   commit: DocumentCommit<TSchema>,
   afterSettle?: () => readonly ObserverError[]
@@ -197,12 +194,13 @@ export const notify = <TSchema extends DocumentSchema>(
       notification.filtered.forEach(entry => candidates.add(entry));
     } else if (notification.filtered.size) {
       const collect = notification.index.query(entry => candidates.add(entry));
-      for (const operation of commit.operations) {
-        collect(operation.at);
+      for (const change of commit.changes.changes) {
+        collect(change.at);
       }
     }
     candidates.forEach(entry => {
-      if (entry.active && entry.targets.some(commit.impact.affects)) call(entry.listener);
+      if (entry.active && entry.targets.some(value => affectsTarget(commit.impact, value)))
+        call(entry.listener);
     });
     const rootSnapshot = notification.rootSnapshot;
     rootSnapshot.length = 0;
@@ -220,7 +218,13 @@ export const notify = <TSchema extends DocumentSchema>(
   return Object.freeze(errors);
 };
 
-export const disposeNotification = <TSchema extends DocumentSchema>(
+export const subscribeDependencies = <S extends ObjectNode>(
+  runtime: DocumentReadable<S>,
+  targets: readonly ImpactTarget[],
+  listener: CommitListener<S>
+): Unsubscribe => subscribeTargets(notificationOf(runtime), targets, listener);
+
+export const disposeNotification = <TSchema extends ObjectNode>(
   notification: RuntimeNotification<TSchema>
 ): void => {
   const attachments = notification.processors.slice();

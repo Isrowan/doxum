@@ -1,4 +1,4 @@
-import type { DocumentSchema } from '../schema';
+import type { ObjectNode } from '../schema';
 import type { DocumentReadable, DocumentRuntime } from './contract';
 import { accessOf, bindRuntimeAccess } from './access';
 import { shareNotification } from './notification';
@@ -6,7 +6,7 @@ import { shareNotification } from './notification';
 // A readable capability keeps the canonical runtime behind an explicit
 // mutation funnel while remaining fully compatible with selectors, views, and
 // framework subscriptions.
-export const asReadable = <TSchema extends DocumentSchema>(
+export const asReadable = <TSchema extends ObjectNode>(
   runtime: DocumentRuntime<TSchema>
 ): DocumentReadable<TSchema> => {
   const readable: DocumentReadable<TSchema> = {

@@ -1,12 +1,11 @@
 import type { DocumentAddress } from '../schema';
-import type { DocumentOperation } from '../operations';
 
 export type MutationIssueCode =
   | 'invalid-address'
   | 'invalid-value'
   | 'invalid-key'
-  | 'invalid-operation'
-  | 'unknown-operation'
+  | 'invalid-changes'
+  | 'baseline-mismatch'
   | 'required-field'
   | 'invalid-anchor'
   | 'duplicate-entity'
@@ -22,36 +21,23 @@ export type MutationIssueCode =
   | 'invalid-tree-index'
   | 'missing-tree-node'
   | 'tree-cycle';
-
 export type MutationIssue = {
   readonly source: 'mutation';
   readonly code: MutationIssueCode;
   readonly address: DocumentAddress;
   readonly message: string;
-  readonly operation?: DocumentOperation['type'];
 };
-
-const ownAddress = (address: DocumentAddress): DocumentAddress => Object.freeze(address.slice());
-
 export const at = (
   address: DocumentAddress,
   code: MutationIssueCode,
-  message: string,
-  operation?: DocumentOperation['type']
-): MutationIssue =>
-  Object.freeze({
-    source: 'mutation',
-    code,
-    address: ownAddress(address),
-    message,
-    ...(operation === undefined ? {} : { operation }),
-  });
-
-export const from = (
-  operation: DocumentOperation,
-  code: MutationIssueCode,
   message: string
-): MutationIssue => at(operation.at, code, message, operation.type);
-
-export const input = (code: MutationIssueCode, message: string): MutationIssue =>
-  at([], code, message);
+): MutationIssue =>
+  Object.freeze({ source: 'mutation', code, address: Object.freeze([...address]), message });
+export class MutationRejected extends Error {
+  constructor(readonly issue: MutationIssue) {
+    super(issue.message);
+  }
+}
+export const fail = (address: DocumentAddress, code: MutationIssueCode, message: string): never => {
+  throw new MutationRejected(at(address, code, message));
+};

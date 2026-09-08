@@ -1,4 +1,4 @@
-import type { DocumentAnchor } from '../operations';
+import type { DocumentAnchor } from '../schema';
 
 export type KeyOrder = {
   readonly length: number;

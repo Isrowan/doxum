@@ -1,5 +1,5 @@
-import type { DocumentAddress, DocumentNode, DocumentSchema, Infer } from './schema';
-import { isPlainObject, isRecord } from './value/ownership';
+import type { DocumentAddress, DocumentNode, Infer } from './schema';
+import { isPlainObject, isRecord, cloneValue, deepEqual } from './value/ownership';
 import { validate as validTree } from './mutation/tree';
 import * as anchor from './mutation/anchor';
 
@@ -206,22 +206,12 @@ export const checkValue = (
     }
     return undefined;
   }
-  if (node.kind === 'dict') {
-    if (!isPlainObject(value)) return issue(address, 'Expected a dictionary object.');
-    for (const key of Object.keys(value)) {
-      const failure =
-        checkKey(node.key, key, [...address, key]) ??
-        checkScalar(node.validator, value[key], [...address, key], strict);
-      if (failure) return failure;
-    }
-    return undefined;
-  }
   if (node.kind === 'list') {
     if (!Array.isArray(value)) return issue(address, 'Expected a list.');
     const seen = new Set<string>();
     const order = anchor.keys(value, node.keyOf);
     for (let i = 0; i < value.length; i++) {
-      const failure = checkScalar(node.validator, value[i], [...address, String(i)], strict);
+      const failure = checkValue(node.value, value[i], [...address, String(i)], strict);
       if (failure) return failure;
       let key: unknown;
       try {
@@ -240,7 +230,7 @@ export const checkValue = (
     for (const id of Object.keys(value.nodes)) {
       const entry = value.nodes[id];
       if (isRecord(entry) && Object.prototype.hasOwnProperty.call(entry, 'value')) {
-        const failure = checkScalar(node.validator, entry.value, [...address, id], strict);
+        const failure = checkValue(node.value, entry.value, [...address, id], strict);
         if (failure) return failure;
       }
     }
@@ -343,15 +333,129 @@ export const snapshotValue = (node: DocumentNode, value: unknown): unknown => {
         : result;
     }
   }
+  if (node.kind === 'list' && Array.isArray(value))
+    return value.map(item => snapshotValue(node.value, item));
+  if (node.kind === 'tree' && isRecord(value) && isRecord(value.nodes)) {
+    const nodes = Object.fromEntries(
+      Object.entries(value.nodes).map(([id, entry]) => {
+        const item = entry as { parentId?: string; children: string[]; value?: unknown };
+        return [
+          id,
+          {
+            ...item,
+            children: [...item.children],
+            ...(Object.hasOwn(item, 'value')
+              ? { value: snapshotValue(node.value, item.value) }
+              : {}),
+          },
+        ];
+      })
+    );
+    return { ...value, nodes };
+  }
   return detached(value);
 };
 
-export const parse = <N extends DocumentNode | DocumentSchema>(
-  node: N,
-  input: unknown
-): Infer<N> => {
-  const valueNode: DocumentNode =
-    node.kind === 'schema' ? { kind: 'object', shape: node.shape } : node;
+/** Copy editable structure; atomic payloads retain their immutable ownership contract. */
+export const copyValue = (node: DocumentNode, value: unknown): unknown => {
+  if (value === undefined || node.kind === 'field') return value;
+  if (node.kind === 'variant' && isRecord(value))
+    return copyValue(node.variants[String(value[node.tag])], value);
+  if (node.kind === 'object' && isRecord(value)) {
+    const result = Object.create(Object.getPrototypeOf(value));
+    for (const key of Reflect.ownKeys(value))
+      Object.defineProperty(result, key, {
+        value:
+          typeof key === 'string' && Object.hasOwn(node.shape, key)
+            ? copyValue(node.shape[key], value[key])
+            : cloneValue((value as Record<PropertyKey, unknown>)[key]),
+        writable: true,
+        enumerable: Object.getOwnPropertyDescriptor(value, key)?.enumerable,
+        configurable: true,
+      });
+    return result;
+  }
+  if ((node.kind === 'table' || node.kind === 'map') && isRecord(value)) {
+    const entries = (node.kind === 'table' ? value.byId : value) as Record<string, unknown>;
+    const result = Object.fromEntries(
+      Object.keys(entries).map(id => [id, copyValue(node.value, entries[id])])
+    );
+    return node.kind === 'table' ? { ids: [...(value.ids as string[])], byId: result } : result;
+  }
+  if (node.kind === 'list') return [...(value as unknown[])];
+  if (node.kind === 'tree' && isRecord(value)) {
+    const entries = value.nodes as Record<string, { children: readonly string[] }>;
+    return {
+      ...value,
+      nodes: Object.fromEntries(
+        Object.entries(entries).map(([id, n]) => [id, { ...n, children: [...n.children] }])
+      ),
+    };
+  }
+  return value;
+};
+
+export const equalValue = (node: DocumentNode, left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (node.kind === 'field' || left === undefined || right === undefined) return false;
+  if (node.kind === 'variant' && isRecord(left) && isRecord(right))
+    return (
+      left[node.tag] === right[node.tag] &&
+      equalValue(node.variants[String(left[node.tag])], left, right)
+    );
+  if (node.kind === 'list' && Array.isArray(left) && Array.isArray(right))
+    return (
+      left.length === right.length && left.every((v, i) => equalValue(node.value, v, right[i]))
+    );
+  if (node.kind === 'table' && isRecord(left) && isRecord(right))
+    return (
+      deepEqual(left.ids, right.ids) &&
+      equalValue({ kind: 'map', value: node.value }, left.byId, right.byId)
+    );
+  if (node.kind === 'tree' && isRecord(left) && isRecord(right)) {
+    if (left.rootId !== right.rootId) return false;
+    const a = left.nodes as Record<
+        string,
+        { parentId?: string; children: string[]; value?: unknown }
+      >,
+      b = right.nodes as typeof a;
+    return (
+      Object.keys(a).length === Object.keys(b).length &&
+      Object.keys(a).every(
+        id =>
+          Object.hasOwn(b, id) &&
+          a[id].parentId === b[id].parentId &&
+          deepEqual(a[id].children, b[id].children) &&
+          Object.hasOwn(a[id], 'value') === Object.hasOwn(b[id], 'value') &&
+          equalValue(node.value, a[id].value, b[id].value)
+      )
+    );
+  }
+  if ((node.kind === 'object' || node.kind === 'map') && isRecord(left) && isRecord(right)) {
+    const keys = Reflect.ownKeys(left);
+    return (
+      keys.length === Reflect.ownKeys(right).length &&
+      keys.every(key => {
+        if (!Object.hasOwn(right, key)) return false;
+        const child =
+          typeof key === 'string'
+            ? node.kind === 'map'
+              ? node.value
+              : Object.hasOwn(node.shape, key)
+                ? node.shape[key]
+                : undefined
+            : undefined;
+        const a = (left as Record<PropertyKey, unknown>)[key],
+          b = (right as Record<PropertyKey, unknown>)[key];
+        return child ? equalValue(child, a, b) : deepEqual(a, b);
+      })
+    );
+  }
+  return false;
+};
+
+export const parse = <N extends DocumentNode>(node: N, input: unknown): Infer<N> => {
+  const valueNode: DocumentNode = node;
   const failure = checkValue(valueNode, input, [], true);
   if (failure) throw new ParseError(failure);
   return snapshotValue(valueNode, input) as Infer<N>;

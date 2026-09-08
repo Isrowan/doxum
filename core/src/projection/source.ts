@@ -1,11 +1,11 @@
-import { documentReader, readerFor } from '../access/reader';
-import { nodeAt } from '../address';
+import { createAccess, collectionAccess } from '../access/scope';
+import { affectsTarget, collectionImpact } from '../impact';
 import * as target from '../impact-target';
 import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
-import type { DocumentSchema, ImpactTarget, CollectionSelector } from '../schema';
-import { collectionSchema } from '../schema';
+import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
+import { compilePath } from '../schema';
 import type { DocumentSource, ProjectionSource, ValueInput } from './contract';
 import { ProjectionError } from './contract';
 import { collectionHandles } from './collection';
@@ -25,7 +25,7 @@ export const createSources = (scheduler: Scheduler) => {
     >
   >();
   const collections = new WeakSet<object>();
-  const document = <S extends DocumentSchema>(runtime: DocumentReadable<S>): DocumentSource<S> => {
+  const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentSource<S> => {
     scheduler.assertIdle();
     const state = accessOf(runtime);
     if (state.disposed) throw new Error('Document has been disposed.');
@@ -67,17 +67,12 @@ export const createSources = (scheduler: Scheduler) => {
         context: active => {
           assertScope(active);
           if (state.disposed) throw new Error('Document has been disposed.');
+          const context = { schema: state.schema, root: () => state.document, active };
           const read = collection
-            ? readerFor(
-                nodeAt(state.schema, collection.address, state.document) ??
-                  collectionSchema(collection),
-                { root: () => state.document, active },
-                collection.address
-              )
-            : documentReader(state.schema, () => state.document, active);
+            ? collectionAccess(context, collection.address)
+            : createAccess(context);
           return Object.freeze({
             read,
-            target: collection,
             revision: runtime.revision(),
             commits: Object.freeze(commits.slice()),
             reset: record.reset(),
@@ -95,15 +90,21 @@ export const createSources = (scheduler: Scheduler) => {
       const handle = collection
         ? {}
         : {
-            collection: (pick: Parameters<S['collection']>[0]) => {
+            collection: (pick: PathPick<S>) => {
               scheduler.assertIdle();
-              const selector = state.schema.collection(pick);
+              const selector = compilePath<S['shape']>(
+                state.schema,
+                'collection',
+                pick
+              ) as CollectionSelector;
               return make([selector], selector);
             },
-            targets: (...selected: ImpactTarget[]) => {
+            targets: (...selected: PathPick<S>[]) => {
               scheduler.assertIdle();
               if (!selected.length) throw new TypeError('Expected at least one target.');
-              return make(selected);
+              return make(
+                selected.map(pick => compilePath<S['shape']>(state.schema, 'value', pick))
+              );
             },
           };
       Object.freeze(handle);
@@ -113,9 +114,9 @@ export const createSources = (scheduler: Scheduler) => {
       // The attachment delivers to all local bindings without extra document subscriptions.
       receivers.set(record, commit => {
         commits.push(commit);
-        reset ||= commit.kind === 'replace';
+        reset ||= commit.impact.kind === 'reset';
         if (collection) {
-          const change = commit.impact.collection(collection);
+          const change = collectionImpact(commit.impact, collection);
           if (change.kind === 'reset') reset = true;
           else {
             change.added.forEach(key => keys.add(key));
@@ -137,7 +138,10 @@ export const createSources = (scheduler: Scheduler) => {
     const unsubscribe = attachProjection(runtime, {
       capture: commit => {
         for (const binding of bindings) {
-          if (!binding.targets.length || binding.targets.some(commit.impact.affects)) {
+          if (
+            !binding.targets.length ||
+            binding.targets.some(value => affectsTarget(commit.impact, value))
+          ) {
             receivers.get(binding.record)!(commit);
             scheduler.capture(binding.record);
           }

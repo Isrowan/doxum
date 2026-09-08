@@ -1,4 +1,4 @@
-import type { DocumentAddress, DocumentSchema, ImpactTarget } from './schema';
+import type { DocumentAddress, ObjectNode, ImpactTarget } from './schema';
 
 export const address = (target: ImpactTarget<unknown>): DocumentAddress =>
   'at' in target ? target.at : target.address;
@@ -6,7 +6,7 @@ export const address = (target: ImpactTarget<unknown>): DocumentAddress =>
 export const id = (target: ImpactTarget<unknown>): string | undefined =>
   target.kind === 'collection' && 'id' in target ? target.id : undefined;
 
-export const belongs = (target: ImpactTarget<unknown>, schema: DocumentSchema): boolean =>
+export const belongs = (target: ImpactTarget<unknown>, schema: ObjectNode): boolean =>
   !('schema' in target) || target.schema === schema;
 
 export const same = (left: ImpactTarget<unknown>, right: ImpactTarget<unknown>): boolean => {

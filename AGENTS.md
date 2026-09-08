@@ -3,10 +3,10 @@
 ## Repository Layout
 
 - `core` is the framework-neutral Doxum runtime and is the owner of schema,
-  operations, canonical document state, history, impact, and projections.
+  ChangeSets, canonical document state, history, impact, and projections.
 - `react` is a one-way adapter from `doxum` to React. Do not import React
   or UI concepts into `core`.
-- `core/dist` and `react/dist` are build output. Change `src` and rebuild; do
+- Root `dist` is build output. Change `src` and rebuild; do
   not edit generated files.
 
 ## Development
@@ -31,25 +31,33 @@ when a change touches addressing, mutation, impact, notifications, or views.
   second writable cache or bypass the mutation session.
 - A transaction is synchronous and atomic. Preserve rollback behavior for each
   new operation and test rejected batches after partial work.
-- Every committed operation needs correct inverse data and an exact impact.
+- Every committed ChangeSet needs correct before/after data and an exact impact.
   Update history and notification tests alongside mutation behavior.
-- `mutation/operation.ts` is the sole operation boundary: decode external
-  input before journal/resolution/execution, normalize it once, and use its
-  publish/inverse APIs for public operation payloads. Do not add executor-side
-  envelope parsing.
+- `mutation/changes.ts` is the sole unknown ChangeSet boundary. Decode and
+  normalize before execution. `mutation/recorder.ts` owns first-touch state,
+  rollback and final net changes; do not keep per-write forward/inverse logs.
+- Public `apply` requires a matching `expectedRevision`. Record actual local
+  before values rather than trusting incoming reverse data. Local root resets
+  are reversible; remote commits invalidate local history.
 - `mutation/issue.ts` owns engine failure construction. Use typed
   `MutationIssue` for runtime failures and `DocumentDiagnostic` only for
-  application-level `tx.report` / `tx.reject` behavior.
+  application-level `TransactionRejected`. Ordinary exceptions roll back and
+  rethrow unchanged; business notices use callback return values.
 - `mutation/tree.ts` owns tree validation and traversal. Trees are empty or
   single-root, connected, acyclic structures with reciprocal parent/child
   links; validate replacement and import boundaries before writing them.
 - `mutation/anchor.ts` owns ordered-key and Anchor semantics. Table, list, and
-  journal code must call it rather than recreate key/index calculations.
+  recorder code must call it rather than recreate key/index calculations.
 - `impact-target.ts` owns `ImpactTarget` address, schema ownership, identity,
   equality, and bucketing. Core and React must not inspect selector target
   shapes locally.
-- Schema resolution is authoritative for operations and selectors. Do not add
+- Schema resolution is authoritative for changes and selectors. Do not add
   alternate string-path parsers or separate address models.
+- `access/scope.ts` owns Read/Draft access. Structural scopes expire at callback
+  completion; atomic field interiors are readonly under the ownership contract.
+  `assign` accepts plain Infer replacements through the same mutation session.
+- Root ObjectNode is schema identity. Subscription/impact/collection paths compile
+  at their consumer boundary; do not export application target constructors.
 - `ProjectionCollection` and `ProjectionValue` are derived state. Their values must
   be recomputed from runtime state and declared sources, never manually kept in
   sync by callers.
@@ -67,7 +75,7 @@ when a change touches addressing, mutation, impact, notifications, or views.
 - Add or update tests in `core/test` for core behavior and `react/test` for
   adapter behavior.
 - A mutation change should cover success, rejection/rollback, history inverse,
-  and impact or subscription behavior when applicable. Boundary-operation
+  and impact or subscription behavior when applicable. ChangeSet boundary
   changes must include malformed input tests; tree changes must include
   invalid snapshots and root/orphan/cycle cases.
 - A projection change should cover unrelated commits, dynamic dependencies,
@@ -77,8 +85,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
 
 ## Public API And Packaging
 
-- `doxum` is the public package identity. Keep its root, `integration`, and
-  `react` exports aligned with `dist` output.
+- `doxum` is the public package identity. Keep its root, `integration`,
+  `local-sync` and `react` exports aligned with `dist` output.
 - Public behavior is exported deliberately from package entry points. Keep
   internal runtime plumbing unexported unless it forms a stable external
   contract.

@@ -6,12 +6,13 @@ import {
 import { json, jsonArray, type JsonValue } from './json';
 import { isRecord } from '../value/ownership';
 
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
+const FORMAT_VERSION = 1;
 const DOCUMENTS = 'documents';
 const COMMITS = 'commits';
-const ACTORS = 'actors';
 
 export type StoredDocument = {
+  readonly formatVersion: number;
   readonly documentId: string;
   readonly schemaVersion: number;
   readonly checkpointSeq: number;
@@ -20,9 +21,10 @@ export type StoredDocument = {
 };
 
 export type StoredCommit = {
+  readonly formatVersion: number;
   readonly documentId: string;
   readonly seq: number;
-  readonly operations: readonly JsonValue[];
+  readonly changes: readonly JsonValue[];
   readonly createdAt: number;
 };
 
@@ -68,13 +70,14 @@ const positiveInteger = (value: unknown, label: string): number => {
 };
 
 const documentRecord = (value: unknown): StoredDocument => {
-  if (!isRecord(value))
+  if (!isRecord(value) || value.formatVersion !== FORMAT_VERSION)
     throw new LocalSyncConsistencyError('Document record is malformed in IndexedDB.');
   const checkpointSeq = nonNegativeInteger(value.checkpointSeq, 'document.checkpointSeq');
   const headSeq = nonNegativeInteger(value.headSeq, 'document.headSeq');
   if (checkpointSeq > headSeq)
     throw new LocalSyncConsistencyError('Document checkpoint exceeds its head sequence.');
   return Object.freeze({
+    formatVersion: FORMAT_VERSION,
     documentId: string(value.documentId, 'document.documentId'),
     schemaVersion: positiveInteger(value.schemaVersion, 'document.schemaVersion'),
     checkpointSeq,
@@ -84,12 +87,13 @@ const documentRecord = (value: unknown): StoredDocument => {
 };
 
 const commitRecord = (value: unknown): StoredCommit => {
-  if (!isRecord(value))
+  if (!isRecord(value) || value.formatVersion !== FORMAT_VERSION)
     throw new LocalSyncConsistencyError('Commit record is malformed in IndexedDB.');
   return Object.freeze({
+    formatVersion: FORMAT_VERSION,
     documentId: string(value.documentId, 'commit.documentId'),
     seq: positiveInteger(value.seq, 'commit.seq'),
-    operations: jsonArray(value.operations, 'commit.operations'),
+    changes: jsonArray(value.changes, 'commit.changes'),
     createdAt: nonNegativeInteger(value.createdAt, 'commit.createdAt'),
   });
 };
@@ -105,23 +109,35 @@ export type IndexedDbTimeline = {
   readonly append: (input: {
     readonly documentId: string;
     readonly expectedHeadSeq: number;
-    readonly operations: readonly JsonValue[];
+    readonly changes: readonly JsonValue[];
   }) => Promise<StoredCommit>;
   readonly close: () => void;
 };
 
 export const openIndexedDbTimeline = async (databaseName: string): Promise<IndexedDbTimeline> => {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    let incompatible = false;
     const open = factory().open(databaseName, DATABASE_VERSION);
-    open.onerror = () => reject(open.error ?? new Error('Unable to open IndexedDB.'));
+    open.onerror = () =>
+      reject(
+        incompatible
+          ? new LocalSyncConsistencyError(
+              'Unsupported Doxum storage format. Existing data was left unchanged.'
+            )
+          : (open.error ?? new Error('Unable to open IndexedDB.'))
+      );
     open.onblocked = () => reject(new Error(`IndexedDB database '${databaseName}' is blocked.`));
-    open.onupgradeneeded = () => {
+    open.onupgradeneeded = event => {
+      if (event.oldVersion !== 0) {
+        incompatible = true;
+        open.transaction?.abort();
+        return;
+      }
       const db = open.result;
       if (!db.objectStoreNames.contains(DOCUMENTS))
         db.createObjectStore(DOCUMENTS, { keyPath: 'documentId' });
       if (!db.objectStoreNames.contains(COMMITS))
         db.createObjectStore(COMMITS, { keyPath: ['documentId', 'seq'] });
-      if (db.objectStoreNames.contains(ACTORS)) db.deleteObjectStore(ACTORS);
     };
     open.onsuccess = () => resolve(open.result);
   });
@@ -149,6 +165,7 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
         return record;
       }
       const record: StoredDocument = {
+        formatVersion: FORMAT_VERSION,
         documentId,
         schemaVersion,
         checkpointSeq: 0,
@@ -181,12 +198,13 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
       const current = await readDocument(transaction, input.documentId);
       if (current.headSeq !== input.expectedHeadSeq)
         throw new LocalSyncConsistencyError(
-          'Local document advanced before the leader could append its command.'
+          'Local document advanced before the leader could append its commit.'
         );
       const commit: StoredCommit = {
+        formatVersion: FORMAT_VERSION,
         documentId: input.documentId,
         seq: current.headSeq + 1,
-        operations: input.operations,
+        changes: input.changes,
         createdAt: Date.now(),
       };
       documents.put({ ...current, headSeq: commit.seq });

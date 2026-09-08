@@ -1,8 +1,7 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, schema, table } from '../src';
-
-const model = schema({ rows: table(object({ value: field<number>() })) });
-const ids = Array.from({ length: 100_000 }, (_, i) => String(i));
+import { createDocument, createProjectionRuntime, field, object, table } from '../src';
+const model = object({ rows: table(object({ value: field<number>() })) });
+const ids = Array.from({ length: 100000 }, (_, i) => String(i));
 const runtime = createDocument({
   schema: model,
   history: false,
@@ -15,7 +14,7 @@ const projection = createProjectionRuntime({
 });
 const rows = projection.map(
   projection.document(runtime).collection(path => path.rows),
-  (_id, row) => row.value.get()
+  (_id, row) => row.value
 );
 const viewport = projection.input(1);
 const summary = projection.value({
@@ -31,18 +30,18 @@ const summary = projection.value({
 let revision = 0;
 describe('explicit projection runtime', () => {
   bench('one mapped row in 100k without all', () => {
-    runtime.update(tx => tx.write.rows.item('42').value.set(++revision));
+    runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
     rows.item('42').current();
   });
   bench('document and external source in one batch', () => {
     projection.batch(() => {
-      runtime.update(tx => tx.write.rows.item('42').value.set(++revision));
+      runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
       viewport.set(revision);
     });
     summary.current();
   });
   bench('lazy all after one update', () => {
-    runtime.update(tx => tx.write.rows.item('42').value.set(++revision));
+    runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
     rows.all.current();
   });
 });

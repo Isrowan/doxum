@@ -1,343 +1,93 @@
-# Doxum Architecture
+# Runtime Architecture
 
-## Purpose
+## Ownership
 
-The `doxum` core entry owns the in-memory lifecycle of one typed document. It
-turns mutations into reversible commits and makes their impact available to
-history, subscribers, projections, and framework integrations.
-`doxum/local-sync` is a browser attachment that gives one tab the synchronous
-write lease for an IndexedDB-backed timeline and makes other tabs ordered
-read-only mirrors. It persists completed commands in the background and uses
-BroadcastChannel only for catch-up notifications. Core does not own network
-synchronization, access control, or business authorization.
+`createDocument` owns canonical state, revision, write exclusion and notification.
+`schema.ts` owns immutable node definitions and the symbolic path compiler.
+The root `ObjectNode` is definition identity; the runtime is instance identity.
+`address.ts` is the schema-driven address resolver and shared address index.
+`impact-target.ts` owns internal target identity and address matching.
 
-## Module Boundaries
+`access/scope.ts` implements both `Read` and `Draft`. A scope shares Proxy handlers,
+child addresses and structural resolution. Structural writes advance the mutation
+session generation; retained proxies then resolve the new canonical location.
+Atomic values are returned directly and never receive draft proxies.
 
-| Module                             | Responsibility                                                                                  |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `core/src/schema.ts`               | Schema nodes, document value inference, and schema-owned selector construction.                 |
-| `core/src/access`                  | Typed readers/writers and dependency tracking.                                                  |
-| `core/src/mutation/operation.ts`   | Decode, normalize, publish, inverse metadata, and list-node metadata for operations.            |
-| `core/src/mutation/issue.ts`       | Closed mutation failure vocabulary and `MutationIssue` construction.                            |
-| `core/src/mutation/tree.ts`        | Tree validation, traversal, and single-root structural operations.                              |
-| `core/src/mutation/anchor.ts`      | Ordered-key and Anchor position semantics shared by table, list, and journal code.              |
-| `core/src/runtime.ts`              | Canonical document owner, transaction boundary, revision, history policy, and lifecycle.        |
-| `core/src/runtime/driver.ts`       | Internal synchronous write-policy seam used by an owning adapter without changing runtime APIs. |
-| `core/src/local-sync`              | Browser leader/follower attachment, append-only IndexedDB command log, and ordered tail replay. |
-| `core/src/impact.ts`               | Commit-local path and collection impact queries.                                                |
-| `core/src/impact-target.ts`        | One address, identity, equality, and notification-bucket interpretation for targets.            |
-| `core/src/runtime/notification.ts` | Ordered processors and root/targeted commit delivery.                                           |
-| `core/src/projection`              | Read-only derived views with explicit invalidation.                                             |
-| `react/src`                        | React adapter; it depends on core but core never depends on React.                              |
-
-## Canonical Data Flow
+## Mutation
 
 ```text
-Schema + initial value
-        |
-        v
-createDocument
-        |
-        v
-canonical mutable document --------------------------+
-        |                                             |
-        | update(reader, writer) or apply(operations) |
-        v                                             |
-mutation session                                      |
-  - decode unknown operation input                    |
-  - normalize one canonical operation shape           |
-  - resolve address against schema and document       |
-  - execute each operation                            |
-  - retain inverses for rollback                      |
-  - coalesce the final observable change              |
-        |                                             |
-        +-- rejected --> rollback --> result          |
-        |                                             |
-        v                                             |
-commit { revision, operations, inverse, impact } <---+
-        |
-        +--> local history
-        +--> projection graph capture, settlement and publication
-        +--> history listeners
-        +--> targeted subscribers
-        +--> root subscribers
+draft assignment / explicit collection method / decoded ChangeSet
+  -> MutationSession
+  -> schema/key/value validation
+  -> ChangeRecorder first-touch capture
+  -> immediate canonical write
+  -> seal final differences
+  -> commit + impact + history + projections + external listeners
 ```
 
-`createDocument` is the only owner and mutation funnel for the canonical
-document. The public API never exposes that document directly. Readers expose
-typed accessors; structural reader results are snapshots where needed to avoid
-creating another writable source of truth.
+`mutation/session.ts` coordinates writes. `anchor.ts` owns ordered-key semantics;
+`tree.ts` owns topology validation and insert/remove/move/set algorithms.
+`mutation/issue.ts` creates engine issues. Application `TransactionRejected`
+is classified only at the transaction boundary. Ordinary exceptions are rethrown.
 
-## Schema And Addressing
+`mutation/recorder.ts` keeps one first-touch fact per value slot, one initial order
+per changed sequence, and initial states only for touched tree nodes. Structural
+captures absorb descendant facts by reconstructing the initial touched subtree.
+Unrelated entities are not cloned or traversed. List slot identity uses stable
+keys rather than moving array indices.
 
-Schema value validation is owned by `core/src/schema-value.ts`. Its traversal
-checks required members, variant tags, collection indices, list keys and scalar
-validators; tree graph invariants delegate to mutation/tree and ordered key
-interpretation delegates to mutation/anchor. Public parse requires validators
-for encountered opaque values. Typed runtime boundaries allow type-only scalar
-nodes but always check structural shape and configured validators. Mutation
-payload validation runs in mutation/operation against the resolved target before
-execution. Initial/replacement values use the same traversal. The former
-tree-only document traversal is removed.
+Rollback restores value/tree facts in reverse first-touch order and installs
+order baselines after their entries. It does not call validators or replay user
+callbacks. Root replacement invalidates the session's address resolver too.
 
-Validators are synchronous and value-preserving. They receive detached input;
-exceptions, validation issues, asynchronous results and transformations are
-rejected. The schema holds their types, not a second schema maintained by
-callers. Map/table key validators carry a string subtype through access,
-selectors, collection impacts, candidate keys and mapped projections.
+Seal compares atomic fields with `Object.is`; structural nodes follow their value
+schemas. Same-branch object replacements emit changed child facts, so deleting and
+recreating an entry does not invalidate unchanged fields. Root reset remains one
+whole-document value fact. Scope snapshots use field copiers and never expose
+mutable canonical structure.
 
-Each reader carries a private location and an inferred snapshot marker.
-snapshot(reader) validates the active scope, records the subtree dependency
-when tracking is enabled and immediately copies the selected value. No business
-field names are reserved. Snapshot output survives scope expiration and rollback;
-it does not promise stable references across calls. Document snapshot uses the
-same schema-aware copy protocol, including field copiers. Plain structures,
-Date, RegExp, Map, Set, ArrayBuffer and typed views are supported; opaque objects
-need an explicit field copier. Mutable payloads supplied through ordinary fields
-remain governed by the existing ownership contract.
+## Change Boundary
 
-Object reader/writer accessors are compiled once per schema node and instantiate
-children lazily per scope. They do not retain canonical object locations across
-transactions. Field update resolves the current location once and executes its
-result through the common mutation executor. The callback receives detached
-input and cannot perform nested writes. Typed field setters construct their
-normalized envelope through mutation/operation; external apply envelopes still
-pass decode and normalize. Forward/inverse publication and rollback stay shared.
+`changes.ts` defines value/presence, order and tree facts. Both presence states
+are explicit. A single reversible `ChangeSet` is stored on each commit.
+`mutation/changes.ts` is the only unknown-input decoder; it checks envelope shape,
+duplicates and overlaps using the shared address index and establishes deterministic
+lexicographic address/kind order. No string-path parser or command envelope enters
+executors.
 
-A `DocumentSchema` has two roles:
+Application installs values first, tree units next/as encountered, then final
+orders. Table/list membership and tree structure must validate before publication.
+Parent value facts cannot overlap descendants; ordered containers can coexist
+with entry facts. Actual rollback facts are captured locally, independent of
+received before values. Public apply requires `expectedRevision`; local sync
+additionally checks durable sequence under exclusive Web Lock leadership.
 
-1. It derives the TypeScript document, reader, and writer shapes.
-2. It defines the legal semantic address space for operations and selectors.
+## Derived Consumers
 
-`Infer<T>` is the public value inference entry for both nodes and complete
-schemas. `core/src/schema.ts` owns the internal node and shape mappings;
-readers, writers, snapshots and synchronization contracts consume the same
-inference. Object properties are flattened after required/optional mapping,
-and each variant branch is flattened after adding its readonly discriminant.
-This retains discriminant correlation without leaking generated intersections
-into the value type. User-provided scalar types remain opaque to this process.
-Optional nodes infer a value or undefined, and optional shape members retain
-their optional property modifier. Variant replacement accepts a present branch;
-absence is expressed by clear. Optional variant selectors and readers both
-include undefined in their result type.
+Impact is derived only from sealed changes. Field/order indexes and collection
+query results are lazy. Collection queries do not construct a field trie.
+Subscriptions use a registration-time index to avoid scanning unrelated listeners.
+React's tracked selection uses internal dependency capabilities from `integration`;
+application subscription APIs accept symbolic paths directly.
 
-Addresses are immutable string paths. Static schema segments and dynamic
-collection segments are cached by `core/src/address.ts`; the resolver combines
-schema traversal with the current document when a variant branch or collection
-entry must be selected.
+History stores sequences of complete commit ChangeSets. Undo reads before in
+reverse commit order; redo reads after in forward order, within one session.
+Local root reset is reversible. Remote commits invalidate local history.
 
-Business selectors use `schema.value(...)` for value paths and
-`schema.collection(...)` for collection paths. Raw `ImpactTarget` values remain
-an advanced boundary for impact, notification, projection, and adapters.
-Path builders retain their identity and address in private WeakMaps; business
-fields such as `address` and `item` remain available. Only collection paths have
-the `item(id)` traversal method. Selectors validate callback ownership and node
-kind against schema configuration, including inactive variant branches.
+Projection sources explicitly declare dependencies. Capture, settle, flush,
+history listeners, filtered document listeners and root listeners retain their
+ordering. Writes are forbidden while notifying or evaluating document reads.
+Observer errors are attached to an already committed result.
 
-`object` owns structured shape; the redundant `single` node is removed. `dict`
-is the sole keyed scalar container; the inconsistent `record` node is removed.
-Variant readers return discriminated value snapshots through `get()`; writers
-replace a complete branch. Optional is restricted to field, variant, dict,
-list and tree, whose initialization and clear operations have exact inverses.
-Dictionary keyed reads avoid copying unrelated entries. List keyed reads use
-the same key resolver as mutation and scan without cloning the whole list.
-Tree positions are named objects; move index is a final index after removal.
+## Cost Model
 
-Tables preserve a user-visible `ids` order plus an id-indexed `byId` record.
-Maps are unordered id-indexed collections. Lists use an application-supplied
-stable `keyOf`; trees use a `rootId` and `nodes` record with parent/children
-relationships. The tree owner accepts only empty trees or trees with exactly
-one root, reciprocal parent/child links, no duplicate children, complete
-reachability, and no cycles. Complete validation happens for initial documents
-and replacement snapshots; local tree operations enforce only the necessary
-local invariants.
+Scalar work is proportional to touched fields, not total entities. Repeated writes
+retain one first-touch value. Structural replacement diffs only the touched subtree.
+The first membership/order change of an ordered container may copy O(N) keys;
+array moves and list key lookup can also cost O(N). Tree deletion touches its
+subtree; child-order edits touch affected child arrays. These costs are deliberate
+and instrumented, not hidden behind a constant-time promise.
 
-## Mutation Protocol
-
-Subscriptions use an address-segment index owned by the existing address module.
-The impact owner builds a lazy per-commit index over net changes. Collection
-membership paths expand to changed entity IDs; order changes are indexed
-separately and do not invalidate unrelated entity-specific targets. Ancestor
-replacement and document reset retain their broad invalidation semantics.
-Notification queries collect and deduplicate related subscriptions, and only
-pending cancellations need cleanup after delivery. Target interpretation remains
-in impact-target. Processor settlement, observer errors and explicit projection
-batch semantics are unchanged.
-
-`runtime.update` creates a short-lived reader and writer. Writers emit typed
-operations into one mutation session; they do not write canonical state
-directly. `runtime.prepare` runs the same typed mutation pipeline but always
-rolls it back: a `prepared` result has immutable forward operations, inverses,
-impact, reports, and no revision or notification. It is available to an adapter
-that explicitly needs a strict prepare-before-commit protocol. `runtime.snapshot`
-returns an immutable, detached document value for checkpoint creation.
-`runtime.apply` accepts boundary input as `unknown`; the operation
-owner decodes it before journal, resolver, or executor code observes it. The
-session then normalizes one canonical shape, resolves it, invokes the correct
-executor, and saves inverse operations. Engine failures are closed
-`MutationIssue` values with `source: "mutation"`; application validation uses
-the separate `DocumentDiagnostic` shape through `report` and `reject`.
-Callers supply code, message and optional address; runtime adds the application
-source. Operation payloads use the non-generic `DocumentOperation` union;
-schema-specific type safety lives at the reader/writer boundary.
-`MutationIssueCode` is a stable public union. Published application diagnostics
-are copied and frozen. Rejections and exceptions roll back the session.
-
-The change journal compares the document state observed before and after each
-logical subject. It removes net-zero changes and emits a coalesced set of
-paths and collection changes. This makes an update that creates and removes
-the same entry report `unchanged` without publishing a commit.
-
-Typed field writes and decoded external field operations converge on the same
-session field entry. It validates keys and payloads before checking equality;
-unchanged typed writes allocate no operation, inverse, or journal subject.
-Only changed writes publish operations through mutation/operation and execute
-through the shared field executor. Updaters retain detached-input semantics.
-
-The address resolver retains only the most recent object/collection prefix in
-one transaction. Sibling fields reuse parent resolution; every changed
-non-field operation invalidates the prefix. Field values are always read afresh.
-No writer or canonical location is cached across transactions. Writer child
-accessors cache in indexed slots, and field methods bind only on first access.
-
-Pure field journals index first observations by container and key and compare
-those locations at finish. The first structural operation promotes existing
-subjects into the address tree; subsequent comparisons use current document
-addresses. Promotion discards the field lookup and preserves parent absorption
-and net-zero detection. The duplicate journal hash index is removed. Inverses
-use one reverse-order log, including reversed multi-operation groups, so undo,
-rollback, and prepare retain their original ordering without group arrays.
-
-Collection impact reads inspect ancestor changes without constructing a field
-index. Field overlap and order indexes are built only when queried. Impact
-always consumes journal paths rather than deriving another change set from the
-operation stream.
-
-Operations crossing a structural ownership boundary have separate guarantees:
-
-- The initial document is cloned before becoming canonical state.
-- Structural operation payloads are transferred into the canonical document.
-- Commit and history payloads are frozen snapshots.
-- Readers clone structural snapshots before returning them where appropriate.
-
-## Commit, History, And Notification
-
-Every committed mutation increments the runtime revision and creates a
-`DocumentCommit`. Its `DocumentImpact` is a resolved, commit-local view: it
-answers whether a value target is affected and returns collection additions,
-removals, updates, and order changes.
-
-History records forward and inverse operation groups only for local and system
-commits. Undo and redo replay those groups through the same mutation pipeline.
-`replace` and remote commits invalidate history because they establish a new
-canonical baseline.
-History exposes a stable Readable snapshot. An explicit `history.group()`
-collects committed batches into one entry without copying earlier batches on
-each update. End keeps the group; cancel replays its inverses through apply.
-Undo/redo stage the target stack before publication so commit listeners see
-settled history. Rejected replay restores the stack. A net-zero replay consumes
-the entry without creating a document commit. Non-recorded commits close the
-group; remote/replace commits invalidate it. Groups cannot nest.
-
-During notification, internal projection attachments capture source commits,
-settle every attached graph, then flush projection and history listeners before normal
-subscribers. Targeted subscribers are bucketed by the first address segment, then
-filtered through `impact.affects`; root subscribers receive every commit.
-Processor, flush, and listener failures are captured as `observerErrors` on
-the committed operation or transaction result. A notification failure never
-changes an already committed document into a rejected mutation.
-History readables carry an internal document-owner association. `fromReadable`
-captures them in the document notification phase, so a graph depending on both
-document and history settles once with consistent inputs. This association is
-internal runtime plumbing, not a public source protocol.
-
-## Read Models
-
-`select(runtime, selector)` evaluates a reader once. `track(runtime, selector)`
-also records the values and collection entries the selector accessed.
-
-`createProjectionRuntime` owns source registration, an explicit DAG, synchronous
-batching, fault recovery, and disposal. `projection.document(runtime)` shares
-runtime identity through `asReadable`. Its `collection(path => path.items)`
-delegates to the bound schema and caches a scoped collection source. Document
-sources may also declare fixed `targets(...)`. Neither operation installs
-automatic read dependencies. External `fromReadable` and `input` sources use
-semantic equality; their values must not be mutated after submission.
-
-`projection.value(sources, compute, options?)` handles pure calculations. Its
-stateful form takes `{ sources, build }` and separate equality options, and
-uses the same node implementation. `projection.map` maps document or projected
-collections one-to-one with stable keys and order.
-`projection.collection<Item>()(spec)` provides explicit incremental build/update
-callbacks with scoped previous/next reads and a staged writer. It shares the
-same scheduler with `projection.value`. Ordinary updates touch only candidate
-keys; structural order/replace work may be linear. Equality preserves old item
-references, aggregate arrays are lazy, and output revision is independent of
-source progress. Collection changes reuse `CollectionImpact`; values expose
-previous/current state without an arbitrary custom change protocol.
-
-Processors read accepted upstream candidates through their callback context;
-public readables retain the previous publication until settlement completes.
-Failures discard staged output and the mutable processor instance. One fresh
-build may recover a failed update. Persistent failure makes current() throw and
-blocks descendants; unrelated branches continue. Listener exceptions are
-isolated individually. Explicit rebuild follows the same dependency graph.
-
-`projection.batch` defers projection settlement until the outer synchronous
-callback exits, including when it throws. It does not defer canonical commits,
-history, or document listeners, and it does not roll back sources. Enter the
-batch before the first commit, covering synchronous editor reconciliation.
-Document sources retain all ordered commits in a batch; bound collection sources
-also cache candidate keys and an order-dirty flag across the batch. Processors
-read final state; candidate summaries deliberately retain net-zero touched keys.
-External readable bindings share subscriptions and preserve each equality policy.
-Source reset rebuilds the affected node. No async cause graph or
-cross-projection dependency graph is provided.
-
-During processing and projection notifications, writes to declared documents
-and inputs are forbidden independently of the local-sync write lease. Dispose
-the projection before releasing external readables. Document disposal invalidates
-dependent nodes; node disposal with downstream consumers is rejected. Disposed
-readables throw. `doxum/integration` exposes read-only `projectionDebug` counts,
-not internal mutable scheduler state.
-
-## React Boundary
-
-`doxum/react` uses `track` to calculate selector dependencies, installs a
-matching runtime subscription, and delegates subscription consistency to
-React's `useSyncExternalStore`. Each selector closure caches its result by
-document revision, including newly allocated objects/arrays. Equality can retain
-the previous reference across revisions. Selector/runtime changes create a new
-cache, and subscriptions use Object.is when comparing published results.
-Server rendering can provide an explicit `server` snapshot.
-
-## Extension Boundaries
-
-Keep integrations outside core:
-
-- `doxum/local-sync` attaches to an existing runtime, hydrates it from an
-  IndexedDB checkpoint and append-only tail, and uses a document Web Lock to
-  select one leader. Its internal runtime write policy lets the leader retain
-  the ordinary synchronous operation APIs while followers reject direct writes.
-  The leader observes local, system, and history commits and appends their JSON
-  operation batches asynchronously. `replace`, and external `apply` calls
-  marked `remote`, are rejected while attached because they cannot be appended
-  as local operation commands; hydration and tail replay use the driver's
-  trusted lease instead. BroadcastChannel carries only a new-head hint;
-  followers reload and apply the durable tail as `remote`, which invalidates
-  their local history. There is no pending queue, rebase, actor history, or
-  attachment-specific undo API. `flush()` waits for observed leader commands to
-  persist or for a follower to catch up; it does not make a visible write
-  retroactively durable.
-  Its `state` is a stable Readable of role, durable head/checkpoint or error;
-  listeners are notified on persistence, leadership, failure and disposal.
-  Observer errors are reported without converting successful persistence into
-  a storage failure. Dispose publishes a terminal state and releases listeners.
-- Other persistence should store and replay `DocumentOperation` batches, or use
-  an application-defined snapshot strategy with `replace`.
-- Network synchronization should assign ordering, acknowledgements, retry, and
-  conflict semantics before calling `apply` or `replace`.
-- Business validation belongs inside a transaction through `report` and
-  `reject`, or in an application layer that decides whether to start one.
-- UI-specific derived state should be a React state concern or a `Readable`,
-  not another mutable copy of the Doxum document.
+There is no compatibility execution path. Reader/writer factories, operation
+envelopes, inverse logs, journal inverse parsing, prepare, dictionary protocols,
+root schema wrappers and public target constructors have been removed.

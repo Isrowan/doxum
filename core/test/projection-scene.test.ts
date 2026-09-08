@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, schema, table } from '../src';
+import { createDocument, createProjectionRuntime, field, object, table } from '../src';
 import { projectionDebug } from '../src/integration';
 import { startProfile } from '../src/profile';
-
 describe('explicit projection workloads', () => {
   it('routes only adjacent edges after geometry changes and reconnects without automatic dependencies', () => {
-    const model = schema({
+    const model = object({
       nodes: table(object({ x: field<number>(), label: field<string>() })),
       edges: table(object({ from: field<string>(), to: field<string>() })),
     });
@@ -30,7 +29,7 @@ describe('explicit projection workloads', () => {
     const document = projection.document(runtime);
     const nodes = projection.map(
       document.collection(path => path.nodes),
-      (_id, node) => node.x.get()
+      (_id, node) => node.x
     );
     const edges = document.collection(path => path.edges);
     const calculated: string[] = [];
@@ -42,7 +41,7 @@ describe('explicit projection workloads', () => {
         const endpoints = new Map<string, readonly string[]>();
         for (const id of sources.edges.read.ids()) {
           const edge = sources.edges.read.get(id)!;
-          const pair = [edge.from.get(), edge.to.get()];
+          const pair = [edge.from, edge.to];
           endpoints.set(id, pair);
           pair.forEach(node => {
             const set = adjacency.get(node) ?? new Set();
@@ -55,7 +54,7 @@ describe('explicit projection workloads', () => {
           update: ({ sources, writer }) => {
             const candidates = new Set<string>();
             for (const commit of sources.edges.commits) {
-              const change = commit.impact.collection(sources.edges.target);
+              const change = commit.impact.collection(path => path.edges);
               if (change.kind === 'reset') return { kind: 'rebuild' };
               [...change.added, ...change.updated, ...change.removed].forEach(id => {
                 candidates.add(id);
@@ -65,7 +64,7 @@ describe('explicit projection workloads', () => {
                   endpoints.delete(id);
                   return;
                 }
-                const pair = [edge.from.get(), edge.to.get()];
+                const pair = [edge.from, edge.to];
                 endpoints.set(id, pair);
                 pair.forEach(node => {
                   const set = adjacency.get(node) ?? new Set();
@@ -90,26 +89,25 @@ describe('explicit projection workloads', () => {
       },
     });
     const render = projection.map(routes, (_id, route) => `path:${route}`);
-    runtime.update(tx => tx.write.nodes.item('a').label.set('content only'));
+    runtime.update(tx => (tx.nodes.get('a')!.label = 'content only'));
     expect(calculated).toEqual([]);
-    runtime.update(tx => tx.write.nodes.item('a').x.set(10));
+    runtime.update(tx => (tx.nodes.get('a')!.x = 10));
     expect(calculated.splice(0)).toEqual(['ab']);
     expect(routes.item('ab').current()).toBe('10:2');
     expect(render.item('ab').current()).toBe('path:10:2');
-    runtime.update(tx => tx.write.edges.item('ab').from.set('c'));
+    runtime.update(tx => (tx.edges.get('ab')!.from = 'c'));
     expect(calculated.splice(0)).toEqual(['ab']);
     expect(routes.item('ab').current()).toBe('3:2');
-    runtime.update(tx => tx.write.nodes.item('a').x.set(20));
+    runtime.update(tx => (tx.nodes.get('a')!.x = 20));
     expect(calculated).toEqual([]);
-    runtime.update(tx => tx.write.nodes.item('c').x.set(30));
+    runtime.update(tx => (tx.nodes.get('c')!.x = 30));
     expect(new Set(calculated.splice(0))).toEqual(new Set(['bc', 'ab']));
-    runtime.update(tx => tx.write.edges.remove('ab'));
+    runtime.update(tx => tx.edges.remove('ab'));
     expect(routes.item('ab').current()).toBeUndefined();
     expect(render.item('ab').current()).toBeUndefined();
     projection.dispose();
     runtime.dispose();
   });
-
   it('keeps hover updates local using previous and current input values', () => {
     const projection = createProjectionRuntime({
       onError: error => {
@@ -139,7 +137,6 @@ describe('explicit projection workloads', () => {
     expect(view.item('b').current()).toBe(true);
     projection.dispose();
   });
-
   it('does not run unrelated nodes and removes disposed nodes from dispatch', () => {
     const projection = createProjectionRuntime({
       onError: error => {
@@ -149,7 +146,7 @@ describe('explicit projection workloads', () => {
     const source = projection.input(0);
     const other = projection.input(0);
     const update = vi.fn(() => ({ kind: 'unchanged' as const }));
-    for (let i = 0; i < 10_000; i++)
+    for (let i = 0; i < 10000; i++)
       projection
         .value({ sources: { input: source.source }, build: () => ({ value: 0, update }) })
         .dispose();

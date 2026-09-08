@@ -1,4 +1,4 @@
-import type { DocumentOperation } from './operations';
+import type { ChangeSet, ChangeDirection } from './changes';
 import type {
   HistoryState,
   LocalHistory,
@@ -7,16 +7,15 @@ import type {
 } from './runtime/contract';
 import { DocumentDisposedError } from './runtime/contract';
 
-type Batch = {
-  readonly operations: readonly DocumentOperation[];
-  readonly inverse: readonly DocumentOperation[];
-};
-type Entry = { readonly batches: Batch[] };
+type Entry = { readonly batches: ChangeSet[] };
 type Group = { entry?: Entry; readonly undos: Entry[]; readonly redos: Entry[] };
 
 export const createHistory = <TCommit>(input: {
   readonly capacity: number;
-  readonly apply: (operations: readonly DocumentOperation[]) => OperationResult<TCommit>;
+  readonly apply: (
+    changes: readonly ChangeSet[],
+    direction: ChangeDirection
+  ) => OperationResult<TCommit>;
   readonly revision: () => number;
   readonly assertIdle: () => void;
   readonly notify: (run: () => readonly ObserverError[]) => readonly ObserverError[];
@@ -74,14 +73,8 @@ export const createHistory = <TCommit>(input: {
     } else to.push(entry);
     let committed = false;
     try {
-      const operations =
-        direction === 'redo'
-          ? entry.batches.flatMap(batch => batch.operations)
-          : entry.batches
-              .slice()
-              .reverse()
-              .flatMap(batch => batch.inverse);
-      const result = input.apply(operations);
+      const changes = direction === 'redo' ? entry.batches : entry.batches.slice().reverse();
+      const result = input.apply(changes, direction === 'redo' ? 'forward' : 'backward');
       committed = result.status !== 'rejected';
       if (committed && direction === 'cancel') group = undefined;
       if (result.status === 'unchanged') {
@@ -163,9 +156,8 @@ export const createHistory = <TCommit>(input: {
   };
   return {
     api,
-    record: (operations: readonly DocumentOperation[], inverse: readonly DocumentOperation[]) => {
+    record: (batch: ChangeSet) => {
       if (input.capacity <= 0) return;
-      const batch = { operations, inverse };
       if (group?.entry) group.entry.batches.push(batch);
       else {
         const entry: Entry = { batches: [batch] };

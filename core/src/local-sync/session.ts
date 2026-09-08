@@ -3,8 +3,8 @@ import {
   type RuntimeWriteDriverLease,
   type RuntimeWriteIntent,
 } from '../runtime/driver';
-import type { DocumentCommit, DocumentRuntime, OperationResult } from '../runtime/contract';
-import type { DocumentSchema, Infer } from '../schema';
+import type { DocumentCommit } from '../runtime/contract';
+import type { ObjectNode, Infer } from '../schema';
 import {
   LocalSyncConsistencyError,
   LocalSyncDisposedError,
@@ -87,7 +87,7 @@ const notification = (value: unknown): CommitNotification | undefined => {
   return record as CommitNotification;
 };
 
-export const attachLocalSync = async <TSchema extends DocumentSchema>(
+export const attachLocalSync = async <TSchema extends ObjectNode>(
   input: AttachLocalSyncOptions<TSchema>
 ): Promise<LocalSync> => {
   const runtime = input.runtime;
@@ -180,10 +180,13 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
       if (commit.seq !== headSeq + 1)
         throw new LocalSyncConsistencyError('Local commit log contains a sequence gap.');
       const result = runRuntime(() =>
-        runtime.apply(commit.operations, { source: 'remote', history: false })
+        runtime.apply(
+          { changes: commit.changes },
+          { expectedRevision: runtime.revision(), source: 'remote', history: false }
+        )
       );
       if (result.status !== 'committed')
-        throw new LocalSyncConsistencyError('A stored local command could not be applied.');
+        throw new LocalSyncConsistencyError('A stored local ChangeSet could not be applied.');
       headSeq = commit.seq;
     };
 
@@ -224,14 +227,14 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
       return next;
     };
 
-    const persist = async (operations: readonly JsonValue[]): Promise<void> => {
+    const persist = async (changes: readonly JsonValue[]): Promise<void> => {
       const storedCommit = await timeline.append({
         documentId,
         expectedHeadSeq: headSeq,
-        operations,
+        changes,
       });
       if (storedCommit.seq !== headSeq + 1)
-        throw new LocalSyncConsistencyError('A local command was assigned an unexpected sequence.');
+        throw new LocalSyncConsistencyError('A local commit was assigned an unexpected sequence.');
       headSeq = storedCommit.seq;
       publishState();
       channel?.postMessage({
@@ -243,12 +246,12 @@ export const attachLocalSync = async <TSchema extends DocumentSchema>(
 
     const record = (commit: DocumentCommit<TSchema>): void => {
       try {
-        const operations = jsonArray(
-          commit.operations,
-          'local command operations',
-          input.commandLimits
+        const changes = jsonArray(
+          commit.changes.changes,
+          'local commit changes',
+          input.changeLimits
         );
-        void enqueue(() => persist(operations)).catch(() => undefined);
+        void enqueue(() => persist(changes)).catch(() => undefined);
       } catch (error) {
         fail(error);
       }

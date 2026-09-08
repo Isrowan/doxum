@@ -1,191 +1,160 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  assign,
   createDocument,
-  dict,
+  createProjectionRuntime,
   field,
   list,
   map,
   object,
   optional,
-  schema,
   select,
+  snapshot,
   table,
   tree,
   variant,
-  type DocumentTreeValue,
-  type DocumentWriter,
+  type CollectionImpact,
+  type Draft,
   type Infer,
-  type ValueSelector,
-} from 'doxum';
-
+  type Read,
+  type DocumentTreeValue,
+} from '../src';
 const outcome = variant('kind', {
   victory: object({ reason: field<'sealed' | 'destroyed'>() }),
   defeat: object({ reason: field<'deadline' | 'collapse'>() }),
 });
 type Outcome = Infer<typeof outcome>;
-type ExpectedOutcome =
-  | { readonly kind: 'victory'; readonly reason: 'sealed' | 'destroyed' }
-  | { readonly kind: 'defeat'; readonly reason: 'deadline' | 'collapse' };
-
-declare const brand: unique symbol;
-type EntityId = string & { readonly [brand]: 'entity' };
-type Payload = { left: string } & { right: number };
-type Callback = ((id: EntityId) => Payload) & { label: string };
-
-describe('schema value inference', () => {
-  it('flattens each discriminated branch and preserves narrowing and readonly fields', () => {
-    expectTypeOf<Outcome>().toEqualTypeOf<ExpectedOutcome>();
-    expectTypeOf<Extract<Outcome, { kind: 'victory' }>>().toEqualTypeOf<{
-      readonly kind: 'victory';
-      readonly reason: 'sealed' | 'destroyed';
-    }>();
-
-    const check = (value: Outcome) => {
-      if (value.kind === 'victory') {
-        expectTypeOf(value.reason).toEqualTypeOf<'sealed' | 'destroyed'>();
-        // @ts-expect-error A discriminant is readonly, including when assigning the same tag.
-        value.kind = 'victory';
-        // @ts-expect-error Schema-generated properties are readonly.
-        value.reason = 'sealed';
-      } else {
-        expectTypeOf(value.reason).toEqualTypeOf<'deadline' | 'collapse'>();
-      }
-      // @ts-expect-error A defeat reason cannot be paired with the victory tag.
-      const invalid: Outcome = { kind: 'victory', reason: 'deadline' };
-      return invalid;
-    };
-    void check;
-  });
-
-  it('uses one inference entry for schemas and nodes, including nested collections', () => {
-    const entry = object({ title: field<string>(), note: optional(field<string>()) });
-    const model = schema({
-      details: object({ outcome, entry }),
-      outcomes: table(outcome),
-      entries: map(entry),
-      empty: object({}),
+type PersonId = string & { readonly personId: unique symbol };
+type TripId = string & { readonly tripId: unique symbol };
+const personId = (value: unknown): PersonId => {
+  if (typeof value !== 'string' || !value.startsWith('person:')) throw new Error('person ID');
+  return value as PersonId;
+};
+describe('schema inference and public access', () => {
+  it('flattens discriminated variants and retains narrowing', () => {
+    expectTypeOf<Outcome>().toEqualTypeOf<
+      | { readonly kind: 'victory'; readonly reason: 'sealed' | 'destroyed' }
+      | { readonly kind: 'defeat'; readonly reason: 'deadline' | 'collapse' }
+    >();
+    const runtime = createDocument({
+      schema: object({ outcome }),
+      initial: { outcome: { kind: 'victory', reason: 'sealed' } },
     });
-    type Entry = { readonly title: string; readonly note?: string };
-    expectTypeOf<Infer<typeof entry>>().toEqualTypeOf<Entry>();
-    expectTypeOf<Infer<typeof model>>().toEqualTypeOf<{
-      readonly details: { readonly outcome: ExpectedOutcome; readonly entry: Entry };
-      readonly outcomes: {
-        readonly ids: readonly string[];
-        readonly byId: Readonly<Record<string, ExpectedOutcome>>;
-      };
-      readonly entries: Readonly<Record<string, Entry>>;
-      readonly empty: {};
-    }>();
-    const emptyBranch = variant('status', { empty: object({}), ready: entry });
-    expectTypeOf<Infer<typeof emptyBranch>>().toEqualTypeOf<
-      | { readonly status: 'empty' }
-      | { readonly status: 'ready'; readonly title: string; readonly note?: string }
-    >();
-    const flags = object({ enabled: optional(field<boolean>()) });
-    expectTypeOf<Infer<typeof flags>>().toEqualTypeOf<{ readonly enabled?: boolean }>();
-    expectTypeOf<Infer<typeof entry | typeof outcome>>().toEqualTypeOf<Entry | ExpectedOutcome>();
-    // @ts-expect-error Infer accepts schema nodes and schemas, not raw shapes or arbitrary values.
-    expectTypeOf<Infer<{ title: string }>>().toEqualTypeOf<never>();
+    runtime.update(d => {
+      if (d.outcome.kind === 'victory') {
+        expectTypeOf(d.outcome.reason).toEqualTypeOf<'sealed' | 'destroyed'>();
+        d.outcome.reason = 'destroyed';
+      }
+    });
+    const illegal = (d: Draft<typeof runtime.schema>) => {
+      // @ts-expect-error The discriminant is readonly.
+      d.outcome.kind = 'defeat';
+    };
+    void illegal;
   });
-
-  it('preserves opaque user types inside fields and scalar containers', () => {
-    const id = field<EntityId>();
-    const payload = field<Payload>();
-    const callback = field<Callback>();
-    const tuple = field<readonly [EntityId, Payload?]>();
-    const date = field<Date>();
-    const unknownValue = field<unknown>();
-    const impossible = field<never>();
-    const model = schema({ id, payload, callback, tuple, date });
-    expectTypeOf<Infer<typeof id>>().toEqualTypeOf<EntityId>();
-    expectTypeOf<Infer<typeof payload>>().toEqualTypeOf<Payload>();
-    expectTypeOf<Infer<typeof callback>>().toEqualTypeOf<Callback>();
-    expectTypeOf<Infer<typeof tuple>>().toEqualTypeOf<readonly [EntityId, Payload?]>();
-    expectTypeOf<Infer<typeof date>>().toEqualTypeOf<Date>();
-    expectTypeOf<Infer<typeof unknownValue>>().toEqualTypeOf<unknown>();
-    expectTypeOf<Infer<typeof impossible>>().toEqualTypeOf<never>();
+  it('infers optional containers and exact independent snapshots', () => {
+    const settings = object({ get: field<string>(), n: field<number>() });
+    const model = object({
+      settings,
+      outcome: optional(outcome),
+      rows: optional(list(field<string>(), { keyOf: v => v })),
+      outline: optional(tree(field<string>())),
+    });
     expectTypeOf<Infer<typeof model>>().toEqualTypeOf<{
-      readonly id: EntityId;
-      readonly payload: Payload;
-      readonly callback: Callback;
-      readonly tuple: readonly [EntityId, Payload?];
-      readonly date: Date;
-    }>();
-    const values = dict<'left' | 'right', Payload>();
-    const rows = list<Payload>({ keyOf: value => value.left });
-    const outline = tree<Payload>();
-    expectTypeOf<Infer<typeof values>>().toEqualTypeOf<
-      Readonly<Partial<Record<'left' | 'right', Payload>>>
-    >();
-    expectTypeOf<Infer<typeof rows>>().toEqualTypeOf<readonly Payload[]>();
-    expectTypeOf<Infer<typeof outline>>().toEqualTypeOf<DocumentTreeValue<Payload>>();
-  });
-
-  it('represents absence for every optional node without making required fields optional', () => {
-    const note = optional(field<string>());
-    const result = optional(outcome);
-    const values = optional(dict<'count', number>());
-    const rows = optional(list<string>({ keyOf: value => value }));
-    const outline = optional(tree<string>());
-    const model = schema({ title: field<string>(), note, result, values, rows, outline });
-    expectTypeOf<Infer<typeof note>>().toEqualTypeOf<string | undefined>();
-    expectTypeOf<Infer<typeof result>>().toEqualTypeOf<ExpectedOutcome | undefined>();
-    expectTypeOf<Infer<typeof values>>().toEqualTypeOf<{ readonly count?: number } | undefined>();
-    expectTypeOf<Infer<typeof rows>>().toEqualTypeOf<readonly string[] | undefined>();
-    expectTypeOf<Infer<typeof outline>>().toEqualTypeOf<DocumentTreeValue<string> | undefined>();
-    expectTypeOf<Infer<typeof model>>().toEqualTypeOf<{
-      readonly title: string;
-      readonly note?: string;
-      readonly result?: ExpectedOutcome;
-      readonly values?: { readonly count?: number };
+      readonly settings: { readonly get: string; readonly n: number };
+      readonly outcome?: Outcome;
       readonly rows?: readonly string[];
       readonly outline?: DocumentTreeValue<string>;
     }>();
-    // @ts-expect-error Required schema fields must remain required.
-    const missing: Infer<typeof model> = {};
-    void missing;
-  });
-
-  it('aligns snapshot, reader, writer and selector types with optional variant presence', () => {
-    const result = optional(outcome);
-    const model = schema({ result });
-    const runtime = createDocument({ schema: model, initial: {} });
-    expectTypeOf(runtime.snapshot()).toEqualTypeOf<Infer<typeof model>>();
-    expectTypeOf(model.value(path => path.result)).toEqualTypeOf<
-      ValueSelector<Infer<typeof result>>
+    const runtime = createDocument({ schema: model, initial: { settings: { get: 'G', n: 1 } } });
+    expectTypeOf(select(runtime, d => snapshot(d.settings))).toEqualTypeOf<
+      Infer<typeof settings>
     >();
-    const read = () => select(runtime, reader => reader.result.get());
-    expectTypeOf(read()).toEqualTypeOf<Infer<typeof result>>();
-    expect(read()).toBeUndefined();
-    runtime.update(tx => {
-      expectTypeOf(tx.write.result.replace).parameter(0).toEqualTypeOf<Outcome>();
-      tx.write.result.replace({ kind: 'victory', reason: 'sealed' });
-    });
-    expect(read()).toEqual({ kind: 'victory', reason: 'sealed' });
-    runtime.update(tx => tx.write.result.clear());
-    expect(read()).toBeUndefined();
-    runtime.dispose();
+    expectTypeOf(select(runtime, d => snapshot(d))).toEqualTypeOf<Infer<typeof model>>();
   });
-
-  it('requires present variant values for replacement and collection creation', () => {
-    const result = optional(outcome);
-    const model = schema({ result, rows: table(result), entries: map(result) });
-    type Entry = { readonly id: string; readonly value: ExpectedOutcome };
-    type Writer = DocumentWriter<typeof model>;
-    expectTypeOf<Writer['rows']['create']>().parameter(0).toEqualTypeOf<Entry | readonly Entry[]>();
-    expectTypeOf<Writer['entries']['create']>()
-      .parameter(0)
-      .toEqualTypeOf<Entry | readonly Entry[]>();
-    expectTypeOf<Infer<typeof model>['rows']['byId'][string]>().toEqualTypeOf<ExpectedOutcome>();
-    expectTypeOf<Infer<typeof model>['entries'][string]>().toEqualTypeOf<ExpectedOutcome>();
-    const check = (write: Writer) => {
-      // @ts-expect-error Clearing an optional variant requires clear().
-      write.result.replace(undefined);
-      // @ts-expect-error Collection creation requires a present entry value.
-      write.rows.create({ id: 'missing', value: undefined });
-      // @ts-expect-error A map entry also requires a present value.
-      write.entries.create({ id: 'missing', value: undefined });
+  it('enforces atomic payload readonly access while preserving Infer user types', () => {
+    const opaque = field<{
+      n: number;
+      points: { x: number }[];
+      values: Map<string, { n: number }>;
+    }>();
+    const model = object({ payload: opaque, n: field<number>() });
+    expectTypeOf<Infer<typeof opaque>>().toEqualTypeOf<{
+      n: number;
+      points: { x: number }[];
+      values: Map<string, { n: number }>;
+    }>();
+    const illegal = (d: Draft<typeof model>, r: Read<typeof model>) => {
+      // @ts-expect-error Atomic payload interiors cannot be drafted.
+      d.payload.n++;
+      // @ts-expect-error Atomic arrays cannot be pushed to.
+      d.payload.points.push({ x: 1 });
+      // @ts-expect-error Atomic maps cannot be modified.
+      d.payload.values.set('a', { n: 1 });
+      // @ts-expect-error Structural reads cannot be assigned.
+      r.n = 1;
+      d.payload = { n: 1, points: [], values: new Map() };
     };
-    void check;
+    void illegal;
+  });
+  it('preserves domain keys across bracket access, table methods, paths, impact and projections', () => {
+    const person = object({ age: field<number>() });
+    const schema = object({
+      people: map(person, { key: personId }),
+      ordered: table(person, { key: personId }),
+    });
+    const runtime = createDocument({
+      schema,
+      initial: { people: {}, ordered: { ids: [], byId: {} } },
+    });
+    const id = personId('person:1');
+    const result = runtime.update(d => {
+      d.people[id] = { age: 1 };
+      d.ordered.create({ id, value: { age: 1 } });
+    });
+    if (result.status !== 'committed') throw new Error('commit');
+    expectTypeOf(result.commit.impact.collection(p => p.people)).toEqualTypeOf<
+      CollectionImpact<PersonId>
+    >();
+    const projection = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    const view = projection.map(
+      projection.document(runtime).collection(p => p.people),
+      (key, value) => {
+        expectTypeOf(key).toEqualTypeOf<PersonId>();
+        return value.age;
+      }
+    );
+    expectTypeOf(view.ids.current()).toEqualTypeOf<readonly PersonId[]>();
+    expect(view.item(id).current()).toBe(1);
+    const illegal = (d: Draft<typeof schema>, read: Read<typeof schema>, trip: TripId) => {
+      // @ts-expect-error Wrong domain for indexing.
+      read.people[trip];
+      // @ts-expect-error Wrong domain for writes.
+      d.people[trip] = { age: 1 };
+      // @ts-expect-error Wrong domain for typed assignment.
+      assign(d.people, trip, { age: 1 });
+      // @ts-expect-error Wrong domain for table access.
+      d.ordered.get(trip);
+      // @ts-expect-error Wrong anchor key domain.
+      d.ordered.move(id, { before: trip });
+      runtime.subscribe(
+        // @ts-expect-error Wrong path key domain.
+        p => p.people.item(trip).age,
+        () => {}
+      );
+      // @ts-expect-error Wrong projected item key domain.
+      view.item(trip);
+    };
+    void illegal;
+    expect(
+      runtime.update(d => {
+        d.people['trip:1' as PersonId] = { age: 3 };
+      }).status
+    ).toBe('rejected');
+    projection.dispose();
   });
 });

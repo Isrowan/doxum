@@ -1,16 +1,13 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, field, map, object, schema } from '../src';
-
-const model = schema({ rows: map(object({ x: field<number>(), y: field<number>() })) });
-
+import { createDocument, field, map, object, type SchemaPath } from '../src';
+const model = object({ rows: map(object({ x: field<number>(), y: field<number>() })) });
 describe('entity frames and subscription matching', () => {
   for (const [count, changed, listeners, offset, mode] of [
-    [10000, 100, 0, 2000, 'set'],
-    [10000, 100, 1000, 2000, 'set'],
-    [10000, 100, 1000, 950, 'set'],
-    [10000, 100, 1000, 0, 'set'],
-    [10000, 10000, 0, 0, 'set'],
-    [10000, 10000, 0, 0, 'update'],
+    [10000, 100, 0, 2000, 'draft'],
+    [10000, 100, 1000, 2000, 'draft'],
+    [10000, 100, 1000, 950, 'draft'],
+    [10000, 100, 1000, 0, 'draft'],
+    [10000, 10000, 0, 0, 'draft'],
   ] as const) {
     const ids = Array.from({ length: count }, (_, i) => String(i));
     const runtime = createDocument({
@@ -20,25 +17,19 @@ describe('entity frames and subscription matching', () => {
     });
     for (let i = 0; i < listeners; i++)
       runtime.subscribe(
-        model.value(path => path.rows.item(ids[i]).x),
+        (path: SchemaPath<(typeof model)['shape']>) => path.rows.item(ids[i]).x,
         () => {}
       );
     afterAll(() => runtime.dispose());
     bench(
       `${mode} ${changed}/${count}, ${listeners} listeners, offset ${offset}`,
       () => {
-        const result = runtime.update(tx => {
+        const result = runtime.update(draft => {
           for (let i = 0; i < changed; i++) {
             const id = ids[(i + offset) % count];
-            const write = tx.write.rows.item(id);
-            if (mode === 'update') {
-              write.x.update(x => x + 1);
-              write.y.update(y => y + 2);
-            } else {
-              const read = tx.read.rows.get(id)!;
-              write.x.set(read.x.get() + 1);
-              write.y.set(read.y.get() + 2);
-            }
+            const row = draft.rows[id]!;
+            row.x++;
+            row.y += 2;
           }
         });
         if (result.status !== 'committed' || result.observerErrors.length)
@@ -48,9 +39,8 @@ describe('entity frames and subscription matching', () => {
     );
   }
 });
-
 describe('nested entity frames', () => {
-  const definition = schema({
+  const definition = object({
     entities: map(
       object({
         position: object({ x: field<number>(), y: field<number>() }),
@@ -70,8 +60,9 @@ describe('nested entity frames', () => {
         ),
       },
     });
-    const collection = definition.collection(p => p.entities);
-    const target = definition.value(p => p.entities.item(ids[0]).position.x);
+    const collection = (p: SchemaPath<(typeof definition)['shape']>) => p.entities;
+    const target = (p: SchemaPath<(typeof definition)['shape']>) =>
+      p.entities.item(ids[0]).position.x;
     runtime.subscribe(commit => {
       if (mode === 'collection-impact') {
         const change = commit.impact.collection(collection);
@@ -85,11 +76,11 @@ describe('nested entity frames', () => {
     bench(
       mode,
       () => {
-        const result = runtime.update(tx => {
+        const result = runtime.update(draft => {
           for (const id of ids) {
-            const position = tx.write.entities.item(id).position;
-            position.x.update(x => (mode === 'unchanged' ? x : x + 1));
-            position.y.update(y => (mode === 'unchanged' ? y : y + 2));
+            const position = draft.entities[id]!.position;
+            position.x = mode === 'unchanged' ? position.x : position.x + 1;
+            position.y = mode === 'unchanged' ? position.y : position.y + 2;
           }
         });
         if (

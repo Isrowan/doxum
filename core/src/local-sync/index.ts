@@ -9,5 +9,5 @@ export {
 } from './contract';
 export type { AttachLocalSyncOptions, LocalSync, LocalSyncState } from './contract';
 export { LocalSyncDataError } from './json';
-export { defaultJsonCommandLimits } from './json';
-export type { JsonCommandLimits, JsonPrimitive, JsonValue } from './json';
+export { defaultJsonChangeLimits } from './json';
+export type { JsonChangeLimits, JsonPrimitive, JsonValue } from './json';

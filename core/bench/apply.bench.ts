@@ -1,89 +1,57 @@
-import { bench, describe } from 'vitest';
-import { createDocument, field, object, schema, table } from '../src/index';
-
-const project = object({ name: field<string>(), value: field<number>() });
-const documentSchema = schema({
-  value: field<number>(),
-  meta: object({ value: field<number>() }),
-  projects: table(project),
-});
-const makeInitial = (projectCount: number) => ({
-  value: 0,
-  meta: { value: 0 },
-  projects: {
-    ids: Array.from({ length: projectCount }, (_, index) => `project-${index}`),
-    byId: Object.fromEntries(
-      Array.from({ length: projectCount }, (_, index) => [
-        `project-${index}`,
-        { name: `Project ${index}`, value: index },
-      ])
-    ),
-  },
-});
-
-describe('runtime steady-state', () => {
-  const scalarRuntime = createDocument({
-    schema: documentSchema,
-    initial: makeInitial(1),
-    history: false,
-  });
-  let scalarIndex = 0;
-  bench('apply / scalar update', () => {
-    scalarRuntime.apply([{ type: 'field.set', at: ['value'], value: scalarIndex++ }]);
-  });
-
-  const noOpRuntime = createDocument({
-    schema: documentSchema,
-    initial: makeInitial(1),
-    history: false,
-  });
-  bench('apply / scalar no-op', () => {
-    noOpRuntime.apply([{ type: 'field.set', at: ['value'], value: 0 }]);
-  });
-
-  const transactionRuntime = createDocument({
-    schema: documentSchema,
-    initial: makeInitial(1),
-    history: false,
-  });
-  let transactionIndex = 0;
-  bench('update / scalar update', () => {
-    transactionRuntime.update(tx => tx.write.value.set(transactionIndex++));
-  });
-
-  const collectionRuntime = createDocument({
-    schema: documentSchema,
-    initial: makeInitial(10_000),
-    history: false,
-  });
-  let collectionIndex = 0;
-  bench('apply / 10k collection single item', () => {
-    const index = collectionIndex++ % 10_000;
-    collectionRuntime.apply([
-      {
-        type: 'field.set',
-        at: ['projects', `project-${index}`, 'name'],
-        value: `Updated ${collectionIndex}`,
+import { afterAll, bench, describe } from 'vitest';
+import { createDocument, field, map, object } from '../src';
+const model = object({ rows: map(object({ n: field<number>() })) });
+describe('ChangeSet and draft costs', () => {
+  for (const count of [1, 100, 10000]) {
+    const initial = {
+      rows: Object.fromEntries(Array.from({ length: count }, (_, n) => [String(n), { n: 0 }])),
+    };
+    const runtime = createDocument({ schema: model, initial, history: false });
+    let value = 0;
+    afterAll(() => runtime.dispose());
+    bench(
+      `apply ${count} final field facts`,
+      () => {
+        const before = value++,
+          after = value;
+        const changes = {
+          changes: Array.from({ length: count }, (_, n) => ({
+            kind: 'value',
+            at: ['rows', String(n), 'n'],
+            before: { present: true, value: before },
+            after: { present: true, value: after },
+          })),
+        };
+        if (runtime.apply(changes, { expectedRevision: runtime.revision() }).status !== 'committed')
+          throw new Error('Apply failed');
       },
-    ]);
-  });
-
-  for (const size of [1, 10, 100, 1000]) {
+      { time: 150, iterations: 5 }
+    );
+  }
+  for (const repeats of [1, 100, 10000]) {
     const runtime = createDocument({
-      schema: documentSchema,
-      initial: makeInitial(1),
+      schema: object({ n: field<number>() }),
+      initial: { n: 0 },
       history: false,
     });
-    let batchIndex = 0;
-    bench(`apply / batch ${size}`, () => {
-      const value = batchIndex++;
-      runtime.apply(
-        Array.from({ length: size }, (_, index) => ({
-          type: 'field.set' as const,
-          at: ['meta', 'value'] as const,
-          value: value * size + index,
-        }))
-      );
-    });
+    afterAll(() => runtime.dispose());
+    bench(
+      `draft ${repeats} writes to one field`,
+      () => {
+        runtime.update(d => {
+          for (let n = 0; n < repeats; n++) d.n++;
+        });
+      },
+      { time: 150, iterations: 5 }
+    );
+    bench(
+      `draft ${repeats} unchanged writes`,
+      () => {
+        runtime.update(d => {
+          for (let n = 0; n < repeats; n++) d.n = d.n;
+        });
+      },
+      { time: 150, iterations: 5 }
+    );
   }
 });

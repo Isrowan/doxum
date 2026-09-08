@@ -1,9 +1,4 @@
-import type {
-  CollectionReader,
-  DocumentReader,
-  ReaderOfNode,
-  SnapshotReader,
-} from '../access/reader';
+import type { CollectionAccess, Read } from '../access/scope';
 import type { CollectionImpact } from '../impact';
 import type {
   DocumentCommit,
@@ -14,12 +9,10 @@ import type {
 import type {
   CollectionNode,
   CollectionId,
-  CollectionValue,
   CollectionPath,
-  CollectionSelector,
-  DocumentSchema,
-  EntitySchemaNode,
-  ImpactTarget,
+  ObjectNode,
+  ValueSchemaNode,
+  PathPick,
   SchemaPath,
 } from '../schema';
 import type { Readable } from './readable';
@@ -30,39 +23,34 @@ export type ProjectionSources = Readonly<Record<string, ProjectionSource<unknown
 export type ProjectionInputs<S extends ProjectionSources> = {
   readonly [K in keyof S]: S[K] extends ProjectionSource<infer T> ? T : never;
 };
-export type DocumentInput<S extends DocumentSchema> = {
-  readonly read: DocumentReader<S>;
+export type DocumentInput<S extends ObjectNode> = {
+  readonly read: Read<S>;
   readonly revision: number;
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
 };
 export type DocumentCollectionInput<
-  S extends DocumentSchema,
-  N extends EntitySchemaNode,
+  S extends ObjectNode,
+  N extends ValueSchemaNode,
   K extends string = string,
-  V = unknown,
 > = {
-  readonly read: CollectionReader<K, N> & SnapshotReader<V>;
-  readonly target: CollectionSelector<K, N>;
+  readonly read: CollectionAccess<K, N>;
   readonly revision: number;
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
   readonly candidates: { readonly keys: readonly K[]; readonly orderDirty: boolean };
 };
-export type DocumentSource<S extends DocumentSchema> = ProjectionSource<DocumentInput<S>> & {
+export type DocumentSource<S extends ObjectNode> = ProjectionSource<DocumentInput<S>> & {
   collection<P extends CollectionPath>(
     pick: (path: SchemaPath<S['shape']>) => P
-  ): DocumentCollectionSource<S, CollectionNode<P>, CollectionId<P>, CollectionValue<P>>;
-  targets(
-    ...targets: readonly [ImpactTarget, ...ImpactTarget[]]
-  ): ProjectionSource<DocumentInput<S>>;
+  ): DocumentCollectionSource<S, CollectionNode<P>, CollectionId<P>>;
+  targets(...targets: readonly [PathPick<S>, ...PathPick<S>[]]): ProjectionSource<DocumentInput<S>>;
 };
 export type DocumentCollectionSource<
-  S extends DocumentSchema,
-  N extends EntitySchemaNode,
+  S extends ObjectNode,
+  N extends ValueSchemaNode,
   K extends string = string,
-  V = unknown,
-> = ProjectionSource<DocumentCollectionInput<S, N, K, V>>;
+> = ProjectionSource<DocumentCollectionInput<S, N, K>>;
 export type ValueInput<T> = {
   readonly value: T;
   readonly previous: T;
@@ -145,7 +133,7 @@ export class ProjectionDisposedError extends Error {
   }
 }
 export type ProjectionRuntime = {
-  document<S extends DocumentSchema>(runtime: DocumentReadable<S>): DocumentSource<S>;
+  document<S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentSource<S>;
   fromReadable<T>(
     readable: Readable<T>,
     options?: { readonly isEqual?: (a: T, b: T) => boolean }
@@ -166,9 +154,9 @@ export type ProjectionRuntime = {
   collection<V, K extends string = string>(): <S extends ProjectionSources>(
     spec: CollectionSpec<S, K, V>
   ) => ProjectionCollection<K, V>;
-  map<S extends DocumentSchema, N extends EntitySchemaNode, K extends string, V>(
+  map<S extends ObjectNode, N extends ValueSchemaNode, K extends string, V>(
     source: DocumentCollectionSource<S, N, K>,
-    mapper: (id: K, entry: ReaderOfNode<N>) => Synchronous<V>,
+    mapper: (id: K, entry: Read<N>) => Synchronous<V>,
     options?: { readonly isEqual?: (a: V, b: V) => boolean }
   ): ProjectionCollection<K, V>;
   map<K extends string, V, R>(

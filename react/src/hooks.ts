@@ -1,15 +1,13 @@
 import type {
   DocumentReadable,
-  DocumentSchema,
+  ObjectNode,
   DocumentSelector,
   HistoryState,
-  ImpactTarget,
   LocalHistory,
   OperationResult,
   Readable,
 } from 'doxum';
-import { target } from 'doxum';
-import { track } from 'doxum/integration';
+import { track, subscribeDependencies, sameTarget, type ImpactTarget } from 'doxum/integration';
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 
 export type DocumentSelectorOptions<TResult> = {
@@ -17,7 +15,7 @@ export type DocumentSelectorOptions<TResult> = {
   readonly server?: () => TResult;
 };
 
-type SelectorCache<TSchema extends DocumentSchema, TResult> = {
+type SelectorCache<TSchema extends ObjectNode, TResult> = {
   readonly runtime: DocumentReadable<TSchema>;
   readonly value: TResult;
   readonly targets: readonly ImpactTarget<unknown>[];
@@ -30,11 +28,11 @@ const sameTargets = (
 ): boolean => {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1)
-    if (!target.same(left[index], right[index])) return false;
+    if (!sameTarget(left[index], right[index])) return false;
   return true;
 };
 
-export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
+export function useDocumentSelector<TSchema extends ObjectNode, TResult>(
   runtime: DocumentReadable<TSchema>,
   selector: DocumentSelector<TSchema, TResult>,
   options?: DocumentSelectorOptions<TResult>
@@ -77,12 +75,7 @@ export function useDocumentSelector<TSchema extends DocumentSchema, TResult>(
       let unsubscribe: () => void = () => undefined;
       const install = () => {
         if (targets.length === 0) return () => undefined;
-        return runtime.subscribe(
-          targets.length === 1
-            ? targets[0]
-            : (targets as [ImpactTarget<unknown>, ...ImpactTarget<unknown>[]]),
-          onCommit
-        );
+        return subscribeDependencies(runtime, targets, onCommit);
       };
       const onCommit = () => {
         const previous = cache.current;
