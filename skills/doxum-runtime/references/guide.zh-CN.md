@@ -27,7 +27,7 @@ document.subscribe(
 ```
 
 根 object 是定义身份，runtime 拥有状态与 revision。事务同步且原子，修改立即可读。
-结构作用域在回调结束后失效。预期拒绝抛 TransactionRejected；普通异常完整恢复后
+Draft 和内部 readWith 是同步回调内的借用视图，不得逃逸。预期拒绝抛 TransactionRejected；普通异常完整恢复后
 原样抛出。正常返回 false/undefined 是业务结果，不表示拒绝。
 
 object 暴露可编辑成员；field 是原子值，包括对象和数组。Infer 与作用域内原子值深只读；

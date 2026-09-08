@@ -42,20 +42,17 @@ export const readWith = <TSchema extends ObjectNode, TResult>(
 ): TResult => {
   const state = accessOf(runtime);
   if (state.disposed) throw new DocumentDisposedError();
-  let active = true;
   state.projectionLocks = (state.projectionLocks ?? 0) + 1;
   try {
     const reader = createAccess({
       schema: state.schema,
       root: () => state.document,
-      active: () => active,
       dependencies,
     }) as Read<TSchema>;
     return run(reader);
   } finally {
-    // Readers are transaction-scoped; retaining one cannot expose later
-    // mutable canonical state outside the coordinating operation.
-    active = false;
+    // readWith is an internal borrowed-reader boundary. Retaining its reader or
+    // collection methods after this callback is undefined behavior.
     state.projectionLocks!--;
   }
 };

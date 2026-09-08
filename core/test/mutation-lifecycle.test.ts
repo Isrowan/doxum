@@ -56,7 +56,7 @@ describe('mutation execution boundary', () => {
     driver.dispose();
   });
 
-  it('unlocks after decoding failures, preserves ordinary exceptions and expires drafts before observers', () => {
+  it('unlocks after decoding failures and preserves ordinary exceptions before observers', () => {
     const runtime = createDocument({ schema, initial });
     const failure = new Error('decoder getter');
     expect(() =>
@@ -71,14 +71,11 @@ describe('mutation execution boundary', () => {
     ).toThrow(failure);
     expect(runtime.apply({}, { expectedRevision: 0 }).status).toBe('rejected');
     expect(runtime.apply(changes(1), { expectedRevision: 9 }).status).toBe('rejected');
-    let escaped: Draft<typeof schema> | undefined;
     const observer = new Error('observer');
     runtime.subscribe(() => {
-      expect(() => escaped!.a).toThrow('expired');
       throw observer;
     });
     const result = runtime.update(d => {
-      escaped = d;
       d.a = 1;
       return 'value';
     });

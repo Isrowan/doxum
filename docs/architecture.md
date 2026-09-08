@@ -42,7 +42,13 @@ scope and schema-branch checks. Each read branch creates only its requested meth
 write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
 the old method throws; reading the method again obtains the current branch's method.
-All retained structural accesses and methods expire at callback completion.
+Public callback readers expire at callback completion. The internal `readWith` primitive
+uses a trusted borrowed-reader contract: its reader, child proxies and collection
+methods must not escape the synchronous callback. Escaping them is undefined behavior;
+`select`/`track` return values and dependency snapshots, not the reader itself.
+Draft follows the same borrowed lifetime contract inside `update`; projection source
+contexts retain their explicit active check because they have a separate scheduler
+lifecycle.
 
 Fixed object and variant branch shapes are compiled once per schema shape into
 immutable member layouts. `FixedLayout` contains descriptors with mandatory slots;
@@ -97,7 +103,10 @@ the internal overloads preserve that public result distinction. Authorization ru
 before this boundary, so driver exceptions propagate unchanged. Publish runs after
 seal and outside rollback handling: revision, history, impact and notifications are
 accepted together, and observer errors cannot turn an accepted commit into rejection.
-Draft access expires before seal or any observer runs.
+Draft access is a trusted borrowed view and must not escape the synchronous update
+callback. Its lifetime is an ownership contract rather than a runtime expiration
+check; schema, generation and session ownership checks remain for in-transaction
+structural correctness. Draft is never used during seal or observer notification.
 
 `mutation/session.ts` owns resolution, validation, the common member-write kernel,
 generation, tree capture coordination and recorder lifetime. Complete operations

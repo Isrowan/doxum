@@ -124,20 +124,12 @@ describe('draft transactions', () => {
     expect(Object.isFrozen(error.issues[0].address)).toBe(true);
     expect(runtime.snapshot()).toEqual(initial());
   });
-  it('expires drafts and reads, keeps identities stable within a scope, and rejects structural escape use', () => {
+  it('keeps draft identities stable within a scope and snapshots selected values', () => {
     const runtime = setup();
-    let escaped!: Draft<typeof model>;
     runtime.update(d => {
-      escaped = d;
       expect(d.rows.a).toBe(d.rows.a);
       d.n++;
     });
-    expect(() => escaped.n).toThrow('expired');
-    expect(() => {
-      escaped.n = 4;
-    }).toThrow('expired');
-    const read = select(runtime, state => state.rows);
-    expect(() => Object.keys(read)).toThrow('expired');
     const copy = select(runtime, state => snapshot(state.rows.a));
     expect(copy).toEqual({ n: 1, title: 'A' });
     runtime.update(d => d.rows.a!.n++);

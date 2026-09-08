@@ -4,8 +4,9 @@
    runtime 统一执行、回滚、seal、发布边界，history 同样复用。
    mutation/operations 按 table/list/order/tree/replay 分类完整操作，session 持有写入内核。
    scope 经 session 绑定已解析事实，同 generation 复用 handle；这些均为内部实现边界。
-2. 读写同步且有作用域，禁止重入写入。失败恢复之前全部工作；普通异常原样抛出，
-   TransactionRejected 转换为 application issues。
+2. 公共读写同步且有作用域，禁止重入写入。失败恢复之前全部工作；普通异常原样抛出，
+   TransactionRejected 转换为 application issues。内部 readWith 返回借用 reader，
+   reader、子 proxy 和 collection method 不得逃逸同步回调。
 3. mutation/changes.ts 统一解析 unknown ChangeSet；schema 为寻址真值。
    拒绝父子重叠事实与同地址重复分组。逐容器安装成员及可选顺序，不接受独立 order 记录。
 4. ChangeRecorder 按所属容器分组记录首次成员旧值，唯一拥有顺序基线和触及树节点。回滚不调用用户回调或

@@ -1,14 +1,15 @@
 import type { DocumentAddress, DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
+import type { ResolvedContainer } from '../../address';
 import * as anchor from '../anchor';
 import { fail } from '../issue';
 export function create(
   session: MutationSession,
+  container: ResolvedContainer,
   at: DocumentAddress,
   entries: readonly { id: string; value: unknown }[],
   position?: DocumentAnchor
 ): void {
-  const container = session.resolveContainer(at);
   const { node, value } = container;
   if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
   const table = value as { ids: string[]; byId: Record<string, unknown> };
@@ -39,10 +40,10 @@ export function create(
 }
 export function remove(
   session: MutationSession,
+  container: ResolvedContainer,
   at: DocumentAddress,
   ids: readonly string[]
 ): void {
-  const container = session.resolveContainer(at);
   const { node, value } = container;
   if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
   const table = value as { ids: string[]; byId: Record<string, unknown> };

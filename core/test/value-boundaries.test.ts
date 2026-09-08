@@ -42,7 +42,7 @@ describe('schema validation and snapshots', () => {
       d.entries.a = { nested: { n: 2 } };
       expect(snapshot(nested)).toEqual({ n: 2 });
     });
-    expect(escapedSnapshot).toThrow('expired');
+    expect(escapedSnapshot()).toEqual({ n: 2 });
   });
   it('rejects undeclared object properties at construction, parse and root replacement', () => {
     const schema = object({ n: field(number) });

@@ -1,14 +1,15 @@
 import type { DocumentAddress, DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
+import type { ResolvedContainer } from '../../address';
 import * as anchor from '../anchor';
 import { fail } from '../issue';
 export function insert(
   session: MutationSession,
+  container: ResolvedContainer,
   at: DocumentAddress,
   value: unknown,
   position?: DocumentAnchor
 ): void {
-  const container = session.resolveContainer(at);
   const { node, value: current } = container;
   if (node.kind !== 'list') return fail(at, 'invalid-list-key', 'Expected a list.');
   session.validate(node.value, value, at);
@@ -25,19 +26,23 @@ export function insert(
 }
 export function set(
   session: MutationSession,
+  container: ResolvedContainer,
   at: DocumentAddress,
   id: string,
   value: unknown
 ): void {
-  const container = session.resolveContainer(at);
   const { node, value: items } = container;
   if (node.kind !== 'list') return fail(at, 'invalid-list-key', 'Expected a list.');
   const index = anchor.indexedKeys(items as unknown[], node.keyOf).index(id);
   if (index < 0) return fail(at, 'missing-list-item', 'List key does not exist.');
   session.writeLocatedMember(container, id, session.definition(container, id), index, value, 'set');
 }
-export function remove(session: MutationSession, at: DocumentAddress, id: string): void {
-  const container = session.resolveContainer(at);
+export function remove(
+  session: MutationSession,
+  container: ResolvedContainer,
+  at: DocumentAddress,
+  id: string
+): void {
   const { node, value } = container;
   if (node.kind !== 'list') return fail(at, 'missing-list-item', 'List key does not exist.');
   const index = anchor.keys(value as unknown[], node.keyOf).index(id);

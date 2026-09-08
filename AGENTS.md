@@ -73,8 +73,10 @@ when a change touches addressing, mutation, impact, notifications, or views.
   Fixed and dynamic member layouts are discriminated schema facts; fixed members
   always have slots. Object/variant input is closed to undeclared own properties;
   use maps for dynamic keys and fields for arbitrary payloads.
-- `access/scope.ts` owns Read/Draft access. Structural scopes expire at callback
-  completion; atomic field interiors are readonly under the ownership contract.
+- `access/scope.ts` owns Read/Draft access. Draft and trusted internal readers are
+  borrowed for synchronous callbacks and must not escape; public reader lifetimes
+  retain explicit checks where required. Atomic field interiors are readonly under
+  the ownership contract.
   `assign` accepts plain Infer replacements through the same mutation session.
   Session constructs writable containers: resolve an address or bind current facts
   already resolved by scope. Preserve generation-local reuse; do not force an extra

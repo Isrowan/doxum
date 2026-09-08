@@ -212,10 +212,20 @@ export const resolveContainer = (
   value: unknown
 ): ResolvedContainer | undefined => {
   if (!node || (!isRecord(value) && !Array.isArray(value))) return undefined;
-  const parent = node.kind === 'table' && isRecord(value) ? value.byId : value;
+  const parent =
+    node.kind === 'table' && isRecord(value)
+      ? value.byId
+      : node.kind === 'tree' && isRecord(value)
+        ? value.nodes
+        : value;
   if (!isRecord(parent) && !Array.isArray(parent)) return undefined;
   let layout: MemberLayout;
-  if (node.kind === 'map' || node.kind === 'table' || node.kind === 'list') {
+  if (
+    node.kind === 'map' ||
+    node.kind === 'table' ||
+    node.kind === 'list' ||
+    node.kind === 'tree'
+  ) {
     let dynamic = compiledEntries.get(node);
     if (!dynamic) {
       dynamic = {

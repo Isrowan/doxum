@@ -174,6 +174,7 @@ export class MutationSession {
     return location;
   }
   editTree(
+    container: ResolvedContainer,
     at: DocumentAddress,
     run: (
       value: tree.MutableTree,
@@ -181,7 +182,7 @@ export class MutationSession {
       capture: (ids: readonly string[]) => void
     ) => void
   ): void {
-    const { node, value } = this.resolveValue(at);
+    const { node, value } = this.refresh(container);
     if (node.kind !== 'tree' || !tree.is(value))
       return fail(at, 'invalid-tree', 'Expected a tree.');
     run(value, node, ids => this.recorder.tree(at, value, ids));

@@ -45,7 +45,9 @@ readonly in `Infer`/`Read`/`Draft`: never mutate them through any alias, even af
 removal from the document. Published results are readonly by contract, without
 defensive deep copying or runtime freezing. Classes and functions need no copier.
 
-Drafts and structural reads expire when their callback returns. Ordinary property
+Drafts and structural reads are borrowed for their synchronous callback. Draft and
+internal reader proxies must not escape their callback; escaping them is undefined
+behavior. Ordinary property
 reads see preceding writes in the same update. Same-address proxies are stable
 within a scope and resolve against current structure after replacement.
 

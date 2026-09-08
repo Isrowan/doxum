@@ -62,7 +62,7 @@ export function apply(
           );
       }
     } else {
-      session.editTree(change.at, (current, node, capture) => {
+      session.editTree(session.resolveContainer(change.at), change.at, (current, node, capture) => {
         capture(change.nodes.map(n => n.id));
         const root = change[side];
         if (root === null) delete current.rootId;

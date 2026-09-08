@@ -5,9 +5,10 @@
    mutation/operations groups table/list/order/tree/replay commands by domain; session
    owns the write kernel. Scope binds already-resolved facts through session and
    reuses handles within a generation. These are internal implementation boundaries.
-2. Updates and reads are synchronous and scoped. Reentrant writes are forbidden.
+2. Updates and public reads are synchronous and scoped. Reentrant writes are forbidden.
    Failure restores all earlier work. Ordinary exceptions rethrow; TransactionRejected
-   returns application issues.
+   returns application issues. Internal readWith creates a borrowed reader; its
+   proxies and collection methods must not escape the synchronous callback.
 3. mutation/changes.ts decodes unknown ChangeSets once. Schema resolution is authoritative.
    Reject overlapping parent/child facts and duplicate groups. Each container group
    installs its members then its optional order; no standalone order records.

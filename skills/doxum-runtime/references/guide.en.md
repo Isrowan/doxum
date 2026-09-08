@@ -27,8 +27,9 @@ document.subscribe(
 ```
 
 Root object is definition identity; runtime owns its data/revision. Updates are
-synchronous and atomic. Reads see preceding writes. Structural scopes expire at
-callback return. Throw TransactionRejected for expected rejection; ordinary throws
+synchronous and atomic. Reads see preceding writes. Draft and trusted internal
+readWith scopes are borrowed for the synchronous callback and must not escape.
+Throw TransactionRejected for expected rejection; ordinary throws
 restore all work and rethrow unchanged. False/undefined returns are business values.
 
 Object exposes editable members; field is atomic, including arrays and objects.

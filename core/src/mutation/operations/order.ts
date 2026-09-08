@@ -1,14 +1,16 @@
 import type { DocumentAddress, DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
+import type { ResolvedContainer } from '../../address';
 import * as anchor from '../anchor';
 import { fail } from '../issue';
 export function move(
   session: MutationSession,
+  container: ResolvedContainer,
   at: DocumentAddress,
   id: string,
   position?: DocumentAnchor
 ): void {
-  const { node, value } = session.resolveValue(at);
+  const { node, value } = container;
   if (node.kind !== 'table' && node.kind !== 'list')
     return fail(at, 'invalid-collection', 'Expected an ordered container.');
   const items = node.kind === 'table' ? (value as { ids: string[] }).ids : (value as unknown[]);

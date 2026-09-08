@@ -113,20 +113,38 @@ type Access<N extends DocumentNode, W extends boolean> = N extends { readonly op
 export type Read<N extends DocumentNode> = Access<N, false>;
 export type Draft<N extends DocumentNode> = Access<N, true>;
 type Snapshot<T> = T extends { readonly [scopeValue]?: infer V } ? V : ReadonlyValue<T>;
-type Location = { readonly context: AccessContext; readonly at: DocumentAddress };
-const locationKey = Symbol('doxum.access');
-const accesses = new WeakSet<object>();
-const locationOf = (value: object): Location | undefined =>
-  accesses.has(value) ? (Reflect.get(value, locationKey) as Location) : undefined;
+type Target = {
+  at?: DocumentAddress;
+  parent?: Target;
+  key: string;
+  node: DocumentNode | undefined;
+  value: unknown;
+  generation: number;
+  children:
+    | { kind: 'fixed'; schema: DocumentNode; slots: (Target | undefined)[] }
+    | { kind: 'dynamic'; keys: Map<string, Target> }
+    | undefined;
+  proxy: object | undefined;
+  container?: ResolvedContainer;
+};
+type Location = { readonly context: AccessContext; readonly target: Target };
+const locations = new WeakMap<object, Location>();
+const locationOf = (value: object): Location | undefined => locations.get(value);
+const addressOf = (target: Target): DocumentAddress => {
+  if (target.at) return target.at;
+  profile.access('addresses');
+  return (target.at = addressOf(target.parent!).concat(target.key));
+};
 export type AccessContext = {
   readonly schema: ObjectNode;
   readonly root: () => unknown;
-  readonly active: () => boolean;
+  /** Omitted only for trusted synchronous readers whose proxies must not escape. */
+  readonly active?: () => boolean;
   readonly dependencies?: DependencyTracker;
   readonly session?: MutationSession;
 };
 const assertActive = (context: AccessContext) => {
-  if (!context.active()) throw new Error('Document access scope has expired.');
+  if (context.active && !context.active()) throw new Error('Document access scope has expired.');
 };
 const collect = (
   context: AccessContext,
@@ -142,7 +160,8 @@ const collect = (
 export const snapshot = <T>(value: T): Snapshot<T> => {
   const location = value && typeof value === 'object' ? locationOf(value) : undefined;
   if (!location) return value as Snapshot<T>;
-  const { context, at } = location;
+  const { context } = location;
+  const at = addressOf(location.target);
   profile.access('snapshots');
   collect(context, at);
   const resolved = resolveValue(context.schema, context.root(), at);
@@ -173,25 +192,6 @@ export type CollectionAccess<K extends string, N extends ValueSchemaNode> = Tabl
 >;
 export const createAccess = (context: AccessContext, initial: DocumentAddress = []): unknown => {
   profile.access('scopes');
-  type Target = {
-    at?: DocumentAddress;
-    parent?: Target;
-    key: string;
-    node: DocumentNode | undefined;
-    value: unknown;
-    generation: number;
-    children:
-      | { kind: 'fixed'; schema: DocumentNode; slots: (Target | undefined)[] }
-      | { kind: 'dynamic'; keys: Map<string, Target> }
-      | undefined;
-    proxy: object | undefined;
-    container?: ResolvedContainer;
-  };
-  const addressOf = (target: Target): DocumentAddress => {
-    if (target.at) return target.at;
-    profile.access('addresses');
-    return (target.at = addressOf(target.parent!).concat(target.key));
-  };
   const resolve = (target: Target) => {
     assertActive(context);
     const generation = context.session?.generation ?? 0;
@@ -232,7 +232,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     if (target.proxy) return target.proxy;
     const proxy = new Proxy(target, handler);
     profile.access('proxies');
-    accesses.add(proxy);
+    locations.set(proxy, { context, target });
     target.proxy = proxy;
     return proxy;
   };
@@ -290,10 +290,13 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       throw new TypeError('The collection method belongs to a replaced schema branch.');
     return current.value;
   };
-  const writableCollection = (target: Target, node: DocumentNode): MutationSession => {
+  const writableCollection = (
+    target: Target,
+    node: DocumentNode
+  ): { session: MutationSession; container: ResolvedContainer } => {
     const session = mutable();
     collectionValue(target, node);
-    return session;
+    return { session, container: writableContainer(target, session) };
   };
   const orderedMethod = (
     target: Target,
@@ -331,8 +334,10 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         );
       };
     if (property === 'move')
-      return (id: string, position?: DocumentAnchor) =>
-        orderOperations.move(writableCollection(target, node), at, id, position);
+      return (id: string, position?: DocumentAnchor) => {
+        const writable = writableCollection(target, node);
+        orderOperations.move(writable.session, writable.container, at, id, position);
+      };
     return undefined;
   };
   const tableMethod = (
@@ -345,20 +350,26 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       return (
         input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
         position?: DocumentAnchor
-      ) =>
+      ) => {
+        const writable = writableCollection(target, node);
         tableOperations.create(
-          writableCollection(target, node),
+          writable.session,
+          writable.container,
           at,
           Array.isArray(input) ? input : [input as { id: string; value: unknown }],
           position
         );
+      };
     if (property === 'remove')
-      return (ids: string | readonly string[]) =>
+      return (ids: string | readonly string[]) => {
+        const writable = writableCollection(target, node);
         tableOperations.remove(
-          writableCollection(target, node),
+          writable.session,
+          writable.container,
           at,
           typeof ids === 'string' ? [ids] : ids
         );
+      };
     return orderedMethod(target, property, node);
   };
   const listMethod = (
@@ -368,15 +379,25 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   ): unknown => {
     const at = addressOf(target);
     if (property === 'insert')
-      return (value: unknown, position?: DocumentAnchor) =>
-        listOperations.insert(writableCollection(target, node), at, value, position);
+      return (value: unknown, position?: DocumentAnchor) => {
+        const writable = writableCollection(target, node);
+        listOperations.insert(writable.session, writable.container, at, value, position);
+      };
     if (property === 'remove')
-      return (id: string) => listOperations.remove(writableCollection(target, node), at, id);
+      return (id: string) => {
+        const writable = writableCollection(target, node);
+        listOperations.remove(writable.session, writable.container, at, id);
+      };
     if (property === 'set')
-      return (id: string, value: unknown) =>
-        listOperations.set(writableCollection(target, node), at, id, value);
+      return (id: string, value: unknown) => {
+        const writable = writableCollection(target, node);
+        listOperations.set(writable.session, writable.container, at, id, value);
+      };
     if (property === 'replace')
-      return (value: unknown) => writableCollection(target, node).replace(at, value);
+      return (value: unknown) => {
+        const writable = writableCollection(target, node);
+        writable.session.replace(at, value);
+      };
     return orderedMethod(target, property, node);
   };
   const treeMethod = (
@@ -386,18 +407,30 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   ): unknown => {
     const at = addressOf(target);
     if (property === 'insert')
-      return (id: string, value: unknown, position?: tree.TreePosition) =>
-        treeOperations.insert(writableCollection(target, node), at, id, value, position);
+      return (id: string, value: unknown, position?: tree.TreePosition) => {
+        const writable = writableCollection(target, node);
+        treeOperations.insert(writable.session, writable.container, at, id, value, position);
+      };
     if (property === 'set')
-      return (id: string, value: unknown) =>
-        treeOperations.set(writableCollection(target, node), at, id, value);
+      return (id: string, value: unknown) => {
+        const writable = writableCollection(target, node);
+        treeOperations.set(writable.session, writable.container, at, id, value);
+      };
     if (property === 'remove')
-      return (id: string) => treeOperations.remove(writableCollection(target, node), at, id);
+      return (id: string) => {
+        const writable = writableCollection(target, node);
+        treeOperations.remove(writable.session, writable.container, at, id);
+      };
     if (property === 'move')
-      return (id: string, position?: tree.TreePosition) =>
-        treeOperations.move(writableCollection(target, node), at, id, position);
+      return (id: string, position?: tree.TreePosition) => {
+        const writable = writableCollection(target, node);
+        treeOperations.move(writable.session, writable.container, at, id, position);
+      };
     if (property === 'replace')
-      return (value: unknown) => writableCollection(target, node).replace(at, value);
+      return (value: unknown) => {
+        const writable = writableCollection(target, node);
+        writable.session.replace(at, value);
+      };
     const current = () => {
       collect(context, at);
       return collectionValue(target, node) as tree.MutableTree;
@@ -419,7 +452,6 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   };
   const handler: ProxyHandler<Target> = {
     get: (target, property) => {
-      if (property === locationKey) return { context, at: addressOf(target) };
       const { node, value } = resolve(target);
       if (!node || value === undefined) return undefined;
       if (typeof property !== 'string') return undefined;

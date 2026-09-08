@@ -12,7 +12,9 @@ Before runtime changes read [invariants](references/invariants.en.md) or
 
 - Root object defines schema identity; Infer describes readonly data with shared immutable payloads.
 - createDocument owns canonical state. update, apply and replace share one session.
-- Draft and Read scopes expire at callback completion. Use snapshot to retain data.
+- Draft and trusted internal readWith scopes are borrowed for synchronous callbacks;
+  their proxies must not escape. Public values should use snapshot when they need to
+  outlive the callback.
 - Atomic fields are deeply readonly during access and replaced whole.
 - Use assign(scope, key, value) for replacements containing nested collection tools.
 - Expected business failure throws TransactionRejected. Other exceptions roll back
