@@ -35,7 +35,9 @@ when a change touches addressing, mutation, impact, notifications, or views.
   Update history and notification tests alongside mutation behavior.
 - `mutation/changes.ts` is the sole unknown ChangeSet boundary. Decode and
   normalize before execution. `mutation/recorder.ts` owns first-touch state,
-  rollback and final net changes; do not keep per-write forward/inverse logs.
+  rollback and final net changes grouped by owning container; do not keep per-write
+  forward/inverse logs or a flat ChangeSet intermediate representation.
+  Members publish added/removed/updated transitions; root reset is explicit.
 - Public `apply` requires a matching `expectedRevision`. Record actual local
   before values rather than trusting incoming reverse data. Local root resets
   are reversible; remote commits invalidate local history.
@@ -49,7 +51,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
 - `mutation/anchor.ts` owns ordered-key and Anchor semantics. Table, list, and
   recorder code must call it rather than recreate key/index calculations.
 - `impact-target.ts` owns `ImpactTarget` address, schema ownership, identity,
-  equality, and bucketing. Core and React must not inspect selector target
+  equality, bucketing, and exact subscription matching. Notifications must not
+  construct commit impact indexes to filter candidates. Core and React must not inspect selector target
   shapes locally.
 - Schema resolution is authoritative for changes and selectors. Do not add
   alternate string-path parsers or separate address models.

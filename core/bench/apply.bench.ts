@@ -16,10 +16,9 @@ describe('ChangeSet and draft costs', () => {
           after = value;
         const changes = {
           changes: Array.from({ length: count }, (_, n) => ({
-            kind: 'value',
-            at: ['rows', String(n), 'n'],
-            before: { present: true, value: before },
-            after: { present: true, value: after },
+            kind: 'members',
+            at: ['rows', String(n)],
+            members: [{ key: 'n', kind: 'updated', before, after }],
           })),
         };
         if (runtime.apply(changes, { expectedRevision: runtime.revision() }).status !== 'committed')

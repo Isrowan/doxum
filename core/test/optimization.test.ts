@@ -49,13 +49,15 @@ describe('bounded mutation work', () => {
     expect(changed.status).toBe('committed');
     expect(writeWork.access).toMatchObject({
       proxies: count * 2 + 2,
-      addresses: count * 4 + 1,
+      addresses: count * 2 + 1,
       resolutions: 1,
     });
-    expect(writeWork.address).toMatchObject({ schemaSteps: count * 2, documentSteps: count * 2 });
+    expect(writeWork.address).toMatchObject({ schemaSteps: 0, documentSteps: 0 });
     expect(writeWork.recorder).toMatchObject({
       facts: count * 2,
-      sealed: count * 2,
+      groups: count,
+      transitions: count * 2,
+      sealed: count,
       orderSnapshots: 0,
     });
     expect(writeWork.copy.structures).toBe(0);

@@ -17,10 +17,15 @@ values are returned directly and never receive draft proxies.
 
 Structural writes advance the mutation session generation. Retained proxies then
 resolve through their current parents, sharing the renewed parent resolution.
-`address.ts` owns both full-path and single-member resolution. Draft assignments
-pass that resolved location into the same session write funnel used by address
-replay; `assign` enters the ordinary proxy assignment. No access or resolved
+`address.ts` owns full-path, container and compiled-member resolution. Draft assignments
+reuse a `ResolvedContainer` for the current session generation and call
+`setMember`/`removeMember`. They allocate no per-write address or resolved-member
+wrapper. Address replay resolves a group container and uses the same write funnel;
+`assign` enters the ordinary proxy assignment. No access or resolved
 canonical location is reused across transactions.
+Resolved containers carry a session identity token, not a reference back to the
+MutationSession and its recorder. Existing atomic collection-member updates keep
+their generation; membership and structural changes invalidate locations.
 
 Fixed object and variant branch shapes are compiled once per schema shape into
 immutable member descriptors. Their access path no longer performs a per-read
@@ -53,11 +58,13 @@ captures absorb descendant facts by reconstructing the initial touched subtree.
 Unrelated entities are not cloned or traversed. List slot identity uses stable
 keys rather than moving array indices.
 
-First-touch facts occupy an append-only array. Absorption clears descendant slots
-and their address-index entries; rollback and sealing skip those cleared slots.
-Value facts store original presence and value directly, and retain resolved
-non-array locations for sealing. Public presence objects are constructed only when
-publishing changes. Published before structures and order baselines transfer from
+First-touch members are grouped by their owning structural container. Each member
+map is also the deduplication registry, so there is no separate slot marker set.
+Groups share their address, schema and canonical location. Only structural
+operations build the recorder's logical-address coverage index. Absorption removes
+covered members and deletes empty groups; current object identity is never used
+as the authority for logical coverage across replacement.
+Published before structures and order baselines transfer from
 the recorder; after structures are copied away from canonical state. Payloads retain
 their original references. Results are readonly by contract and are not frozen.
 The resulting changes retain their deterministic lexicographic order.
@@ -70,7 +77,7 @@ Seal compares atomic fields with `Object.is`; structural nodes follow their valu
 schemas. Expandable structures are diffed directly without first recursively testing
 equality at each ancestor. Same-branch object replacements emit changed child facts, so deleting and
 recreating an entry does not invalidate unchanged fields. Root reset remains one
-whole-document value fact. `schema-value.ts` owns one structure copier for canonical
+explicit `reset` change. `schema-value.ts` owns one structure copier for canonical
 installation, snapshots, parse, rollback and commit publication. It copies editable
 schema structure and shares immutable payloads, including opaque classes, functions,
 list items and tree values. Snapshots never expose mutable canonical structure.
@@ -79,12 +86,19 @@ There is no generic payload clone, field copier or separate snapshot copying pro
 Validators run on original references under a pure, synchronous contract. Successful
 outputs are ignored. There is no protective copy or deep transformation detection;
 input mutation is a contract violation. Shape, key, tree and ChangeSet validation
-remain enforced. `Infer`, Read/Draft and raw snapshots expose readonly payload types.
+remain enforced. An identical already-valid member value is a no-op before validator
+invocation or first-touch capture. `Infer`, Read/Draft and raw snapshots expose readonly payload types.
 
 ## Change Boundary
 
-`changes.ts` defines value/presence, order and tree facts. Both presence states
-are explicit. A single reversible `ChangeSet` is stored on each commit.
+`changes.ts` defines `members`, `order`, `tree` and `reset`. A member transition has
+a key and an `added`, `removed` or `updated` kind with direct before/after values.
+This distinguishes absence from present undefined without Presence objects. Tree
+nodes use the same transition kinds; a tree root is a string or null for an empty
+tree. A reset has complete before/after values and must be the only change.
+A members group's address denotes its container, including `[]` for root members;
+it does not denote replacement of that container. A single reversible ChangeSet
+is stored on each commit. Member keys and tree node IDs are lexically sorted.
 `mutation/changes.ts` is the only unknown-input decoder; it checks envelope shape,
 duplicates and overlaps using the shared address index and establishes deterministic
 lexicographic address/kind order. No string-path parser or command envelope enters
@@ -92,8 +106,9 @@ executors.
 
 Application installs values first, tree units next/as encountered, then final
 orders. Table/list membership and tree structure must validate before publication.
-Parent value facts cannot overlap descendants; ordered containers can coexist
-with entry facts. Actual rollback facts are captured locally, independent of
+Conflicts are checked at logical member addresses, not group prefixes. Duplicate
+groups/keys and parent replacements overlapping descendants are rejected; an
+ancestor order can coexist with descendant member changes. Actual rollback facts are captured locally, independent of
 received before values. Public apply requires `expectedRevision`; local sync
 additionally checks durable sequence under exclusive Web Lock leadership.
 
@@ -102,6 +117,13 @@ additionally checks durable sequence under exclusive Web Lock leadership.
 Impact is derived only from sealed changes. Field/order indexes and collection
 query results are lazy. Collection queries do not construct a field trie.
 Subscriptions use a registration-time index to avoid scanning unrelated listeners.
+`impact-target.ts` classifies ordinary targets and membership-only targets, and
+owns matching in both query directions. Notification traverses shared group
+prefixes and changed member branches to collect exact hits, without expanding
+flat changes or querying commit impact. Order changes reach ordinary ancestor
+targets; member-internal edits do not reach membership-only targets. Multiple
+hits invoke a listener once. The public impact trie remains lazy for explicit
+queries, including those made by projections.
 React's tracked selection uses internal dependency capabilities from `integration`;
 application subscription APIs accept symbolic paths directly.
 
@@ -119,9 +141,11 @@ Observer errors are attached to an already committed result.
 Scalar work is proportional to touched fields, not total entities. Repeated writes
 retain one first-touch value. Structural replacement diffs only the touched subtree.
 Untracked structural reads create one proxy per visited location, with no full
-address arrays until needed. Scalar writes resolve one member from a current
-parent, rather than traversing its address again. Scope counters expose proxy,
-address and cache-refresh work; address counters include single-member resolution.
+address arrays until needed. Scalar writes reuse the current container and
+compiled schema member. Address allocation for repeated writes is bounded by
+distinct accessed containers, not assignment count. Scope counters expose proxy,
+address and cache-refresh work; recorder counters distinguish groups, first-touch
+members and published transitions. Impact counters expose explicit index builds.
 The first membership/order change of an ordered container may copy O(N) keys;
 array moves and list key lookup can also cost O(N). Tree deletion touches its
 subtree; child-order edits touch affected child arrays. These costs are deliberate
@@ -137,3 +161,8 @@ schema structure, and tree topology snapshots still copy affected child arrays.
 There is no compatibility execution path. Reader/writer factories, operation
 envelopes, inverse logs, journal inverse parsing, prepare, dictionary protocols,
 root schema wrappers and public target constructors have been removed.
+The previous flat value/Presence ChangeSet and resolved-slot write protocol have
+also been removed. Local-sync uses IndexedDB version 4 and record format 2. Old
+databases are rejected without modification; there is no implicit migration.
+JSON change limits count individual members and `1 + nodes.length` for tree
+changes, with one unit each for order/reset, rather than only outer groups.

@@ -190,16 +190,12 @@ describe('shared immutable payload ownership', () => {
         {
           changes: [
             {
-              kind: 'value',
-              at: ['payload'],
-              before: { present: true, value: 'untrusted' },
-              after: { present: true, value: after },
-            },
-            {
-              kind: 'value',
-              at: ['z'],
-              before: { present: true, value: 0 },
-              after: { present: true, value: 'bad' },
+              kind: 'members',
+              at: [],
+              members: [
+                { key: 'payload', kind: 'updated', before: 'untrusted', after },
+                { key: 'z', kind: 'updated', before: 0, after: 'bad' },
+              ],
             },
           ],
         },

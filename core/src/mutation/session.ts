@@ -1,11 +1,19 @@
 import type { ChangeDirection, ChangeSet } from '../changes';
 import type { DocumentAddress, DocumentAnchor, DocumentNode } from '../schema';
-import { createAddressResolver, nodeAt, read, type ResolvedAddress } from '../address';
+import {
+  createAddressResolver,
+  nodeAt,
+  read,
+  resolveContainer,
+  memberNode,
+  memberKey,
+  type ResolvedContainer,
+} from '../address';
 import { checkKey, checkValue, copyValue } from '../schema-value';
 import {
   ChangeRecorder,
   installOrder,
-  installValue,
+  installMember,
   orderOf,
   type CanonicalState,
 } from './recorder';
@@ -14,6 +22,7 @@ import * as anchor from './anchor';
 import * as tree from './tree';
 
 export class MutationSession {
+  readonly identity = {};
   generation = 0;
   readonly recorder: ChangeRecorder;
   private resolver;
@@ -36,24 +45,60 @@ export class MutationSession {
         issue.message
       );
   }
-  set(at: DocumentAddress, value: unknown, present = true, replacement = false): void {
-    this.setResolved(at, this.resolver.resolve(at), value, present, replacement);
-  }
-  setResolved(
-    at: DocumentAddress,
-    location: ResolvedAddress | undefined,
-    value: unknown,
-    present = true,
-    replacement = false
-  ): void {
+  resolve(at: DocumentAddress): ResolvedContainer {
+    const location = at.length ? this.resolver.resolve(at) : undefined;
     const node = at.length ? location?.node : this.state.schema;
-    if (!node || (at.length && !location))
-      return fail(at, 'invalid-address', 'Address does not exist.');
-    const parentNode = location?.parentNode;
-    if (parentNode?.kind === 'variant' && parentNode.tag === at[at.length - 1])
-      return fail(at, 'invalid-value', 'Variant discriminants are read-only.');
+    const value = at.length
+      ? location && (location.parent as Record<string | number, unknown>)[location.key]
+      : this.state.document;
+    return (
+      resolveContainer(this.identity, this.generation, at, node, value) ??
+      fail(at, 'invalid-address', 'Container does not exist.')
+    );
+  }
+  set(at: DocumentAddress, value: unknown, present = true, replacement = false): void {
+    if (!at.length) {
+      if (!present) return fail(at, 'required-field', 'The root cannot be removed.');
+      this.validate(this.state.schema, value, at);
+      if (Object.is(this.state.document, value)) return;
+      this.recorder.reset();
+      this.state.document = copyValue(this.state.schema, value);
+      this.invalidate();
+      return;
+    }
+    this.writeMember(this.resolve(at.slice(0, -1)), at[at.length - 1], value, present, replacement);
+  }
+  setMember(container: ResolvedContainer, key: string, value: unknown): void {
+    this.writeMember(container, key, value, true, false);
+  }
+  removeMember(container: ResolvedContainer, key: string): void {
+    this.writeMember(container, key, undefined, false, true);
+  }
+  private writeMember(
+    container: ResolvedContainer,
+    key: string,
+    value: unknown,
+    present: boolean,
+    replacement: boolean
+  ): void {
+    if (container.owner !== this.identity)
+      return fail(
+        container.at,
+        'invalid-address',
+        'Container belongs to another mutation session.'
+      );
+    if (container.generation !== this.generation) container = this.resolve(container.at);
+    const parentNode = container.node;
+    const node = memberNode(container, key);
+    if (!node) return fail(container.at.concat(key), 'invalid-address', 'Address does not exist.');
+    if (parentNode.kind === 'variant' && parentNode.tag === key)
+      return fail(
+        container.at.concat(key),
+        'invalid-value',
+        'Variant discriminants are read-only.'
+      );
     const entry =
-      parentNode?.kind === 'map' || parentNode?.kind === 'table' || parentNode?.kind === 'list';
+      parentNode.kind === 'map' || parentNode.kind === 'table' || parentNode.kind === 'list';
     if (
       !replacement &&
       !entry &&
@@ -62,46 +107,42 @@ export class MutationSession {
       !node.optional
     )
       return fail(
-        at,
+        container.at.concat(key),
         'invalid-value',
         'Replace fields, variants, or collection entries; edit object members individually.'
       );
     if (!present && !node.optional && !entry)
-      return fail(at, 'required-field', 'A required value cannot be removed.');
-    if (parentNode?.kind === 'map' || parentNode?.kind === 'table') {
-      const issue = checkKey(parentNode.key, at[at.length - 1], at);
-      if (issue) return fail(at, 'invalid-key', issue.message);
-    }
-    const existed = location ? Object.hasOwn(location.parent, location.key) : true;
-    const previous = location
-      ? (location.parent as Record<string | number, unknown>)[location.key]
-      : this.state.document;
-    if (present) {
-      this.validate(node, value, at);
-      if (parentNode?.kind === 'list' && parentNode.keyOf(value) !== at[at.length - 1])
-        return fail(at, 'invalid-list-key', 'Replacing an item must retain its addressed key.');
-    }
-    if (existed === present && (!present || Object.is(previous, value))) return;
-    this.recorder.value(at, node, location);
-    const nextValue = present ? copyValue(node, value) : undefined;
-    if (node.kind === 'field' && location && !Array.isArray(location.parent)) {
-      if (present) {
-        if (existed) location.parent[location.key] = nextValue;
-        else
-          Object.defineProperty(location.parent, location.key, {
-            value: nextValue,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-      } else delete location.parent[location.key];
-    } else
-      installValue(
-        this.state,
-        at,
-        present ? { present: true, value: nextValue } : { present: false }
+      return fail(
+        container.at.concat(key),
+        'required-field',
+        'A required value cannot be removed.'
       );
-    if (node.kind !== 'field' || entry) this.invalidate();
+    const physicalKey = memberKey(container, key);
+    const existed = Object.hasOwn(container.parent, physicalKey);
+    const previous = (container.parent as Record<string | number, unknown>)[physicalKey];
+    if (existed === present && (!present || Object.is(previous, value))) return;
+    if (parentNode.kind === 'map' || parentNode.kind === 'table') {
+      const issue = checkKey(parentNode.key, key, []);
+      if (issue)
+        return fail(container.at.concat(key, ...issue.address), 'invalid-key', issue.message);
+    }
+    if (present) {
+      if (node.kind === 'field') {
+        const issue = checkValue(node, value, []);
+        if (issue)
+          return fail(container.at.concat(key, ...issue.address), 'invalid-value', issue.message);
+      } else this.validate(node, value, container.at.concat(key));
+      if (parentNode.kind === 'list' && parentNode.keyOf(value) !== key)
+        return fail(
+          container.at.concat(key),
+          'invalid-list-key',
+          'Replacing an item must retain its addressed key.'
+        );
+    }
+    this.recorder.member(container, key, node, physicalKey);
+    const next = present ? (node.kind === 'field' ? value : copyValue(node, value)) : undefined;
+    installMember(container.parent, physicalKey, present, next);
+    if (node.kind !== 'field' || (entry && existed !== present)) this.invalidate();
   }
   private invalidate(): void {
     this.generation++;
@@ -183,7 +224,7 @@ export class MutationSession {
     if (keys.index(id) >= 0) return fail(at, 'duplicate-list-item', 'List key already exists.');
     if (!anchor.valid(keys, position)) return fail(at, 'invalid-anchor', 'Unknown list anchor.');
     this.recorder.order(at);
-    this.recorder.value([...at, id], node.value);
+    this.recorder.member(this.resolve(at), id, node.value);
     items.splice(anchor.index(keys, position), 0, value);
     this.invalidate();
   }
@@ -229,12 +270,13 @@ export class MutationSession {
     const side = direction === 'forward' ? 'after' : 'before';
     const containers = new Map<string, DocumentAddress>();
     for (const change of changes.changes) {
+      if (change.kind === 'reset' || change.kind === 'members') continue;
       const node = nodeAt(this.state.schema, change.at, this.state.document);
       if (change.kind === 'order') {
         if (node?.kind !== 'table' && node?.kind !== 'list')
           return fail(change.at, 'invalid-changes', 'Order requires an ordered container.');
         this.recorder.order(change.at);
-      } else if (change.kind === 'tree') {
+      } else {
         const current = read(this.state.document, change.at, this.state.schema);
         if (node?.kind !== 'tree' || !tree.is(current))
           return fail(change.at, 'invalid-tree', 'Tree facts require an existing tree.');
@@ -242,34 +284,53 @@ export class MutationSession {
     }
     for (const change of changes.changes) {
       if (change.kind === 'order') continue;
-      if (change.kind === 'value') {
-        const next = change[side];
-        const parentAt = change.at.slice(0, -1),
-          parentNode = nodeAt(this.state.schema, parentAt, this.state.document);
-        if (parentNode?.kind === 'list' || parentNode?.kind === 'table') {
-          this.recorder.order(parentAt);
-          containers.set(JSON.stringify(parentAt), parentAt);
+      if (change.kind === 'reset') {
+        this.set([], change[side], true, true);
+      } else if (change.kind === 'members') {
+        const container = this.resolve(change.at);
+        if (container.node.kind === 'list' || container.node.kind === 'table') {
+          this.recorder.order(change.at);
+          containers.set(JSON.stringify(change.at), change.at);
         }
-        this.set(change.at, next.present ? next.value : undefined, next.present, true);
+        for (const member of change.members) {
+          const present = side === 'after' ? member.kind !== 'removed' : member.kind !== 'added';
+          const value =
+            side === 'after'
+              ? member.kind !== 'removed'
+                ? member.after
+                : undefined
+              : member.kind !== 'added'
+                ? member.before
+                : undefined;
+          this.writeMember(container, member.key, value, present, true);
+        }
       } else {
         this.treeEdit(change.at, (current, capture) => {
           capture(change.nodes.map(n => n.id));
           const root = change[side];
-          if (root.present) current.rootId = root.value;
-          else delete current.rootId;
+          if (root === null) delete current.rootId;
+          else current.rootId = root;
           for (const item of change.nodes) {
-            const next = item[side];
-            if (next.present)
-              Object.defineProperty(current.nodes, item.id, {
-                value: { ...next.value, children: [...next.value.children] },
-                writable: true,
-                enumerable: true,
-                configurable: true,
-              });
-            else delete current.nodes[item.id];
+            const next =
+              side === 'after'
+                ? item.kind !== 'removed'
+                  ? item.after
+                  : undefined
+                : item.kind !== 'added'
+                  ? item.before
+                  : undefined;
+            installMember(
+              current.nodes,
+              item.id,
+              next !== undefined,
+              next && { ...next, children: [...next.children] }
+            );
           }
-          const node = nodeAt(this.state.schema, change.at, this.state.document)!;
-          this.validate(node, current, change.at);
+          this.validate(
+            nodeAt(this.state.schema, change.at, this.state.document)!,
+            current,
+            change.at
+          );
         });
       }
     }
@@ -281,8 +342,8 @@ export class MutationSession {
           node?.kind === 'table'
             ? Object.keys((current as { byId: object }).byId)
             : orderOf(this.state, change.at);
-        const next = change[side];
-        const nextKeys = new Set(next);
+        const next = change[side],
+          nextKeys = new Set(next);
         if (keys.length !== next.length || keys.some(id => !nextKeys.has(id)))
           return fail(
             change.at,

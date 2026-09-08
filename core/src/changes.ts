@@ -1,13 +1,15 @@
 import type { DocumentAddress, DocumentTreeNode } from './schema';
 
-export type Presence<T = unknown> =
-  { readonly present: false } | { readonly present: true; readonly value: T };
+export type ValueTransition<T = unknown> =
+  | { readonly kind: 'added'; readonly after: T }
+  | { readonly kind: 'removed'; readonly before: T }
+  | { readonly kind: 'updated'; readonly before: T; readonly after: T };
+export type MemberChange<T = unknown> = ValueTransition<T> & { readonly key: string };
 export type Change =
   | {
-      readonly kind: 'value';
+      readonly kind: 'members';
       readonly at: DocumentAddress;
-      readonly before: Presence;
-      readonly after: Presence;
+      readonly members: readonly MemberChange[];
     }
   | {
       readonly kind: 'order';
@@ -18,14 +20,13 @@ export type Change =
   | {
       readonly kind: 'tree';
       readonly at: DocumentAddress;
-      readonly before: Presence<string>;
-      readonly after: Presence<string>;
-      readonly nodes: readonly {
+      readonly before: string | null;
+      readonly after: string | null;
+      readonly nodes: readonly (ValueTransition<DocumentTreeNode<unknown>> & {
         readonly id: string;
-        readonly before: Presence<DocumentTreeNode<unknown>>;
-        readonly after: Presence<DocumentTreeNode<unknown>>;
-      }[];
-    };
+      })[];
+    }
+  | { readonly kind: 'reset'; readonly before: unknown; readonly after: unknown };
 /** One reversible, normalized state transition. Addresses are schema addresses. */
 export type ChangeSet = { readonly changes: readonly Change[] };
 export type ChangeDirection = 'forward' | 'backward';

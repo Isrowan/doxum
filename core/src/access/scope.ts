@@ -15,7 +15,15 @@ import type {
   ValueSchemaNode,
   VariantNode,
 } from '../schema';
-import { nodeAt, read as readAddress, resolveChild, resolveLocated } from '../address';
+import {
+  nodeAt,
+  read as readAddress,
+  resolveChild,
+  resolveLocated,
+  compiledMembers,
+  resolveContainer,
+  type ResolvedContainer,
+} from '../address';
 import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
 import type { MutationSession } from '../mutation/session';
@@ -103,31 +111,6 @@ type Snapshot<T> = T extends { readonly [scopeValue]?: infer V } ? V : ReadonlyV
 type Location = { readonly context: AccessContext; readonly at: DocumentAddress };
 const locationKey = Symbol('doxum.access');
 const accesses = new WeakSet<object>();
-type CompiledMember = { readonly node: DocumentNode; readonly field: boolean };
-const compiledObjects = new WeakMap<object, ReadonlyMap<string, CompiledMember>>();
-const compileObject = (shape: ObjectShape): ReadonlyMap<string, CompiledMember> => {
-  const cached = compiledObjects.get(shape);
-  if (cached) return cached;
-  const members = new Map<string, CompiledMember>();
-  for (const key of Object.keys(shape)) {
-    const node = shape[key];
-    members.set(key, { node, field: node.kind === 'field' });
-  }
-  const result = Object.freeze(members);
-  compiledObjects.set(shape, result);
-  return result;
-};
-const compiledMembers = (
-  node: DocumentNode,
-  value: unknown
-): ReadonlyMap<string, CompiledMember> | undefined => {
-  if (node.kind === 'object') return compileObject(node.shape);
-  if (node.kind === 'variant' && value && typeof value === 'object') {
-    const branch = node.variants[String((value as Record<string, unknown>)[node.tag])];
-    return branch ? compileObject(branch.shape) : undefined;
-  }
-  return undefined;
-};
 const locationOf = (value: object): Location | undefined =>
   accesses.has(value) ? (Reflect.get(value, locationKey) as Location) : undefined;
 export type AccessContext = {
@@ -192,6 +175,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     generation: number;
     children?: Map<string, Target>;
     proxy?: object;
+    container?: ResolvedContainer;
   };
   const addressOf = (target: Target): DocumentAddress => {
     if (target.at) return target.at;
@@ -225,6 +209,17 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     assertActive(context);
     if (!context.session) throw new TypeError('Cannot modify read-only document access.');
     return context.session;
+  };
+  const writableContainer = (target: Target, session: MutationSession): ResolvedContainer => {
+    if (target.container?.generation === session.generation) return target.container;
+    const container = resolveContainer(
+      session.identity,
+      session.generation,
+      addressOf(target),
+      target.node,
+      target.value
+    );
+    return (target.container = container ?? session.resolve(addressOf(target)));
   };
   const childAt = (target: Target, key: string): DocumentAddress => {
     profile.access('addresses');
@@ -408,7 +403,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     },
     set: (target, property, value) => {
       const session = mutable(),
-        { node, value: current } = resolve(target);
+        { node } = resolve(target);
       if (
         typeof property !== 'string' ||
         !node ||
@@ -417,21 +412,15 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         throw new TypeError('Invalid structural assignment.');
       if (node.kind === 'variant' && node.tag === property)
         throw new TypeError('Variant discriminants are read-only.');
-      session.setResolved(childAt(target, property), resolveChild(node, current, property), value);
+      session.setMember(writableContainer(target, session), property, value);
       return true;
     },
     deleteProperty: (target, property) => {
       const session = mutable(),
-        { node, value: current } = resolve(target);
+        { node } = resolve(target);
       if (typeof property !== 'string' || (node?.kind === 'variant' && node.tag === property))
         throw new TypeError('Invalid structural deletion.');
-      session.setResolved(
-        childAt(target, property),
-        resolveChild(node, current, property),
-        undefined,
-        false,
-        true
-      );
+      session.removeMember(writableContainer(target, session), property);
       return true;
     },
     has: (target, property) => {

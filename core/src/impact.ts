@@ -44,15 +44,20 @@ export const createImpact = <S extends ObjectNode>(
   schema: S,
   changes: ChangeSet
 ): DocumentImpact<S> => {
-  const reset = changes.changes.some(change => change.at.length === 0);
+  const reset = changes.changes.some(change => change.kind === 'reset');
   let values: AddressIndex<true> | undefined;
   let orders: AddressIndex<true> | undefined;
   const index = () => {
     if (!values) {
+      profile.impact.index();
       values = new AddressIndex();
       orders = new AddressIndex();
-      for (const change of changes.changes)
-        (change.kind === 'order' ? orders : values).add(change.at, true);
+      for (const change of changes.changes) {
+        if (change.kind === 'members')
+          for (const member of change.members) values.add(change.at, true, member.key);
+        else if (change.kind !== 'reset')
+          (change.kind === 'order' ? orders : values).add(change.at, true);
+      }
     }
     return values;
   };
@@ -62,11 +67,7 @@ export const createImpact = <S extends ObjectNode>(
       profile.impact.affects();
       if (!target.belongs(value, schema)) return false;
       if (reset) return true;
-      const values = index(),
-        at = target.indexedAddress(value);
-      if (value.kind === 'collection' && 'id' in value && value.id !== undefined)
-        return values.hasAncestor(at);
-      return values.overlaps(at) || orders!.hasDescendant(at);
+      return target.affected(value, index(), orders!);
     },
     collection(selector) {
       if (selector.schema !== schema)
@@ -74,13 +75,37 @@ export const createImpact = <S extends ObjectNode>(
       const key = JSON.stringify(selector.address),
         cached = cache.get(key);
       if (cached) return cached;
+      if (reset) {
+        const result = { kind: 'reset' } as const;
+        cache.set(key, result);
+        return result;
+      }
       const at = selector.address;
       const added = new Set<string>(),
         removed = new Set<string>(),
         updated = new Set<string>();
       let orderChanged = false;
       for (const change of changes.changes) {
-        if (change.kind !== 'order' && contains(change.at, at)) {
+        if (change.kind === 'reset') continue;
+        if (change.kind === 'members') {
+          if (change.at.length < at.length && contains(change.at, at)) {
+            if (change.members.some(member => member.key === at[change.at.length])) {
+              const result = { kind: 'reset' } as const;
+              cache.set(key, result);
+              return result;
+            }
+          } else if (contains(at, change.at)) {
+            if (change.at.length === at.length) {
+              for (const member of change.members) {
+                if (member.kind === 'added') added.add(member.key);
+                else if (member.kind === 'removed') removed.add(member.key);
+                else updated.add(member.key);
+              }
+            } else updated.add(change.at[at.length]);
+          }
+          continue;
+        }
+        if (change.kind === 'tree' && contains(change.at, at)) {
           const result = { kind: 'reset' } as const;
           cache.set(key, result);
           return result;
@@ -100,11 +125,7 @@ export const createImpact = <S extends ObjectNode>(
           continue;
         }
         const id = change.at[at.length];
-        if (change.kind === 'value' && change.at.length === at.length + 1) {
-          if (!change.before.present && change.after.present) added.add(id);
-          else if (change.before.present && !change.after.present) removed.add(id);
-          else updated.add(id);
-        } else updated.add(id);
+        updated.add(id);
       }
       added.forEach(id => updated.delete(id));
       removed.forEach(id => updated.delete(id));

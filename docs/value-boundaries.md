@@ -77,6 +77,8 @@ before entering Doxum. Mutation by a validator violates the ownership contract a
 cannot be repaired by transaction rollback. Async validation is rejected.
 Strict `parse` requires validators for atomic values; typed runtime fields may
 omit them. Incremental writes validate only their affected values.
+Reassigning an identical already-valid member is a no-op and does not invoke its
+validator. Validators must not rely on invocation counts or external mutable state.
 
 Map/table key validators can infer branded string keys. Those types survive
 indexing, table methods and anchors, symbolic item paths, projection mapping and
@@ -86,6 +88,10 @@ documents and ChangeSet assignments pass the same key boundary.
 Absent values are distinct from present `undefined`. Optional object properties
 can be deleted; required properties cannot. Map entry deletion controls membership
 independently of whether its field value accepts undefined.
+ChangeSet member kinds carry that distinction directly: `added` has after,
+`removed` has before, and `updated` has both. There is no Presence wrapper.
+Before and after structure is fixed at seal time; deferred impact queries never
+read later canonical state to reconstruct a published commit.
 
 ## Lifetimes
 

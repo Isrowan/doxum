@@ -66,8 +66,10 @@ React useDocumentSelector tracks actual reads and changes dependencies when bran
 
 ## Changes And Consumers
 
-Commits contain revision/source/changes/impact. ChangeSet holds final value/presence,
-order and touched tree-node facts. Net-zero changes do not publish.
+Commits contain revision/source/changes/impact. ChangeSet groups members by owning
+container, with direct added/removed/updated transitions. Order and touched tree
+nodes retain structural semantics; reset is an explicit whole-document transition.
+Root member groups remain incremental. Net-zero changes do not publish.
 apply(changes, { expectedRevision }) rejects a missing or mismatched local baseline.
 Received before values are untrusted; local undo records actual old state.
 History travels complete ChangeSets; grouped travel is atomic. Local replace is a
@@ -84,5 +86,6 @@ inside a batch see the last publication; no cross-document rollback is provided.
 doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;
 followers replay contiguous durable sequence. Writes become visible before async
 persistence; flush waits for durability. External replace and external remote-marked
-apply are forbidden while attached. Version 3 / format 1 rejects old storage without
-deleting or migrating it. The adapter accepts JSON values only.
+apply are forbidden while attached. Version 4 / format 2 rejects old storage without
+deleting or migrating it. The adapter accepts JSON values only. Change limits count
+logical members and tree nodes, not just outer groups.

@@ -10,7 +10,16 @@ const counters = () => ({
   },
   copy: { structures: 0 },
   equality: { calls: 0, containers: 0 },
-  recorder: { facts: 0, absorbed: 0, orderSnapshots: 0, orderItems: 0, treeNodes: 0, sealed: 0 },
+  recorder: {
+    facts: 0,
+    groups: 0,
+    transitions: 0,
+    absorbed: 0,
+    orderSnapshots: 0,
+    orderItems: 0,
+    treeNodes: 0,
+    sealed: 0,
+  },
   access: { scopes: 0, proxies: 0, snapshots: 0, addresses: 0, resolutions: 0 },
   address: {
     schemaSteps: 0,
@@ -19,7 +28,7 @@ const counters = () => ({
     segmentsCompared: 0,
     arraysCopied: 0,
   },
-  impact: { affectsChecks: 0 },
+  impact: { affectsChecks: 0, indexes: 0 },
   collectionView: { mappedItems: 0, idsScanned: 0, arraysCopied: 0 },
   materialized: { updated: 0, rebuilt: 0, notifications: 0 },
 });
@@ -74,6 +83,9 @@ export const profile = {
     },
   },
   impact: {
+    index: () => {
+      if (active) active.impact.indexes++;
+    },
     affects: () => {
       if (active) active.impact.affectsChecks++;
     },

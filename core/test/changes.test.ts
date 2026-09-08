@@ -3,10 +3,9 @@ import { createDocument, field, object, map, table, tree, list, type ChangeSet }
 const model = object({ n: field<number>(), rows: map(object({ n: field<number>() })) });
 const setup = () => createDocument({ schema: model, initial: { n: 0, rows: { a: { n: 1 } } } });
 const set = (at: readonly string[], before: unknown, after: unknown) => ({
-  kind: 'value' as const,
-  at,
-  before: { present: true as const, value: before },
-  after: { present: true as const, value: after },
+  kind: 'members' as const,
+  at: at.slice(0, -1),
+  members: [{ key: at[at.length - 1], kind: 'updated' as const, before, after }],
 });
 
 describe('ChangeSet boundary', () => {
@@ -22,7 +21,15 @@ describe('ChangeSet boundary', () => {
     });
     validator.mockClear();
     for (const changes of [
-      { changes: [set(new Array(1), 0, 1)] },
+      {
+        changes: [
+          {
+            kind: 'members',
+            at: new Array(1),
+            members: [{ key: 'undefined', kind: 'updated', before: 0, after: 1 }],
+          },
+        ],
+      },
       { changes: [{ kind: 'order', at: ['rows'], before: [], after: new Array(1) }] },
     ]) {
       const result = runtime.apply(changes, { expectedRevision: 0 });
@@ -66,7 +73,9 @@ describe('ChangeSet boundary', () => {
     expect(b.snapshot()).toEqual(a.snapshot());
     b.history.undo();
     expect(b.snapshot()).toEqual(setup().snapshot());
-    expect(result.commit.changes.changes[1]).toMatchObject({ after: { value: { n: 4 } } });
+    expect(result.commit.changes.changes[1]).toMatchObject({
+      members: [{ key: 'b', kind: 'added', after: { n: 4 } }],
+    });
   });
   it('requires a revision baseline and records actual old state instead of trusting incoming before', () => {
     const runtime = setup();
@@ -78,7 +87,7 @@ describe('ChangeSet boundary', () => {
     const result = runtime.apply({ changes: [set(['n'], 99, 2)] }, { expectedRevision: 1 });
     expect(result.status).toBe('committed');
     if (result.status === 'committed')
-      expect(result.commit.changes.changes[0]).toMatchObject({ before: { value: 1 } });
+      expect(result.commit.changes.changes[0]).toMatchObject({ members: [{ before: 1 }] });
     runtime.history.undo();
     expect(runtime.snapshot().n).toBe(1);
   });
@@ -102,11 +111,11 @@ describe('ChangeSet boundary', () => {
         {
           kind: 'tree',
           at: ['rows'],
-          before: { present: false },
-          after: { present: false },
+          before: null,
+          after: null,
           nodes: [
-            { id: 'a', before: { present: false }, after: { present: false } },
-            { id: 'a', before: { present: false }, after: { present: false } },
+            { id: 'a', kind: 'added', after: { children: [] } },
+            { id: 'a', kind: 'added', after: { children: [] } },
           ],
         },
       ],
@@ -128,8 +137,21 @@ describe('ChangeSet boundary', () => {
     const schema = object({ a: field(number), z: field(number) });
     const runtime = createDocument({ schema, initial: { a: 0, z: 0 } });
     expect(
-      runtime.apply({ changes: [set(['a'], 0, 3), set(['z'], 0, 'bad')] }, { expectedRevision: 0 })
-        .status
+      runtime.apply(
+        {
+          changes: [
+            {
+              kind: 'members',
+              at: [],
+              members: [
+                { key: 'a', kind: 'updated', before: 0, after: 3 },
+                { key: 'z', kind: 'updated', before: 0, after: 'bad' },
+              ],
+            },
+          ],
+        },
+        { expectedRevision: 0 }
+      ).status
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual({ a: 0, z: 0 });
     expect(runtime.history.current().undoDepth).toBe(0);
@@ -142,10 +164,9 @@ describe('ChangeSet boundary', () => {
       changes: [
         { kind: 'order', at: ['rows'], before: ['a'], after: ['b', 'a'] },
         {
-          kind: 'value',
-          at: ['rows', 'b'],
-          before: { present: false },
-          after: { present: true, value: { n: 2 } },
+          kind: 'members',
+          at: ['rows'],
+          members: [{ key: 'b', kind: 'added', after: { n: 2 } }],
         },
       ],
     };
@@ -204,13 +225,13 @@ describe('ChangeSet boundary', () => {
             {
               kind: 'tree',
               at: ['outline'],
-              before: { present: false },
-              after: { present: true, value: 'x' },
+              before: null,
+              after: 'x',
               nodes: [
                 {
                   id: 'x',
-                  before: { present: false },
-                  after: { present: true, value },
+                  kind: 'added',
+                  after: value,
                 },
               ],
             },

@@ -8,8 +8,6 @@ import type {
   ObserverError,
 } from './contract';
 import * as target from '../impact-target';
-import { AddressIndex } from '../address';
-import { affectsTarget } from '../impact';
 
 export type ProjectionAttachment<TSchema extends ObjectNode> = {
   capture(commit: DocumentCommit<TSchema>): void;
@@ -33,7 +31,7 @@ type FilteredEntry<TSchema extends ObjectNode> = {
 export type RuntimeNotification<TSchema extends ObjectNode> = {
   readonly root: Set<RootEntry<TSchema>>;
   readonly filtered: Set<FilteredEntry<TSchema>>;
-  readonly index: AddressIndex<FilteredEntry<TSchema>>;
+  readonly index: target.SubscriptionIndex<FilteredEntry<TSchema>>;
   readonly cleanups: Set<() => void>;
   readonly processors: ProcessorEntry<TSchema>[];
   readonly candidates: Set<FilteredEntry<TSchema>>;
@@ -54,12 +52,12 @@ export const documentReadableOwner = (readable: object): DocumentReadable<Object
   readableOwners.get(readable);
 
 export const createNotification = <TSchema extends ObjectNode>(
-  runtime: DocumentReadable<TSchema>
+  runtime: DocumentRuntime<TSchema>
 ): RuntimeNotification<TSchema> => {
   const notification: RuntimeNotification<TSchema> = {
     root: new Set(),
     filtered: new Set(),
-    index: new AddressIndex(),
+    index: new target.SubscriptionIndex(runtime.schema),
     cleanups: new Set(),
     processors: [],
     candidates: new Set(),
@@ -129,11 +127,10 @@ export const subscribeTargets = <TSchema extends ObjectNode>(
     active: true,
   };
   notification.filtered.add(entry);
-  const addresses = targets.map(target.indexedAddress);
-  addresses.forEach(address => notification.index.add(address, entry));
+  entry.targets.forEach(value => notification.index.add(value, entry));
   const remove = () => {
     notification.filtered.delete(entry);
-    addresses.forEach(address => notification.index.delete(address, entry));
+    entry.targets.forEach(value => notification.index.delete(value, entry));
   };
   return () => {
     if (!entry.active) return;
@@ -190,17 +187,10 @@ export const notify = <TSchema extends ObjectNode>(
     if (afterSettle) errors.push(...afterSettle());
     const candidates = notification.candidates;
     candidates.clear();
-    if (commit.impact.kind === 'reset') {
-      notification.filtered.forEach(entry => candidates.add(entry));
-    } else if (notification.filtered.size) {
-      const collect = notification.index.query(entry => candidates.add(entry));
-      for (const change of commit.changes.changes) {
-        collect(change.at);
-      }
-    }
+    if (notification.filtered.size)
+      notification.index.collect(commit.changes, entry => candidates.add(entry));
     candidates.forEach(entry => {
-      if (entry.active && entry.targets.some(value => affectsTarget(commit.impact, value)))
-        call(entry.listener);
+      if (entry.active) call(entry.listener);
     });
     const rootSnapshot = notification.rootSnapshot;
     rootSnapshot.length = 0;

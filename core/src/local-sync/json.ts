@@ -1,4 +1,5 @@
 import { isPlainObject } from '../value/ownership';
+import { changeCount, decodeChanges } from '../mutation/changes';
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue =
@@ -108,7 +109,13 @@ export const jsonArray = (
   const limits = resolveLimits(input);
   const parsed = validate(value, [label], limits, 0, new WeakSet());
   if (!Array.isArray(parsed)) throw new LocalSyncDataError(`${label} must be a JSON array.`);
-  if (parsed.length > limits.maxChanges)
+  let count: number;
+  try {
+    count = changeCount(decodeChanges({ changes: parsed }));
+  } catch {
+    throw new LocalSyncDataError(`${label} contains an invalid ChangeSet.`);
+  }
+  if (count > limits.maxChanges)
     throw new LocalSyncDataError(`${label} exceeds the maximum change count.`);
   const serialized = JSON.stringify(parsed);
   if (new TextEncoder().encode(serialized).byteLength > limits.maxBytes)

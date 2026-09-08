@@ -58,6 +58,29 @@ undo/redo 原子重放完整 ChangeSet。外部 apply 必须提供 expectedRevis
 适配器还须校验传输顺序。remote commit 使本地 history 失效；
 本地 revision 不是分布式时钟。
 
+输入的成员变化共享所属容器地址：
+
+```ts
+document.apply(
+  {
+    changes: [
+      {
+        kind: 'members',
+        at: ['tasks', 'a'],
+        members: [
+          { key: 'complete', kind: 'updated', before: false, after: true },
+          { key: 'title', kind: 'updated', before: 'First', after: 'Done' },
+        ],
+      },
+    ],
+  },
+  { expectedRevision: document.revision() }
+);
+```
+
+每个容器只能有一组。added 仅携带 after，removed 仅携带 before；存在的 undefined
+仍是一个值。不要展开成旧 value envelope，也不要将分组地址当作整个容器失效。
+
 ## 投影与 React
 
 ```ts

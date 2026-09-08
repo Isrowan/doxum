@@ -24,7 +24,7 @@ export { parse, ParseError } from './schema-value';
 export type { Validator, ParseIssue } from './schema-value';
 export { snapshot, assign } from './access/scope';
 export type { Read, Draft } from './access/scope';
-export type { Change, ChangeSet, Presence } from './changes';
+export type { Change, ChangeSet, MemberChange, ValueTransition } from './changes';
 export type { CollectionImpact, DocumentImpact } from './impact';
 export { createDocument } from './runtime';
 export { asReadable } from './runtime/readable';

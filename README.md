@@ -128,8 +128,26 @@ the common case. See [value boundaries](docs/value-boundaries.md).
 
 A commit contains `{ revision, source, changes, impact }`. Repeated writes to one
 field produce one first-before/final-after fact. Net-zero transactions do not
-advance revision or notify. The `ChangeSet` contains value/presence facts, order
-facts and touched tree node facts. It records no intermediate assignment sequence.
+advance revision or notify. A `members` change shares its container address across
+member transitions: `added` carries `after`, `removed` carries `before`, and
+`updated` carries both. `order` records key sequences, `tree` records touched nodes
+and nullable root IDs, and `reset` records a whole-document transition. There are
+no per-value presence wrappers or intermediate assignment logs.
+
+```ts
+const changes = {
+  changes: [
+    {
+      kind: 'members',
+      at: ['tasks', 'a'],
+      members: [{ key: 'title', kind: 'updated', before: 'A', after: 'B' }],
+    },
+  ],
+};
+```
+
+Each container appears in at most one members group. Grouping preserves exact
+field impact; a group at `[]` is an incremental root-member change, not a reset.
 
 `document.apply(changes, { expectedRevision })` accepts unknown input. The revision
 must match this runtime. The decoder rejects malformed and overlapping facts, then
@@ -191,10 +209,11 @@ runtime. One leader writes synchronously and persists final changes asynchronous
 followers apply the durable sequence in order. `flush()` waits for persistence.
 Durability errors do not roll back an already visible commit.
 
-The storage format is IndexedDB version 3 with format version 1 records. Earlier
+The storage format is IndexedDB version 4 with format version 2 records. Earlier
 databases are rejected without upgrading, deleting or converting their data.
 This JSON adapter rejects non-JSON atomic values. Network collaboration and
 collaborative undo remain separate concerns; see [collaboration design](COLLABORATION_DESIGN.md).
+Change count limits count individual members and tree nodes, not just outer groups.
 
 ## Development
 
@@ -205,7 +224,15 @@ pnpm run build
 pnpm run bench
 pnpm run profile
 node test.mjs
+node core/bench/architecture.mjs --isolate
 ```
+
+The architecture benchmark isolates each workload in a fresh process. Use
+`--allocation` for separate V8 allocation sampling, `DOXUM_BENCH_FILTER` for a
+comma-separated workload list, and `DOXUM_BENCH_MODULE=/absolute/path/to/index.js`
+to compare a saved build. Sampling timings are not normal latency measurements.
+`pnpm run profile` reports work counters and separates writes, sealing, remaining
+runtime/publication work and explicit impact queries.
 
 Builds produce root `dist` ESM/CJS/declarations for `doxum`, `doxum/integration`,
 `doxum/local-sync` and `doxum/react`. Source ownership is described in

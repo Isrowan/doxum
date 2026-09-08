@@ -414,10 +414,9 @@ describe('batch, recovery and lifecycle', () => {
         {
           changes: [
             {
-              kind: 'value',
-              at: ['title'],
-              before: { present: true, value: 'one' },
-              after: { present: true, value: 'remote' },
+              kind: 'members',
+              at: [],
+              members: [{ key: 'title', kind: 'updated', before: 'one', after: 'remote' }],
             },
           ],
         },

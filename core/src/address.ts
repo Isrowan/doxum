@@ -1,4 +1,5 @@
-import type { DocumentAddress, DocumentNode, ObjectNode } from './schema';
+import type { DocumentAddress, DocumentNode, ObjectNode, ObjectShape } from './schema';
+import * as anchor from './mutation/anchor';
 import { profile } from './profile';
 
 /** The only resolved address representation used inside the runtime. */
@@ -151,6 +152,60 @@ export type ResolvedAddress = {
   readonly parentNode: DocumentNode;
 };
 
+type CompiledMember = { readonly node: DocumentNode; readonly field: boolean };
+const compiledObjects = new WeakMap<object, ReadonlyMap<string, CompiledMember>>();
+export const compiledMembers = (
+  node: DocumentNode,
+  value: unknown
+): ReadonlyMap<string, CompiledMember> | undefined => {
+  const branch = node.kind === 'variant' ? variantNode(node, value) : node;
+  if (branch?.kind !== 'object') return undefined;
+  const shape: ObjectShape = branch.shape;
+  let members = compiledObjects.get(shape);
+  if (!members) {
+    const compiled = new Map<string, CompiledMember>();
+    for (const key of Object.keys(shape)) {
+      profile.address.schemaStep();
+      compiled.set(key, { node: shape[key], field: shape[key].kind === 'field' });
+    }
+    members = compiled;
+    compiledObjects.set(shape, members);
+  }
+  return members;
+};
+
+/** Immutable location facts, valid only for the resolving session generation. */
+export type ResolvedContainer = {
+  readonly owner: object;
+  readonly generation: number;
+  readonly at: DocumentAddress;
+  readonly node: DocumentNode;
+  readonly parent: Record<string, unknown> | unknown[];
+  readonly members: ReadonlyMap<string, CompiledMember> | undefined;
+};
+export const resolveContainer = (
+  owner: object,
+  generation: number,
+  at: DocumentAddress,
+  node: DocumentNode | undefined,
+  value: unknown
+): ResolvedContainer | undefined => {
+  if (!node || (!isRecord(value) && !Array.isArray(value))) return undefined;
+  const parent = node.kind === 'table' && isRecord(value) ? value.byId : value;
+  if (!isRecord(parent) && !Array.isArray(parent)) return undefined;
+  return { owner, generation, at, node, parent, members: compiledMembers(node, value) };
+};
+export const memberNode = (container: ResolvedContainer, key: string): DocumentNode | undefined => {
+  const node = container.node;
+  return node.kind === 'map' || node.kind === 'table' || node.kind === 'list'
+    ? node.value
+    : container.members?.get(key)?.node;
+};
+export const memberKey = (container: ResolvedContainer, key: string): string | number =>
+  container.node.kind === 'list'
+    ? anchor.keys(container.parent as unknown[], container.node.keyOf).index(key)
+    : key;
+
 type ResolutionPrefix = {
   segment: string;
   node: DocumentNode;
@@ -291,9 +346,10 @@ type AddressIndexNode<T> = {
 export class AddressIndex<T> {
   private readonly root: AddressIndexNode<T> = { children: new Map(), values: new Set() };
 
-  add(address: DocumentAddress, value: T): void {
+  add(address: DocumentAddress, value: T, member?: string): void {
     let node = this.root;
-    for (const segment of address) {
+    for (let i = 0; i < address.length + (member === undefined ? 0 : 1); i++) {
+      const segment = i < address.length ? address[i] : member!;
       let child = node.children.get(segment);
       if (!child) {
         child = { children: new Map(), values: new Set() };
@@ -341,6 +397,17 @@ export class AddressIndex<T> {
     return !strict && node.values.size > 0;
   }
 
+  someAncestor(address: DocumentAddress, predicate: (value: T) => boolean): boolean {
+    let node = this.root;
+    for (let i = 0; ; i++) {
+      for (const value of node.values) if (predicate(value)) return true;
+      if (i === address.length) return false;
+      const child = node.children.get(address[i]);
+      if (!child) return false;
+      node = child;
+    }
+  }
+
   overlaps(address: DocumentAddress): boolean {
     let node = this.root;
     for (const segment of address) {
@@ -362,7 +429,10 @@ export class AddressIndex<T> {
     return node.values.size > 0 || node.children.size > 0;
   }
 
-  query(visit: (value: T) => void): (address: DocumentAddress) => void {
+  query(
+    visit: (value: T) => void,
+    relation: 'overlap' | 'ancestors' | 'descendants' = 'overlap'
+  ): (address: DocumentAddress, members?: readonly { readonly key: string }[]) => void {
     const visited = new Set<AddressIndexNode<T>>();
     const subtrees = new Set<AddressIndexNode<T>>();
     const values = (node: AddressIndexNode<T>) => {
@@ -376,16 +446,25 @@ export class AddressIndex<T> {
       values(current);
       current.children.forEach(descend);
     };
-    return address => {
+    const terminal = (node: AddressIndexNode<T>) =>
+      relation === 'ancestors' ? values(node) : descend(node);
+    return (address, members) => {
       let node = this.root;
       for (const segment of address) {
         if (subtrees.has(node)) return;
-        values(node);
+        if (relation !== 'descendants') values(node);
         const child = node.children.get(segment);
         if (!child) return;
         node = child;
       }
-      descend(node);
+      if (!members) terminal(node);
+      else {
+        if (relation !== 'descendants') values(node);
+        for (const member of members) {
+          const child = node.children.get(member.key);
+          if (child) terminal(child);
+        }
+      }
     };
   }
 

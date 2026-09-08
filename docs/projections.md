@@ -22,6 +22,10 @@ Document collection contexts expose `read.get/has/ids`, `revision`, `commits`,
 of committed keys, even if separate commits later cancel out. Read final canonical
 state to decide the output. A single net-zero document transaction emits no commit.
 Use `commit.impact.collection(path => path.rows)` for individual commit details.
+Document commits group member transitions by owning container. Grouping does not
+broaden candidates or invalidate sibling fields: projection sources derive their
+keys from exact logical member changes. Document listener matching does not build
+an impact trie; a projection's explicit `impact.affects` query can build one lazily.
 
 Dependencies are explicit. A mapper that consults another collection must declare
 that source in a custom processor and maintain the appropriate dependency index.

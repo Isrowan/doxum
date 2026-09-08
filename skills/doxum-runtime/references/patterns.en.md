@@ -58,6 +58,30 @@ cancel() restores its start. undo/redo travel complete ChangeSets atomically.
 Apply incoming changes with an expectedRevision and adapter-validated transport order.
 Remote commits invalidate local history. Local revision is not a distributed clock.
 
+Incoming member changes share the owning container address:
+
+```ts
+document.apply(
+  {
+    changes: [
+      {
+        kind: 'members',
+        at: ['tasks', 'a'],
+        members: [
+          { key: 'complete', kind: 'updated', before: false, after: true },
+          { key: 'title', kind: 'updated', before: 'First', after: 'Done' },
+        ],
+      },
+    ],
+  },
+  { expectedRevision: document.revision() }
+);
+```
+
+Use one group per container. Added members carry only after, removed members only
+before; present undefined is still a value. Never expand a group into legacy value
+envelopes or treat its container address as whole-container invalidation.
+
 ## Projection And React
 
 ```ts

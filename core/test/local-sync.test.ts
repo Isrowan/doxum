@@ -7,6 +7,7 @@ import {
   LocalSyncReadOnlyError,
   LocalSyncUnsupportedOperationError,
 } from '../src/local-sync';
+import { openIndexedDbTimeline } from '../src/local-sync/timeline';
 class TestLockManager {
   readonly #tails = new Map<string, Promise<void>>();
   readonly #requests = new Map<string, number>();
@@ -120,10 +121,39 @@ const waitFor = async (condition: () => boolean): Promise<void> => {
   throw new Error('Timed out waiting for local sync.');
 };
 describe('local sync', () => {
+  it('rejects an old record inside a current database without changing its payload', async () => {
+    const name = database();
+    const timeline = await openIndexedDbTimeline(name);
+    const original = await timeline.initialize('record', 1, initial);
+    expect(original.formatVersion).toBe(2);
+    timeline.close();
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(name, 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const old = { ...original, formatVersion: 1 };
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('documents', 'readwrite');
+      tx.objectStore('documents').put(old);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    const reopened = await openIndexedDbTimeline(name);
+    await expect(reopened.read('record')).rejects.toThrow();
+    const retained = await new Promise<unknown>((resolve, reject) => {
+      const request = db.transaction('documents').objectStore('documents').get('record');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    expect(retained).toEqual(old);
+    reopened.close();
+    db.close();
+  });
   it('rejects the previous storage format without upgrading or deleting its data', async () => {
     const name = database();
     const old = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name, 2);
+      const request = indexedDB.open(name, 3);
       request.onupgradeneeded = () => request.result.createObjectStore('legacy');
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -140,7 +170,7 @@ describe('local sync', () => {
       attachLocalSync({ runtime: documentRuntime, database: name, documentId: 'old' })
     ).rejects.toThrow('Unsupported Doxum storage format');
     const retained = await new Promise<IDBDatabase>((resolve, reject) => {
-      const r = indexedDB.open(name, 2);
+      const r = indexedDB.open(name, 3);
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error);
     });
@@ -354,11 +384,11 @@ describe('local sync', () => {
     });
     expect(
       documentRuntime.update(tx => {
-        tx.title = 'two';
         tx.tasks.get('a')!.title = 'AA';
+        tx.tasks.get('a')!.complete = true;
       }).status
     ).toBe('committed');
-    expect(select(documentRuntime, read => read.title)).toBe('two');
+    expect(select(documentRuntime, read => read.title)).toBe('one');
     expect(select(documentRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await waitFor(() => localSync.state.current().status === 'error');
     await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);

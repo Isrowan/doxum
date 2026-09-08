@@ -51,15 +51,19 @@ describe('schema validation and snapshots', () => {
     });
     expect(result.status).toBe('committed');
     if (result.status !== 'committed') throw new Error('Expected commit');
-    expect(result.commit.changes.changes).toHaveLength(7);
-    expect(result.commit.changes.changes.find(c => c.at[1] === 'missing')).toMatchObject({
-      before: { present: false },
-      after: { present: true, value: undefined },
+    expect(result.commit.changes.changes).toHaveLength(1);
+    const group = result.commit.changes.changes[0];
+    if (group.kind !== 'members') throw new Error('Expected member group');
+    expect(group.members).toHaveLength(7);
+    expect(group.members.find(c => c.key === 'missing')).toEqual({
+      key: 'missing',
+      kind: 'added',
+      after: undefined,
     });
     expect(unchanged).not.toHaveBeenCalled();
     expect(Object.is(runtime.snapshot().values.zero, -0)).toBe(true);
     expect(runtime.snapshot().values.symbol).toBe(token);
-    expect(result.commit.changes.changes[0].kind).toBe('value');
+    expect(result.commit.changes.changes[0].kind).toBe('members');
     expect(runtime.history.undo().status).toBe('committed');
     expect(runtime.snapshot()).toEqual(initial);
     expect(Object.hasOwn(runtime.snapshot().values, 'missing')).toBe(false);
@@ -80,10 +84,11 @@ describe('schema validation and snapshots', () => {
     });
     if (result.status !== 'committed') throw new Error('Expected commit');
     const change = result.commit.changes.changes[0];
-    if (change.kind !== 'value' || !change.before.present || !change.after.present)
-      throw new Error('Expected value');
-    expect(change.before.value).toBe(before);
-    expect(change.after.value).toBe(after);
+    if (change.kind !== 'members') throw new Error('Expected members');
+    const member = change.members[0];
+    if (member.kind !== 'updated') throw new Error('Expected updated member');
+    expect(member.before).toBe(before);
+    expect(member.after).toBe(after);
     expect(runtime.snapshot().payload).toBe(after);
     expect(snapshot(after)).toBe(after);
     expect(old.payload).toBe(before);
@@ -156,6 +161,9 @@ describe('schema validation and snapshots', () => {
       'generation',
       'children',
       'proxy',
+      'container',
+      'owner',
+      'identity',
       '__proto__',
     ];
     const schema = object(

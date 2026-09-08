@@ -6,8 +6,8 @@ import {
 import { json, jsonArray, type JsonValue } from './json';
 import { isRecord } from '../value/ownership';
 
-const DATABASE_VERSION = 3;
-const FORMAT_VERSION = 1;
+const DATABASE_VERSION = 4;
+const FORMAT_VERSION = 2;
 const DOCUMENTS = 'documents';
 const COMMITS = 'commits';
 

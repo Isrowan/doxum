@@ -48,10 +48,9 @@ describe('draft transactions', () => {
     expect(result.value).toEqual({ warnings: ['review'], n: 3 });
     expect(result.commit.changes.changes).toHaveLength(2);
     expect(result.commit.changes.changes[0]).toEqual({
-      kind: 'value',
-      at: ['n'],
-      before: { present: true, value: 0 },
-      after: { present: true, value: 3 },
+      kind: 'members',
+      at: [],
+      members: [{ key: 'n', kind: 'updated', before: 0, after: 3 }],
     });
     expect(listener).toHaveBeenCalledTimes(1);
     expect(runtime.history.undo().status).toBe('committed');
@@ -277,11 +276,14 @@ describe('structural transitions', () => {
       d.rows.a.n = 7;
     });
     if (result.status !== 'committed') throw new Error('commit');
-    expect(result.commit.changes.changes).toHaveLength(2);
+    expect(result.commit.changes.changes).toHaveLength(1);
     expect(result.commit.changes.changes[0]).toMatchObject({
-      at: ['rows', 'a', 'n'],
-      before: { value: 1 },
-      after: { value: 7 },
+      kind: 'members',
+      at: ['rows', 'a'],
+      members: [
+        { key: 'n', before: 1, after: 7 },
+        { key: 'title', before: 'A', after: 'new' },
+      ],
     });
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual(initial());
@@ -375,7 +377,7 @@ describe('structural transitions', () => {
     expect(result.status).toBe('committed');
     if (result.status !== 'committed') throw new Error('commit');
     expect(result.commit.impact.kind).toBe('reset');
-    expect(result.commit.changes.changes[0].at).toEqual([]);
+    expect(result.commit.changes.changes[0].kind).toBe('reset');
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual(initial());
     runtime.history.redo();
