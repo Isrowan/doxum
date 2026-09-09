@@ -1,4 +1,4 @@
-import type { DocumentAddress, DocumentAnchor } from '../../schema';
+import type { DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
 import type { ResolvedContainer } from '../../address';
 import * as anchor from '../anchor';
@@ -6,11 +6,10 @@ import { fail } from '../issue';
 export function move(
   session: MutationSession,
   container: ResolvedContainer,
-  at: DocumentAddress,
   id: string,
   position?: DocumentAnchor
 ): void {
-  const { node, value } = container;
+  const { at, node, value } = container;
   if (node.kind !== 'table' && node.kind !== 'list')
     return fail(at, 'invalid-collection', 'Expected an ordered container.');
   const items = node.kind === 'table' ? (value as { ids: string[] }).ids : (value as unknown[]);
@@ -21,7 +20,7 @@ export function move(
   if (!anchor.valid(keys, position)) return fail(at, 'invalid-anchor', 'Unknown order anchor.');
   const next = anchor.afterRemove(keys, index, position);
   if (next === index) return;
-  session.recorder.order(at, node, value);
+  session.recorder.order(container);
   anchor.move(items, index, next);
   session.invalidate();
 }

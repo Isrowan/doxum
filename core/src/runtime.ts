@@ -160,8 +160,7 @@ export const createDocument = <S extends ObjectNode>(input: {
       const result = mutate({ kind: 'update', source }, options?.history ?? true, session => {
         // Draft is a trusted borrowed view. It must not escape this synchronous callback.
         const draft = createAccess({
-          schema: input.schema,
-          root: () => state.document,
+          state,
           session,
         }) as Draft<S>;
         value = run(draft);

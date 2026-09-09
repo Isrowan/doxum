@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, field, object, map, table, tree, list, type ChangeSet } from '../src';
+import {
+  createDocument,
+  field,
+  object,
+  map,
+  table,
+  tree,
+  list,
+  type ChangeSet,
+  type Infer,
+} from '../src';
 const model = object({ n: field<number>(), rows: map(object({ n: field<number>() })) });
 const setup = () => createDocument({ schema: model, initial: { n: 0, rows: { a: { n: 1 } } } });
 const set = (at: readonly string[], before: unknown, after: unknown) => ({
@@ -9,6 +19,39 @@ const set = (at: readonly string[], before: unknown, after: unknown) => ({
 });
 
 describe('ChangeSet boundary', () => {
+  it.each([false, true])(
+    'rejects ordinary member writes into a tree and rolls back earlier work (nonempty=%s)',
+    nonempty => {
+      const schema = object({ a: field<number>(), outline: tree(field<number>()) });
+      const initial: Infer<typeof schema> = {
+        a: 0,
+        outline: nonempty
+          ? { rootId: 'r', nodes: { r: { children: [], value: 1 } } }
+          : { nodes: {} },
+      };
+      const runtime = createDocument({ schema, initial });
+      const listener = vi.fn();
+      runtime.subscribe(listener);
+      const result = runtime.apply(
+        {
+          changes: [
+            {
+              kind: 'members',
+              at: [],
+              members: [{ key: 'a', kind: 'updated', before: 0, after: 1 }],
+            },
+            { kind: 'members', at: ['outline'], members: [{ key: 'r', kind: 'added', after: 7 }] },
+          ],
+        },
+        { expectedRevision: 0 }
+      );
+      expect(result.status).toBe('rejected');
+      expect(runtime.snapshot()).toEqual(initial);
+      expect(runtime.revision()).toBe(0);
+      expect(runtime.history.undo().status).toBe('unchanged');
+      expect(listener).not.toHaveBeenCalled();
+    }
+  );
   it('rejects sparse address and order arrays before schema validation or mutation', () => {
     const validator = vi.fn((value: unknown) => value as number);
     const schema = object({

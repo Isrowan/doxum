@@ -225,6 +225,28 @@ describe('projection source and value', () => {
   });
 });
 describe('projection collection publication', () => {
+  it('retains item identity and versions through removal, recreation and resubscription', () => {
+    const { projection, runtime, source } = setup();
+    const mapped = projection.map(source, (_id, entry) => entry.value);
+    const item = mapped.item('a');
+    const listener = vi.fn();
+    const stop = item.subscribe(listener);
+    runtime.update(d => d.items.remove('a'));
+    expect(item.current()).toBeUndefined();
+    expect(item.revision()).toBe(1);
+    stop();
+    runtime.update(d => d.items.create({ id: 'a', value: { value: 4, group: 'x' } }));
+    expect(mapped.item('a')).toBe(item);
+    expect(item.current()).toBe(4);
+    expect(item.revision()).toBe(2);
+    expect(listener).toHaveBeenCalledTimes(1);
+    item.subscribe(listener);
+    runtime.update(d => {
+      d.items.get('a')!.value = 5;
+    });
+    expect(item.revision()).toBe(3);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
   it('emits exact keys, lazy all, stable ids and item handles', () => {
     const { projection, runtime, source } = setup();
     const mapped = projection.map(source, (_id, entry) => ({ value: entry.value }), {

@@ -38,11 +38,12 @@ export const createNode = <S extends ProjectionSources>(
     evaluate: build => {
       let active = true;
       try {
+        const scopeActive = () => active;
         // Heterogeneous source contexts are typed at the registered capability boundary.
         const inputs = Object.fromEntries(
-          entries.map(([key, source]) => [key, source.context(() => active)])
+          entries.map(([key, source]) => [key, source.context(scopeActive)])
         ) as ProjectionInputs<S>;
-        return behavior.evaluate(inputs, build, () => active);
+        return behavior.evaluate(inputs, build, scopeActive);
       } finally {
         active = false;
       }

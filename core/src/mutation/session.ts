@@ -3,15 +3,17 @@ import type { DocumentAddress, DocumentNode } from '../schema';
 import {
   createAddressResolver,
   resolveContainer,
+  resolveTreeContainer,
+  resolveValue,
   memberKey,
   type CompiledMember,
   type ResolvedContainer,
+  type ResolvedTreeContainer,
 } from '../address';
 import { checkKey, checkValue, copyValue } from '../schema-value';
 import { ChangeRecorder } from './recorder';
 import { installMember, type CanonicalState } from './state';
 import { fail, invalidValue } from './issue';
-import * as tree from './tree';
 
 export class MutationSession {
   readonly identity = {};
@@ -41,6 +43,20 @@ export class MutationSession {
       fail(at, 'invalid-address', 'Container does not exist.')
     );
   }
+  bindTree(
+    at: DocumentAddress,
+    node: DocumentNode | undefined,
+    value: unknown
+  ): ResolvedTreeContainer {
+    return (
+      resolveTreeContainer(this.identity, this.generation, at, node, value) ??
+      fail(at, 'invalid-tree', 'Expected a tree.')
+    );
+  }
+  resolveTree(at: DocumentAddress): ResolvedTreeContainer {
+    const location = resolveValue(this.state.schema, this.state.document, at);
+    return this.bindTree(at, location?.node, location?.value);
+  }
   replace(at: DocumentAddress, value: unknown): void {
     if (!at.length) {
       this.validate(this.state.schema, value, at);
@@ -69,7 +85,7 @@ export class MutationSession {
     this.writeLocatedMember(container, key, member, memberKey(container, key), value, 'set');
   }
   removeMember(container: ResolvedContainer, key: string): void {
-    this.writeMember(container, key, undefined, 'remove');
+    this.writeMember(this.refresh(container), key, undefined, 'remove');
   }
   private refresh(container: ResolvedContainer): ResolvedContainer {
     if (container.owner !== this.identity)
@@ -89,25 +105,19 @@ export class MutationSession {
       return fail(container.at.concat(key), 'invalid-address', 'Address does not exist.');
     return member;
   }
-  private writeMember(
+  /** Consume a current command-local container; bulk writes retain its storage. */
+  writeMember(
     container: ResolvedContainer,
     key: string,
     value: unknown,
-    operation: 'set' | 'remove'
+    operation: 'set' | 'remove',
+    physicalKey = memberKey(container, key)
   ): boolean {
-    container = this.refresh(container);
     const member = this.definition(container, key);
-    return this.writeLocatedMember(
-      container,
-      key,
-      member,
-      memberKey(container, key),
-      value,
-      operation
-    );
+    return this.writeLocatedMember(container, key, member, physicalKey, value, operation);
   }
   /** Location and definition are resolved once by the calling operation. */
-  writeLocatedMember(
+  private writeLocatedMember(
     container: ResolvedContainer,
     key: string,
     member: CompiledMember,
@@ -153,7 +163,7 @@ export class MutationSession {
     }
     const membershipChanged = entry && existed !== present;
     if (membershipChanged && (parentNode.kind === 'list' || parentNode.kind === 'table'))
-      this.recorder.order(container.at, parentNode, container.value);
+      this.recorder.order(container);
     this.recorder.member(container, key, member, physicalKey);
     const next = present ? (node.kind === 'field' ? value : copyValue(node, value)) : undefined;
     installMember(container.parent, physicalKey, present, next);
@@ -166,27 +176,6 @@ export class MutationSession {
       this.resolvedRoot = this.state.document;
       this.resolver = createAddressResolver(this.state.schema, this.state.document);
     } else this.resolver.invalidate();
-  }
-  resolveValue(at: DocumentAddress) {
-    const location = this.resolver.read(at);
-    if (!location || location.value === undefined)
-      return fail(at, 'invalid-address', 'Container does not exist.');
-    return location;
-  }
-  editTree(
-    container: ResolvedContainer,
-    at: DocumentAddress,
-    run: (
-      value: tree.MutableTree,
-      node: Extract<DocumentNode, { kind: 'tree' }>,
-      capture: (ids: readonly string[]) => void
-    ) => void
-  ): void {
-    const { node, value } = this.refresh(container);
-    if (node.kind !== 'tree' || !tree.is(value))
-      return fail(at, 'invalid-tree', 'Expected a tree.');
-    run(value, node, ids => this.recorder.tree(at, value, ids));
-    this.invalidate();
   }
   finish(): ChangeSet {
     return this.recorder.seal();

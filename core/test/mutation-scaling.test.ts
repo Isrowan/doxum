@@ -215,7 +215,7 @@ describe('mutation scaling and ownership', () => {
         }).status
       ).toBe('committed');
       expect(profile.stop().recorder).toMatchObject({
-        groups: count,
+        groups: count + 1,
         indexedGroups: 0,
         transitions: count * 2,
       });

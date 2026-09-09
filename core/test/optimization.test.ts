@@ -13,6 +13,52 @@ import {
 } from '../src';
 import { startProfile } from '../src/profile';
 describe('bounded mutation work', () => {
+  it('keeps tree payload edits and no-ops on one resolved container', () => {
+    const runtime = createDocument({
+      schema: object({ outline: tree(field<number>()) }),
+      initial: { outline: { rootId: 'r', nodes: { r: { children: [], value: 0 } } } },
+    });
+    runtime.update(d => {
+      const set = d.outline.set;
+      set('r', 1);
+      const profile = startProfile();
+      for (let i = 1; i <= 1000; i++) {
+        set('r', i);
+        set('r', i);
+      }
+      const counters = profile.stop();
+      expect(counters.access.resolutions).toBe(0);
+      expect(counters.address.documentSteps).toBe(0);
+      expect(counters.recorder.treeNodes).toBe(0);
+    });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot().outline.nodes.r.value).toBe(0);
+  });
+
+  it('snapshots an already resolved descendant without another address walk', () => {
+    const runtime = createDocument({
+      schema: object({ nested: object({ n: field<number>() }) }),
+      initial: { nested: { n: 1 } },
+    });
+    runtime.update(d => {
+      const nested = d.nested;
+      const profile = startProfile();
+      expect(snapshot(nested)).toEqual({ n: 1 });
+      expect(profile.stop().address.documentSteps).toBe(0);
+    });
+  });
+
+  it('captures one order attempt for a single list removal', () => {
+    const runtime = createDocument({
+      schema: object({ rows: list(field<string>(), { keyOf: String }) }),
+      initial: { rows: ['a', 'b'] },
+    });
+    const profile = startProfile();
+    runtime.update(d => d.rows.remove('a'));
+    expect(profile.stop().recorder).toMatchObject({ orderCaptures: 1, orderSnapshots: 1 });
+    runtime.history.undo();
+    expect(runtime.snapshot().rows).toEqual(['a', 'b']);
+  });
   it('reads nested entities without materializing addresses and writes from their resolved parents', () => {
     const count = 2000;
     const schema = object({

@@ -31,9 +31,18 @@ export const createSources = (scheduler: Scheduler) => {
     if (state.disposed) throw new Error('Document has been disposed.');
     const existing = documents.get(state);
     if (existing) return existing as DocumentSource<S>;
-    const bindings: { handle: object; targets: readonly ImpactTarget[]; record: SourceRecord }[] =
-      [];
-    const make = (targets: readonly ImpactTarget[], collection?: CollectionSelector): object => {
+    const bindings: {
+      handle: object;
+      targets: readonly ImpactTarget[];
+      record: SourceRecord;
+      receive: (commit: DocumentCommit<S>) => void;
+    }[] = [];
+    const make = (
+      input:
+        { readonly targets: readonly ImpactTarget[] } | { readonly collection: CollectionSelector }
+    ): object => {
+      const collection = 'collection' in input ? input.collection : undefined;
+      const targets = 'targets' in input ? input.targets : [input.collection];
       if (state.disposed) throw new Error('Document has been disposed.');
       targets.forEach(value => {
         if (!target.belongs(value, state.schema))
@@ -67,7 +76,7 @@ export const createSources = (scheduler: Scheduler) => {
         context: active => {
           assertScope(active);
           if (state.disposed) throw new Error('Document has been disposed.');
-          const context = { schema: state.schema, root: () => state.document, active };
+          const context = { state, active };
           const read = collection
             ? collectionAccess(context, collection.address)
             : createAccess(context);
@@ -97,22 +106,21 @@ export const createSources = (scheduler: Scheduler) => {
                 'collection',
                 pick
               ) as CollectionSelector;
-              return make([selector], selector);
+              return make({ collection: selector });
             },
             targets: (...selected: PathPick<S>[]) => {
               scheduler.assertIdle();
               if (!selected.length) throw new TypeError('Expected at least one target.');
-              return make(
-                selected.map(pick => compilePath<S['shape']>(state.schema, 'value', pick))
-              );
+              return make({
+                targets: selected.map(pick => compilePath<S['shape']>(state.schema, 'value', pick)),
+              });
             },
           };
       Object.freeze(handle);
-      bindings.push({ handle, targets, record });
       if (collection) collections.add(handle);
       scheduler.register(handle, record);
       // The attachment delivers to all local bindings without extra document subscriptions.
-      receivers.set(record, commit => {
+      const receive = (commit: DocumentCommit<S>) => {
         commits.push(commit);
         reset ||= commit.impact.kind === 'reset';
         if (collection) {
@@ -126,11 +134,11 @@ export const createSources = (scheduler: Scheduler) => {
           }
           candidates = undefined;
         }
-      });
+      };
+      bindings.push({ handle, targets, record, receive });
       return handle;
     };
-    const receivers = new Map<SourceRecord, (commit: DocumentCommit<S>) => void>();
-    const handle = make([]) as DocumentSource<S>;
+    const handle = make({ targets: [] }) as DocumentSource<S>;
     const guard = (locked: boolean) => {
       state.projectionLocks = (state.projectionLocks ?? 0) + (locked ? 1 : -1);
     };
@@ -142,7 +150,7 @@ export const createSources = (scheduler: Scheduler) => {
             !binding.targets.length ||
             binding.targets.some(value => affectsTarget(commit.impact, value))
           ) {
-            receivers.get(binding.record)!(commit);
+            binding.receive(commit);
             scheduler.capture(binding.record);
           }
         }

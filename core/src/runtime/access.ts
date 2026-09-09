@@ -28,13 +28,6 @@ export const accessOf = <TSchema extends ObjectNode>(
   return state as RuntimeAccessState<TSchema>;
 };
 
-export const schemaOf = <TSchema extends ObjectNode>(runtime: DocumentReadable<TSchema>): TSchema =>
-  accessOf(runtime).schema;
-
-export const documentOf = <TSchema extends ObjectNode>(
-  runtime: DocumentReadable<TSchema>
-): Infer<TSchema> => accessOf(runtime).document;
-
 export const readWith = <TSchema extends ObjectNode, TResult>(
   runtime: DocumentReadable<TSchema>,
   run: (read: Read<TSchema>) => TResult,
@@ -45,8 +38,7 @@ export const readWith = <TSchema extends ObjectNode, TResult>(
   state.projectionLocks = (state.projectionLocks ?? 0) + 1;
   try {
     const reader = createAccess({
-      schema: state.schema,
-      root: () => state.document,
+      state,
       dependencies,
     }) as Read<TSchema>;
     return run(reader);

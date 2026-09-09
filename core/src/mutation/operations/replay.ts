@@ -1,6 +1,5 @@
 import type { ChangeDirection, ChangeSet } from '../../changes';
 import type { MutationSession } from '../session';
-import { memberKey } from '../../address';
 import { installOrder, installMember, orderOf } from '../state';
 import * as anchor from '../anchor';
 import { fail } from '../issue';
@@ -19,7 +18,7 @@ export function apply(
       if (change.order) {
         if (node.kind !== 'table' && node.kind !== 'list')
           return fail(change.at, 'invalid-changes', 'Order requires an ordered container.');
-        session.recorder.order(change.at, node, current);
+        session.recorder.order(container);
       }
       let membershipChanged = false;
       for (const member of change.members) {
@@ -33,14 +32,8 @@ export function apply(
               ? member.before
               : undefined;
         membershipChanged =
-          session.writeLocatedMember(
-            container,
-            member.key,
-            session.definition(container, member.key),
-            memberKey(container, member.key),
-            value,
-            present ? 'set' : 'remove'
-          ) || membershipChanged;
+          session.writeMember(container, member.key, value, present ? 'set' : 'remove') ||
+          membershipChanged;
       }
       if (change.order) {
         const keys = node.kind === 'table' ? Object.keys(container.parent) : orderOf(node, current);
@@ -62,29 +55,31 @@ export function apply(
           );
       }
     } else {
-      session.editTree(session.resolveContainer(change.at), change.at, (current, node, capture) => {
-        capture(change.nodes.map(n => n.id));
-        const root = change[side];
-        if (root === null) delete current.rootId;
-        else current.rootId = root;
-        for (const item of change.nodes) {
-          const next =
-            side === 'after'
-              ? item.kind !== 'removed'
-                ? item.after
-                : undefined
-              : item.kind !== 'added'
-                ? item.before
-                : undefined;
-          installMember(
-            current.nodes,
-            item.id,
-            next !== undefined,
-            next && { ...next, children: [...next.children] }
-          );
-        }
-        session.validate(node, current, change.at);
-      });
+      const container = session.resolveTree(change.at);
+      const { value: current, node } = container;
+      session.recorder.tree(container);
+      for (const item of change.nodes) session.recorder.tree(container, item.id);
+      const root = change[side];
+      if (root === null) delete current.rootId;
+      else current.rootId = root;
+      for (const item of change.nodes) {
+        const next =
+          side === 'after'
+            ? item.kind !== 'removed'
+              ? item.after
+              : undefined
+            : item.kind !== 'added'
+              ? item.before
+              : undefined;
+        installMember(
+          current.nodes,
+          item.id,
+          next !== undefined,
+          next && { ...next, children: [...next.children] }
+        );
+      }
+      session.validate(node, current, change.at);
+      session.invalidate();
     }
   }
 }

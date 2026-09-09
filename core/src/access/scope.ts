@@ -17,15 +17,16 @@ import type {
 } from '../schema';
 import {
   nodeAt,
-  resolveValue,
   resolveChild,
   resolveLocated,
   compiledShape,
   type FixedMember,
   type ResolvedContainer,
+  type ResolvedTreeContainer,
 } from '../address';
 import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
+import type { CanonicalState } from '../mutation/state';
 import type { MutationSession } from '../mutation/session';
 import * as tableOperations from '../mutation/operations/table';
 import * as listOperations from '../mutation/operations/list';
@@ -125,7 +126,7 @@ type Target = {
     | { kind: 'dynamic'; keys: Map<string, Target> }
     | undefined;
   proxy: object | undefined;
-  container?: ResolvedContainer;
+  container?: ResolvedContainer | ResolvedTreeContainer;
 };
 type Location = { readonly context: AccessContext; readonly target: Target };
 const locations = new WeakMap<object, Location>();
@@ -136,9 +137,8 @@ const addressOf = (target: Target): DocumentAddress => {
   return (target.at = addressOf(target.parent!).concat(target.key));
 };
 export type AccessContext = {
-  readonly schema: ObjectNode;
-  readonly root: () => unknown;
-  /** Omitted only for trusted synchronous readers whose proxies must not escape. */
+  readonly state: CanonicalState;
+  /** Omitted for borrowed synchronous Draft and readers that must not escape. */
   readonly active?: () => boolean;
   readonly dependencies?: DependencyTracker;
   readonly session?: MutationSession;
@@ -152,7 +152,6 @@ const collect = (
   kind: 'value' | 'collection' = 'value',
   id?: string
 ) => {
-  assertActive(context);
   context.dependencies?.record(
     kind === 'value' ? { kind, at } : { kind, at, ...(id === undefined ? {} : { id }) }
   );
@@ -164,11 +163,9 @@ export const snapshot = <T>(value: T): Snapshot<T> => {
   const at = addressOf(location.target);
   profile.access('snapshots');
   collect(context, at);
-  const resolved = resolveValue(context.schema, context.root(), at);
-  if (resolved) return copyValue(resolved.node, resolved.value) as Snapshot<T>;
-  if (!nodeAt(context.schema, at, context.root()))
-    throw new Error('The selected schema address no longer exists.');
-  return undefined as Snapshot<T>;
+  const resolved = resolve(context, location.target);
+  if (!resolved.node) throw new Error('The selected schema address no longer exists.');
+  return copyValue(resolved.node, resolved.value) as Snapshot<T>;
 };
 /** TypeScript cannot express asymmetric index signatures for nested collection tools. */
 export const assign = <T extends object, K extends keyof Snapshot<T>>(
@@ -178,9 +175,6 @@ export const assign = <T extends object, K extends keyof Snapshot<T>>(
 ): void => {
   const location = locationOf(container);
   if (!location) throw new TypeError('assign requires scoped document access.');
-  const { context } = location;
-  assertActive(context);
-  if (!context.session) throw new TypeError('Cannot modify read-only document access.');
   if (typeof key !== 'string') throw new TypeError('Document keys must be strings.');
   Reflect.set(container, key, value);
 };
@@ -190,38 +184,41 @@ export type CollectionAccess<K extends string, N extends ValueSchemaNode> = Tabl
   N,
   false
 >;
+const resolve = (context: AccessContext, target: Target): Target => {
+  assertActive(context);
+  const generation = context.session?.generation ?? 0;
+  if (target.generation !== generation) {
+    profile.access('resolutions');
+    if (!target.parent && !target.at!.length) {
+      target.node = context.state.schema;
+      target.value = context.state.document;
+    } else {
+      const parent = target.parent && resolve(context, target.parent);
+      const location = parent
+        ? resolveChild(parent.node, parent.value, target.key)
+        : resolveLocated(context.state.schema, context.state.document, target.at!);
+      target.node =
+        location?.node ?? nodeAt(context.state.schema, addressOf(target), context.state.document);
+      target.value =
+        location && Object.hasOwn(location.parent, location.key)
+          ? (location.parent as Record<string | number, unknown>)[location.key]
+          : undefined;
+    }
+    target.generation = generation;
+  }
+  return target;
+};
+
 export const createAccess = (context: AccessContext, initial: DocumentAddress = []): unknown => {
   profile.access('scopes');
-  const resolve = (target: Target) => {
-    assertActive(context);
-    const generation = context.session?.generation ?? 0;
-    if (target.generation !== generation) {
-      profile.access('resolutions');
-      if (!target.parent && !initial.length) {
-        target.node = context.schema;
-        target.value = context.root();
-      } else {
-        const parent = target.parent && resolve(target.parent);
-        const location = parent
-          ? resolveChild(parent.node, parent.value, target.key)
-          : resolveLocated(context.schema, context.root(), initial);
-        target.node = location?.node ?? nodeAt(context.schema, addressOf(target), context.root());
-        target.value =
-          location && Object.hasOwn(location.parent, location.key)
-            ? (location.parent as Record<string | number, unknown>)[location.key]
-            : undefined;
-      }
-      target.generation = generation;
-    }
-    return target;
-  };
   const mutable = (): MutationSession => {
     assertActive(context);
     if (!context.session) throw new TypeError('Cannot modify read-only document access.');
     return context.session;
   };
   const writableContainer = (target: Target, session: MutationSession): ResolvedContainer => {
-    if (target.container?.generation === session.generation) return target.container;
+    if (target.container?.generation === session.generation && 'layout' in target.container)
+      return target.container;
     return (target.container = session.bind(addressOf(target), target.node, target.value));
   };
   const childAt = (target: Target, key: string): DocumentAddress => {
@@ -285,18 +282,22 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     return access(child);
   };
   const collectionValue = (target: Target, node: DocumentNode) => {
-    const current = resolve(target);
+    const current = resolve(context, target);
     if (current.node !== node || current.value === undefined)
       throw new TypeError('The collection method belongs to a replaced schema branch.');
     return current.value;
   };
-  const writableCollection = (
-    target: Target,
-    node: DocumentNode
-  ): { session: MutationSession; container: ResolvedContainer } => {
+  const writableCollection = (target: Target, node: DocumentNode): ResolvedContainer => {
     const session = mutable();
     collectionValue(target, node);
-    return { session, container: writableContainer(target, session) };
+    return writableContainer(target, session);
+  };
+  const writableTree = (target: Target, node: DocumentNode): ResolvedTreeContainer => {
+    const session = mutable();
+    collectionValue(target, node);
+    if (target.container?.generation === session.generation && !('layout' in target.container))
+      return target.container;
+    return (target.container = session.bindTree(addressOf(target), target.node, target.value));
   };
   const orderedMethod = (
     target: Target,
@@ -336,7 +337,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     if (property === 'move')
       return (id: string, position?: DocumentAnchor) => {
         const writable = writableCollection(target, node);
-        orderOperations.move(writable.session, writable.container, at, id, position);
+        orderOperations.move(context.session!, writable, id, position);
       };
     return undefined;
   };
@@ -345,7 +346,6 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     property: string,
     node: Extract<DocumentNode, { kind: 'table' }>
   ): unknown => {
-    const at = addressOf(target);
     if (property === 'create')
       return (
         input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
@@ -353,9 +353,8 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       ) => {
         const writable = writableCollection(target, node);
         tableOperations.create(
-          writable.session,
-          writable.container,
-          at,
+          context.session!,
+          writable,
           Array.isArray(input) ? input : [input as { id: string; value: unknown }],
           position
         );
@@ -363,12 +362,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     if (property === 'remove')
       return (ids: string | readonly string[]) => {
         const writable = writableCollection(target, node);
-        tableOperations.remove(
-          writable.session,
-          writable.container,
-          at,
-          typeof ids === 'string' ? [ids] : ids
-        );
+        tableOperations.remove(context.session!, writable, typeof ids === 'string' ? [ids] : ids);
       };
     return orderedMethod(target, property, node);
   };
@@ -381,22 +375,23 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     if (property === 'insert')
       return (value: unknown, position?: DocumentAnchor) => {
         const writable = writableCollection(target, node);
-        listOperations.insert(writable.session, writable.container, at, value, position);
+        listOperations.insert(context.session!, writable, value, position);
       };
     if (property === 'remove')
       return (id: string) => {
         const writable = writableCollection(target, node);
-        listOperations.remove(writable.session, writable.container, at, id);
+        listOperations.remove(context.session!, writable, id);
       };
     if (property === 'set')
       return (id: string, value: unknown) => {
         const writable = writableCollection(target, node);
-        listOperations.set(writable.session, writable.container, at, id, value);
+        listOperations.set(context.session!, writable, id, value);
       };
     if (property === 'replace')
       return (value: unknown) => {
-        const writable = writableCollection(target, node);
-        writable.session.replace(at, value);
+        const session = mutable();
+        collectionValue(target, node);
+        session.replace(at, value);
       };
     return orderedMethod(target, property, node);
   };
@@ -408,28 +403,29 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     const at = addressOf(target);
     if (property === 'insert')
       return (id: string, value: unknown, position?: tree.TreePosition) => {
-        const writable = writableCollection(target, node);
-        treeOperations.insert(writable.session, writable.container, at, id, value, position);
+        const writable = writableTree(target, node);
+        treeOperations.insert(context.session!, writable, id, value, position);
       };
     if (property === 'set')
       return (id: string, value: unknown) => {
-        const writable = writableCollection(target, node);
-        treeOperations.set(writable.session, writable.container, at, id, value);
+        const writable = writableTree(target, node);
+        treeOperations.set(context.session!, writable, id, value);
       };
     if (property === 'remove')
       return (id: string) => {
-        const writable = writableCollection(target, node);
-        treeOperations.remove(writable.session, writable.container, at, id);
+        const writable = writableTree(target, node);
+        treeOperations.remove(context.session!, writable, id);
       };
     if (property === 'move')
       return (id: string, position?: tree.TreePosition) => {
-        const writable = writableCollection(target, node);
-        treeOperations.move(writable.session, writable.container, at, id, position);
+        const writable = writableTree(target, node);
+        treeOperations.move(context.session!, writable, id, position);
       };
     if (property === 'replace')
       return (value: unknown) => {
-        const writable = writableCollection(target, node);
-        writable.session.replace(at, value);
+        const session = mutable();
+        collectionValue(target, node);
+        session.replace(at, value);
       };
     const current = () => {
       collect(context, at);
@@ -452,7 +448,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   };
   const handler: ProxyHandler<Target> = {
     get: (target, property) => {
-      const { node, value } = resolve(target);
+      const { node, value } = resolve(context, target);
       if (!node || value === undefined) return undefined;
       if (typeof property !== 'string') return undefined;
       if (node.kind === 'map') {
@@ -491,7 +487,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     },
     set: (target, property, value) => {
       const session = mutable(),
-        { node } = resolve(target);
+        { node } = resolve(context, target);
       if (
         typeof property !== 'string' ||
         !node ||
@@ -505,14 +501,14 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     },
     deleteProperty: (target, property) => {
       const session = mutable(),
-        { node } = resolve(target);
+        { node } = resolve(context, target);
       if (typeof property !== 'string' || (node?.kind === 'variant' && node.tag === property))
         throw new TypeError('Invalid structural deletion.');
       session.removeMember(writableContainer(target, session), property);
       return true;
     },
     has: (target, property) => {
-      const { node, value } = resolve(target);
+      const { node, value } = resolve(context, target);
       if (typeof property !== 'string') return false;
       collect(
         context,
@@ -523,12 +519,12 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       return value !== undefined && Object.hasOwn(value as object, property);
     },
     ownKeys: target => {
-      const { value } = resolve(target);
+      const { value } = resolve(context, target);
       if (context.dependencies) collect(context, addressOf(target), 'collection');
       return value && typeof value === 'object' ? Object.keys(value) : [];
     },
     getOwnPropertyDescriptor: (target, property) => {
-      const { value } = resolve(target);
+      const { value } = resolve(context, target);
       return value && Object.hasOwn(value as object, property)
         ? { enumerable: true, configurable: true }
         : undefined;
@@ -546,7 +542,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       throw new TypeError('Document access cannot be frozen.');
     },
   };
-  const root = resolve(createTarget(initial, undefined, ''));
+  const root = resolve(context, createTarget(initial, undefined, ''));
   if (!root.node || root.node.kind === 'field' || root.value === undefined) {
     if (context.dependencies) collect(context, initial);
     return root.value;
@@ -573,7 +569,7 @@ export const collectionAccess = (
         return [];
       },
     };
-  const node = nodeAt(context.schema, at, context.root());
+  const node = locations.get(value as object)!.target.node;
   if (node?.kind === 'table') return value as CollectionAccess<string, ValueSchemaNode>;
   const map = value as Record<string, Read<ValueSchemaNode>>;
   return { get: id => map[id], has: id => id in map, ids: () => Object.keys(map) };

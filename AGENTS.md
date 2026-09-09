@@ -79,7 +79,11 @@ when a change touches addressing, mutation, impact, notifications, or views.
   the ownership contract.
   `assign` accepts plain Infer replacements through the same mutation session.
   Session constructs writable containers: resolve an address or bind current facts
-  already resolved by scope. Preserve generation-local reuse; do not force an extra
+  already resolved by scope. Trees use ResolvedTreeContainer without member layout;
+  ordinary member replay must never write tree topology. Tree operations capture
+  nodes directly; no session tree callback protocol is required. Recorder ordered
+  groups own both members and their optional baseline order and publish once.
+  Preserve generation-local reuse; do not force an extra
   address walk for every field write. Collection dispatch remains local by domain.
 - Root ObjectNode is schema identity. Subscription/impact/collection paths compile
   at their consumer boundary; do not export application target constructors.

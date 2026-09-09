@@ -9,8 +9,9 @@
    reader、子 proxy 和 collection method 不得逃逸同步回调。
 3. mutation/changes.ts 统一解析 unknown ChangeSet；schema 为寻址真值。
    拒绝父子重叠事实与同地址重复分组。逐容器安装成员及可选顺序，不接受独立 order 记录。
-4. ChangeRecorder 按所属容器分组记录首次成员旧值，唯一拥有顺序基线和触及树节点。回滚不调用用户回调或
-   校验器，seal 只发布净变化。
+4. ChangeRecorder 按所属容器分组记录首次成员旧值，唯一拥有顺序基线和触及树节点。
+   有序组一次发布 members 与 order；树容器没有普通成员 layout，拒绝 members replay。
+   树命令直接捕获触及节点，不经过 session 回调协议。回滚不调用用户回调或校验器，seal 只发布净变化。
    capture、restore 和按域 seal 分离；当前顺序确实变化后才复制最终 order，净变化为零也保留执行期间的回滚基线。
 5. 原子值按 Object.is 比较，canonical 结构依所有权契约保留原子引用；
    快照只复制结构，payload 与 commit、history 共享且只读，不做深复制或发布冻结。

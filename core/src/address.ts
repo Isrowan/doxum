@@ -1,6 +1,8 @@
 import type { DocumentAddress, DocumentNode, ObjectNode, ObjectShape } from './schema';
 import * as anchor from './mutation/anchor';
 import { profile } from './profile';
+import type { MutableTree } from './mutation/tree';
+import { is as isTree } from './mutation/tree';
 
 /** The only resolved address representation used inside the runtime. */
 export type AddressRef = {
@@ -149,7 +151,6 @@ export type ResolvedAddress = {
   readonly parent: Record<string, unknown> | unknown[];
   readonly key: string | number;
   readonly node: DocumentNode;
-  readonly parentNode: DocumentNode;
 };
 
 type MemberDefinition = {
@@ -199,10 +200,17 @@ export type ResolvedContainer = {
   readonly owner: object;
   readonly generation: number;
   readonly at: DocumentAddress;
-  readonly node: DocumentNode;
+  readonly node: Exclude<DocumentNode, { kind: 'tree' }>;
   readonly parent: Record<string, unknown> | unknown[];
   readonly value: unknown;
   readonly layout: MemberLayout;
+};
+export type ResolvedTreeContainer = {
+  readonly owner: object;
+  readonly generation: number;
+  readonly at: DocumentAddress;
+  readonly node: Extract<DocumentNode, { kind: 'tree' }>;
+  readonly value: MutableTree;
 };
 export const resolveContainer = (
   owner: object,
@@ -212,20 +220,11 @@ export const resolveContainer = (
   value: unknown
 ): ResolvedContainer | undefined => {
   if (!node || (!isRecord(value) && !Array.isArray(value))) return undefined;
-  const parent =
-    node.kind === 'table' && isRecord(value)
-      ? value.byId
-      : node.kind === 'tree' && isRecord(value)
-        ? value.nodes
-        : value;
+  const parent = node.kind === 'table' && isRecord(value) ? value.byId : value;
   if (!isRecord(parent) && !Array.isArray(parent)) return undefined;
+  if (node.kind === 'tree') return undefined;
   let layout: MemberLayout;
-  if (
-    node.kind === 'map' ||
-    node.kind === 'table' ||
-    node.kind === 'list' ||
-    node.kind === 'tree'
-  ) {
+  if (node.kind === 'map' || node.kind === 'table' || node.kind === 'list') {
     let dynamic = compiledEntries.get(node);
     if (!dynamic) {
       dynamic = {
@@ -242,7 +241,18 @@ export const resolveContainer = (
   }
   return { owner, generation, at, node, parent, value, layout };
 };
-export const memberKey = (container: ResolvedContainer, key: string): string | number =>
+export const resolveTreeContainer = (
+  owner: object,
+  generation: number,
+  at: DocumentAddress,
+  node: DocumentNode | undefined,
+  value: unknown
+): ResolvedTreeContainer | undefined =>
+  node?.kind === 'tree' && isTree(value) ? { owner, generation, at, node, value } : undefined;
+export const memberKey = (
+  container: { readonly node: DocumentNode; readonly parent: Record<string, unknown> | unknown[] },
+  key: string
+): string | number =>
   container.node.kind === 'list'
     ? anchor.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
     : key;
@@ -269,7 +279,6 @@ export const createAddressResolver = (schema: DocumentNode, root: unknown) => {
         (location.parent as Record<string | number, unknown>)[location.key]
       );
     },
-    read: (address: DocumentAddress) => resolveValue(schema, root, address, prefix),
     invalidate: () => {
       prefix.length = 0;
     },
@@ -361,13 +370,11 @@ export const resolveChild = (
   if (node?.kind === 'table' && isRecord(current) && isRecord(current.byId))
     return {
       node: resolved,
-      parentNode: node!,
       parent: current.byId,
       key: last,
     };
   return {
     node: resolved,
-    parentNode: node!,
     parent: current,
     key:
       node?.kind === 'list' && Array.isArray(current)

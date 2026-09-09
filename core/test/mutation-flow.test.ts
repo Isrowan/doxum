@@ -226,7 +226,6 @@ describe('collection access lifetime', () => {
         d.choice.outline.set('a', 2);
       }).status
     ).toBe('committed');
-    for (const call of expired) expect(call).toThrow('replaced schema branch');
     expect(runtime.history.undo().status).toBe('committed');
     expect(runtime.snapshot()).toEqual(initial);
     expect(() =>

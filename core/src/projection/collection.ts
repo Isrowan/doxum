@@ -46,9 +46,9 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
   let revision = 0;
   let idsRevision = 0;
   let all: readonly V[] | undefined;
-  const itemVersions = new Map<K, number>();
-  const items = new Map<K, Readable<V | undefined>>();
-  const itemListeners = new Map<K, Set<() => void>>();
+  type Item = { readable: Readable<V | undefined>; revision: number; listeners?: Set<() => void> };
+  const items = new Map<K, Item>();
+  const subscribedItems = new Set<Item>();
   const idsListeners = new Set<() => void>();
   const allListeners = new Set<() => void>();
   const listeners = new Set<(change: CollectionImpact<K>) => void>();
@@ -232,8 +232,8 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
         if (orderChanged && initialized) idsRevision++;
         all = undefined;
         changedKeys.forEach(key => {
-          if (items.has(key))
-            itemVersions.set(key, (itemVersions.get(key) ?? 0) + (initialized ? 1 : 0));
+          const item = items.get(key);
+          if (item && initialized) item.revision++;
         });
       }
       ids = nextIds;
@@ -247,10 +247,13 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
       if (orderChanged || !change || fault || owner.node.statusChanged)
         Array.from(idsListeners).forEach(listener => call(listener));
       Array.from(allListeners).forEach(listener => call(listener));
-      const keys =
-        !change || fault || owner.node.statusChanged ? itemListeners.keys() : changedKeys;
-      for (const key of keys)
-        Array.from(itemListeners.get(key) ?? []).forEach(listener => call(listener));
+      if (!change || fault || owner.node.statusChanged) {
+        for (const item of subscribedItems)
+          Array.from(item.listeners ?? []).forEach(listener => call(listener));
+      } else {
+        for (const key of changedKeys)
+          Array.from(items.get(key)?.listeners ?? []).forEach(listener => call(listener));
+      }
     },
     clear: () => {
       staged.clear();
@@ -264,8 +267,7 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
       values.clear();
       staged.clear();
       items.clear();
-      itemVersions.clear();
-      itemListeners.clear();
+      subscribedItems.clear();
       idsListeners.clear();
       allListeners.clear();
       listeners.clear();
@@ -316,8 +318,7 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
     item: (key: K) => {
       owner.check();
       const old = items.get(key);
-      if (old) return old;
-      itemVersions.set(key, 0);
+      if (old) return old.readable;
       const readable: Readable<V | undefined> = Object.freeze({
         current: () => {
           owner.check();
@@ -325,21 +326,22 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
         },
         revision: () => {
           owner.check();
-          return itemVersions.get(key) ?? 0;
+          return item.revision;
         },
         subscribe: (listener: () => void) => {
           owner.check();
-          const set = itemListeners.get(key) ?? new Set();
+          const set = (item.listeners ??= new Set());
           set.add(listener);
-          itemListeners.set(key, set);
+          subscribedItems.add(item);
           return () => {
             set.delete(listener);
-            if (!set.size) itemListeners.delete(key);
+            if (!set.size) subscribedItems.delete(item);
           };
         },
       });
+      const item: Item = { readable, revision: 0 };
       projectionHandles.add(readable);
-      items.set(key, readable);
+      items.set(key, item);
       return readable;
     },
     revision: () => {

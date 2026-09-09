@@ -9,6 +9,19 @@ import { MutationSession } from '../src/mutation/session';
 import { jsonChanges } from '../src/local-sync/json';
 
 describe('grouped mutation architecture', () => {
+  it('refreshes retained member handles across commands and rejects foreign sessions', () => {
+    const schema = object({ rows: map(object({ n: field<number>() })) });
+    const state = { schema, document: { rows: { a: { n: 0 } } } };
+    const session = new MutationSession(state);
+    const retained = session.resolveContainer(['rows', 'a']);
+    session.replace(['rows', 'a'], { n: 1 });
+    session.assignMember(retained, 'n', 2);
+    expect(state.document.rows.a.n).toBe(2);
+    const foreign = new MutationSession({ schema, document: { rows: { a: { n: 9 } } } });
+    expect(() => foreign.assignMember(retained, 'n', 3)).toThrow();
+    session.rollback();
+    expect(state.document.rows.a.n).toBe(0);
+  });
   it('copies final order only when it changes and keeps published orders isolated', () => {
     const ids = Array.from({ length: 10000 }, (_, i) => String(i));
     const schema = object({

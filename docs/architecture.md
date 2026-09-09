@@ -29,8 +29,7 @@ resolved by scope. Scope keeps that bound handle until generation changes. Forci
 an additional root-to-container walk here would discard the access cache's work.
 `resolveValue` reads schema and current value; session's private `refresh` checks
 handle ownership and renews stale generations. Schema-only `nodeAt` remains
-necessary for missing descendants and branch checks; snapshot uses it only when
-value resolution fails, not alongside every successful read.
+necessary for missing descendants and branch checks; snapshot shares the proxy Target refresh and uses schema-only fallback for missing descendants. AccessContext references the canonical state directly; scope creation allocates no root getter.
 Resolved containers carry a session identity token, not a reference back to the
 MutationSession and its recorder. Existing atomic collection-member updates keep
 their generation; membership and structural changes invalidate locations.
@@ -42,7 +41,7 @@ scope and schema-branch checks. Each read branch creates only its requested meth
 write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
 the old method throws; reading the method again obtains the current branch's method.
-Public callback readers expire at callback completion. The internal `readWith` primitive
+Draft, select and track readers are borrowed for their synchronous callback. The internal `readWith` primitive
 uses a trusted borrowed-reader contract: its reader, child proxies and collection
 methods must not escape the synchronous callback. Escaping them is undefined behavior;
 `select`/`track` return values and dependency snapshots, not the reader itself.
@@ -109,16 +108,19 @@ check; schema, generation and session ownership checks remain for in-transaction
 structural correctness. Draft is never used during seal or observer notification.
 
 `mutation/session.ts` owns resolution, validation, the common member-write kernel,
-generation, tree capture coordination and recorder lifetime. Complete operations
+generation and recorder lifetime. Complete operations
 are grouped under `mutation/operations/`: `table` owns create/remove, `list` owns
 insert/set/remove, `order` owns the shared move, `tree` owns tree commands, and
 `replay` owns applying complete ChangeSet groups. Generic assignment and replacement
 remain session primitives. These modules take the existing session, own no state,
 and are not public exports. There are no forwarding methods left on session.
 `anchor.ts` owns ordered-key semantics; `tree.ts` owns topology validation and
-insert/remove/move/set algorithms. Scope never composes tree capture callbacks.
+read-only traversal. Tree writes live in operations/tree and capture touched nodes directly, without session or capture callbacks. ResolvedTreeContainer carries a real tree schema and value; it has no member layout. Ordinary members replay cannot address tree topology.
 A bulk operation resolves its container once and reuses its member layout and
-located-write primitive for the group. `ResolvedContainer` includes both the container value and its member storage
+the command-local `writeMember` entry. Ordinary retained member handles are refreshed
+by assign/remove; bulk commands retain their local storage until the command ends.
+The private located kernel receives already computed definitions and indexes.
+`ResolvedContainer` includes both the container value and its member storage
 (for a table, the latter is `byId`). `mutation/state.ts` owns installation of validated
 members and orders, shared by session and recorder restoration. It stores no second
 document and performs no validation or capture of its own.
@@ -130,7 +132,7 @@ only a failure materializes its complete address. Key validation retains its dis
 Session entry points express assignment, removal or replacement. Ordinary assignment
 checks its structural replacement policy before the common write path. That path
 accepts a resolved location and a `set`/`remove` operation, with no replacement
-permission flag or optional physical-index override. Located list operations pass
+permission flag. The command-local member entry resolves definitions internally; located list operations pass
 their already resolved index directly. No per-write command object is allocated.
 
 Sequence insert/remove/move/install operations in `anchor.ts` invalidate list indexes
@@ -151,9 +153,9 @@ keys rather than moving array indices.
 
 First-touch members are grouped by their owning structural container. The member
 slots or dynamic-key Map are also the deduplication registry; there is no separate
-slot marker set. Groups share their address, schema and canonical location.
+slot marker set. Groups share their address, schema and canonical storage, without retaining generation-bound session handles. Dynamic member storage is allocated on first member capture; order-only groups need no member Map.
 The coverage index stores groups at container addresses, not individual scalar
-leaves. Order and tree facts do not force scalar groups into the index; only
+leaves. Order baselines belong to their member groups. Order-only groups and tree facts do not force scalar groups into the index; only
 structural member capture needs group coverage and absorption. An ancestor group
 is checked at the addressed key without scanning its other members. Absorption removes
 covered members and deletes empty groups; current object identity is never used
@@ -161,7 +163,7 @@ as the authority for logical coverage across replacement.
 Fact registration and removal update the fact set, parent identity registry and
 coverage index through one recorder-owned lifecycle. The lazy group-index backfill
 remains explicit, so scalar writes do not pay for structural coverage indexing.
-Order/tree deduplication uses the existing exact logical-address lookup. An extra
+Order deduplication uses the owning member group; tree deduplication uses exact logical-address lookup. An extra
 object-identity registry would need registration, absorption and reset coordination
 alongside the required coverage index; it is not added solely to replace a short
 allocation-free address walk. Member groups retain their existing parent-identity
@@ -183,7 +185,7 @@ explicit `reset` change. The module-local `diffMember` algorithm only consumes s
 before/after values and output arrays; it cannot access recorder state. Capture,
 coverage absorption and rollback remain recorder responsibilities. These algorithms
 are separate without introducing another change representation or protocol.
-Module-local `sealMembers`, `sealOrder` and `sealTree` each publish their fact domain;
+Module-local `sealMembers` and `sealTree` each publish complete groups;
 the recorder's `seal` only dispatches facts and handles root reset. Order sealing
 compares the captured baseline against current keys before copying. A sequence
 restored to its original order produces no after array and no commit. Changed
@@ -229,12 +231,10 @@ duplicates and overlaps using the shared address index and establishes determini
 lexicographic address/kind order. No string-path parser or command envelope enters
 executors.
 Inside this boundary, `decodeChanges` validates unknown shapes,
-`normalizeChanges` checks logical conflicts and sorts, and `sealChanges` merges
-internal container contributions. A shared private `publication` registers the
+`normalizeChanges` checks logical conflicts and sorts, and `sealChanges` sorts complete recorder groups. A shared private `publication` registers the
 result's validated identity. These stages use the same Change type and introduce
 no parallel wire representation or exported normalization API.
-Recorder publication merges member and order contributions at the same address
-while sealing sorted groups. Unknown input must already have complete groups;
+Recorder captures members and order in one owning group and publishes it once. There is no internal contribution merge. Unknown input must already have complete groups;
 the decoder rejects split groups instead of silently merging them.
 
 The decoder also owns the identity of validated publications. Recorder output and
@@ -338,3 +338,7 @@ validates JSON and ChangeSet structure without applying today's admission limits
 This permits reopening or following a document whose earlier leader admitted a
 larger commit. Stored data retains its existing format; decoded records carry the
 normalized ChangeSet through replay without decoding it a second time.
+
+## Projection Context Ownership
+
+Document source bindings own their receiver and candidate state directly. Collection source construction derives targets from its selector. Each evaluation creates one scope predicate shared by its source contexts, and never reactivates an old predicate. Collection item records own their stable readable, revision and lazy listeners; a separate active-subscription set limits fault notifications to subscribed records. Item values remain derived from the collection's published values.

@@ -13,6 +13,8 @@
    Reject overlapping parent/child facts and duplicate groups. Each container group
    installs its members then its optional order; no standalone order records.
 4. ChangeRecorder groups first-touch members by container and owns order baselines and touched tree nodes.
+   Ordered groups publish members and order together; tree containers have no member
+   layout and cannot accept ordinary members replay. Tree commands capture nodes directly.
    Rollback runs no user callbacks or validators. Seal publishes net differences.
    Capture, restoration and per-domain sealing stay separate. Copy final order only
    after comparing current keys; keep the rollback baseline even for a net-zero edit.

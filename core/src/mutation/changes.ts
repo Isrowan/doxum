@@ -14,40 +14,15 @@ const compareChanges = (a: Change, b: Change): number => {
   return a.at.length - b.at.length || lexical(a.kind, b.kind);
 };
 
-const mergeContainers = (changes: Change[]): void => {
-  // Merge adjacent member/order contributions into one public container record.
-  let length = 0;
-  for (const change of changes) {
-    const previous = changes[length - 1];
-    if (
-      previous?.kind === 'members' &&
-      change.kind === 'members' &&
-      (previous.order || change.order) &&
-      compareChanges(previous, change) === 0
-    ) {
-      if ((previous.members.length && change.members.length) || (previous.order && change.order))
-        throw new Error('Duplicate container publication.');
-      changes[length - 1] = {
-        kind: 'members',
-        at: previous.at,
-        members: previous.members.length ? previous.members : change.members,
-        order: previous.order ?? change.order,
-      };
-    } else changes[length++] = change;
-  }
-  changes.length = length;
-};
-
 const publication = (changes: Change[]): ChangeSet => {
   const result = { changes };
   validated.add(result);
   return result;
 };
 
-/** Internal contributions are merged; unknown input must already contain complete groups. */
+/** Register complete recorder groups; unknown input is validated separately. */
 export const sealChanges = (changes: Change[]): ChangeSet => {
   changes.sort(compareChanges);
-  mergeContainers(changes);
   return publication(changes);
 };
 

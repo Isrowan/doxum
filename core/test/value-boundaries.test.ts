@@ -32,17 +32,14 @@ describe('schema validation and snapshots', () => {
   it('snapshots retained descendants through missing and restored parents within their scope', () => {
     const schema = object({ entries: map(object({ nested: object({ n: field<number>() }) })) });
     const runtime = createDocument({ schema, initial: { entries: { a: { nested: { n: 1 } } } } });
-    let escapedSnapshot!: () => unknown;
     runtime.update(d => {
       const nested = d.entries.a!.nested;
-      escapedSnapshot = () => snapshot(nested);
       expect(snapshot(nested)).toEqual({ n: 1 });
       delete d.entries.a;
       expect(snapshot(nested)).toBeUndefined();
       d.entries.a = { nested: { n: 2 } };
       expect(snapshot(nested)).toEqual({ n: 2 });
     });
-    expect(escapedSnapshot()).toEqual({ n: 2 });
   });
   it('rejects undeclared object properties at construction, parse and root replacement', () => {
     const schema = object({ n: field(number) });

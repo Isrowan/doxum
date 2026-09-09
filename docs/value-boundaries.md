@@ -95,7 +95,9 @@ read later canonical state to reconstruct a published commit.
 
 ## Lifetimes
 
-Structural access expires at callback completion. Retained child proxies are
+Draft, select and track structural access is borrowed for the synchronous callback;
+retaining it beyond that callback is undefined behavior. Projection source readers
+retain explicit expiration checks. Within a callback, retained child proxies are
 address accessors, not references to removed canonical objects. Delete/recreate
 and variant replacement must resolve current schema and data before later use.
 `in`, enumeration and snapshots register explicit read dependencies. Framework
