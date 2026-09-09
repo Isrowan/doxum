@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assign,
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
   object,
   optional,
   parse,
+  project,
   ParseError,
   select,
   snapshot,
@@ -524,26 +525,27 @@ describe('schema validation and snapshots', () => {
   it('updates atomic map projections, including present undefined entries', () => {
     const schema = object({ values: map(field<number | undefined>()) }),
       runtime = createDocument({ schema, initial: { values: { a: 1 } } });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const view = projection.map(
-      projection.document(runtime).collection(p => p.values),
+    const view = project(
+      runtime,
+      p => p.values,
       (id, n) => `${id}:${n}`
     );
     runtime.update(d => {
       d.values.b = undefined;
       d.values.a = 2;
     });
-    expect(view.ids.current()).toEqual(['a', 'b']);
-    expect(view.item('b').current()).toBe('b:undefined');
+    expect(store.get(view).ids()).toEqual(['a', 'b']);
+    expect(store.get(view).get('b')).toBe('b:undefined');
     runtime.update(d => {
       delete d.values.a;
     });
-    expect(view.ids.current()).toEqual(['b']);
-    projection.dispose();
+    expect(store.get(view).ids()).toEqual(['b']);
+    store.dispose();
   });
   it('uses typed assignment for a replacement containing structural collection data', () => {
     const schema = object({

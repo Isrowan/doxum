@@ -2,12 +2,13 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   assign,
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
   object,
   optional,
+  project,
   select,
   snapshot,
   table,
@@ -121,20 +122,21 @@ describe('schema inference and public access', () => {
     expectTypeOf(result.commit.impact.collection(p => p.people)).toEqualTypeOf<
       CollectionImpact<PersonId>
     >();
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const view = projection.map(
-      projection.document(runtime).collection(p => p.people),
+    const view = project(
+      runtime,
+      p => p.people,
       (key, value) => {
         expectTypeOf(key).toEqualTypeOf<PersonId>();
         return value.age;
       }
     );
-    expectTypeOf(view.ids.current()).toEqualTypeOf<readonly PersonId[]>();
-    expect(view.item(id).current()).toBe(1);
+    expectTypeOf(store.get(view).ids()).toEqualTypeOf<readonly PersonId[]>();
+    expect(store.get(view).get(id)).toBe(1);
     const illegal = (d: Draft<typeof schema>, read: Read<typeof schema>, trip: TripId) => {
       // @ts-expect-error Wrong domain for indexing.
       read.people[trip];
@@ -152,7 +154,7 @@ describe('schema inference and public access', () => {
         () => {}
       );
       // @ts-expect-error Wrong projected item key domain.
-      view.item(trip);
+      store.get(view).get(trip);
     };
     void illegal;
     expect(
@@ -160,6 +162,6 @@ describe('schema inference and public access', () => {
         d.people['trip:1' as PersonId] = { age: 3 };
       }).status
     ).toBe('rejected');
-    projection.dispose();
+    store.dispose();
   });
 });

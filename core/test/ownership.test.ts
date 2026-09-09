@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assign,
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
   object,
   parse,
+  project,
   select,
   snapshot,
   table,
@@ -254,23 +255,24 @@ describe('shared immutable payload ownership', () => {
       schema: object({ rows: map(field<typeof a>()) }),
       initial: { rows: { a, b } },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const view = projection.map(
-      projection.document(runtime).collection(p => p.rows),
+    const view = project(
+      runtime,
+      p => p.rows,
       (_id, value) => snapshot(value)
     );
-    expect(view.item('a').current()).toBe(a);
+    expect(store.get(view).get('a')).toBe(a);
     runtime.update(d => {
       d.rows.a = next;
     });
-    expect(view.item('a').current()).toBe(next);
-    expect(view.item('b').current()).toBe(b);
+    expect(store.get(view).get('a')).toBe(next);
+    expect(store.get(view).get('b')).toBe(b);
     runtime.history.undo();
-    expect(view.item('a').current()).toBe(a);
-    projection.dispose();
+    expect(store.get(view).get('a')).toBe(a);
+    store.dispose();
   });
 });

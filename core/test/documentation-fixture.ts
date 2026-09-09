@@ -1,12 +1,14 @@
 import {
   assign,
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
+  input,
   object,
   parse,
+  project,
   select,
   snapshot,
   table,
@@ -43,16 +45,18 @@ export const documentationExamples = () => {
     replica.dispose();
   }
   track(document, state => state.tasks.a?.done);
-  const projection = createProjectionRuntime({ onError: console.error });
-  const titles = projection.map(
-    projection.document(document).collection(path => path.tasks),
+  const titles = project(
+    document,
+    path => path.tasks,
     (id, item) => `${id}: ${item.title}`
   );
-  const count = projection.value({ titles }, ({ titles }) => titles.ids().length);
-  const zoom = projection.input(1);
-  projection.value({ count, zoom: zoom.source }, ({ count, zoom }) => count.value * zoom.value);
-  projection.batch(() => {
-    zoom.set(2);
+  const count = project({ titles }, ({ titles }) => titles.ids().length);
+  const zoom = input(1);
+  const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
+  const store = createProjectionStore({ onError: console.error });
+  store.get(scaled);
+  store.batch(() => {
+    store.set(zoom, 2);
     document.update(d => {
       d.title = 'Done';
     });
@@ -80,7 +84,7 @@ export const documentationExamples = () => {
   };
   const parsed = parse(object({ title: field(text) }), { title: 'Parsed' });
   stop();
-  projection.dispose();
+  store.dispose();
   document.dispose();
   board.dispose();
   return { tasks, structure, parsed };

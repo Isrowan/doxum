@@ -83,11 +83,12 @@ History travels complete ChangeSets; grouped travel is atomic. Local replace is 
 reversible root reset; remote commits invalidate local history. Observer errors occur
 after acceptance.
 
-Use projection.document(document).collection(path => path.tasks) and projection.map
-for incremental mapping. Pure values use projection.value(sources, compute); stateful
-algorithms use value specs or projection.collection<T>()(spec). Sources are explicit.
-Input/fromReadable connect external boundary values. Dispose with the owning service.
-Batch defers projection settlement/listeners, not document commits/listeners. Reads
+Use `project(document, path => path.tasks, mapper)` for incremental mapping.
+Pure values use `project(sources, compute)`; stateful algorithms use tagged value
+or collection specs. Definitions are lazy and are materialized by a
+`createProjectionStore({ onError })` instance. Sources remain explicit.
+`input` and `project(readable)` connect external boundary values. Dispose the store
+with the owning service. `store.batch` defers projection settlement/listeners, not document commits/listeners. Reads
 inside a batch see the last publication; no cross-document rollback is provided.
 
 doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;

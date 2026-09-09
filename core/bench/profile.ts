@@ -1,11 +1,12 @@
 import { performance } from 'node:perf_hooks';
 import {
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
   object,
+  project,
   table,
   tree,
   type Draft,
@@ -38,15 +39,17 @@ for (const [count, changed, subscribers] of [
       p => p.entities.item(ids[i]).position.x,
       () => {}
     );
-  const projection = createProjectionRuntime({
+  const store = createProjectionStore({
     onError: error => {
       throw error;
     },
   });
-  const values = projection.map(
-    projection.document(runtime).collection(p => p.entities),
+  const values = project(
+    runtime,
+    p => p.entities,
     (_id, entity) => entity.position.x
   );
+  store.get(values);
   let measuring = false;
   let writesMs = 0;
   const tick = () =>
@@ -68,7 +71,7 @@ for (const [count, changed, subscribers] of [
   if (
     result.status !== 'committed' ||
     result.commit.changes.changes.length !== changed ||
-    values.item(ids[0]).current() !== 11
+    store.get(values).get(ids[0]) !== 11
   )
     throw new Error('Profile workload failed');
   console.log(JSON.stringify({ count, changed, subscribers, elapsed, counters }));
@@ -110,7 +113,7 @@ for (const [count, changed, subscribers] of [
       queryCounters: queries.stop(),
     })
   );
-  projection.dispose();
+  store.dispose();
   runtime.dispose();
 }
 

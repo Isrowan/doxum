@@ -1,8 +1,17 @@
 import React, { StrictMode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, table, snapshot } from 'doxum';
-import { useDocumentSelector, useReadable } from '../src';
+import {
+  createDocument,
+  createProjectionStore,
+  field,
+  input,
+  object,
+  project,
+  table,
+  snapshot,
+} from 'doxum';
+import { ProjectionProvider, useDocumentSelector, useProjection, useReadable } from '../src';
 import { renderToString } from 'react-dom/server';
 const documentSchema = object({
   title: field<string>(),
@@ -107,11 +116,12 @@ describe('doxum/react', () => {
     runtime.dispose();
   });
   it('surfaces projection faults to an error boundary and reads recovered values after reset', () => {
-    const projection = createProjectionRuntime({ onError: () => undefined });
-    const input = projection.input(0);
+    const store = createProjectionStore({ onError: () => undefined });
+    const source = input(0);
     let fail = false;
-    const value = projection.value({
-      sources: { input: input.source },
+    const value = project({
+      kind: 'value',
+      sources: { input: source },
       build: ({ input }) => {
         if (fail) throw new Error('build failed');
         return {
@@ -140,7 +150,7 @@ describe('doxum/react', () => {
       }
     }
     function Probe() {
-      return text(useReadable(value));
+      return text(useProjection(value, store));
     }
     const tree = (key: number) =>
       React.createElement(Boundary, { key, children: React.createElement(Probe) });
@@ -149,16 +159,16 @@ describe('doxum/react', () => {
       renderer = create(tree(0));
     });
     fail = true;
-    act(() => input.set(1));
+    act(() => store.set(source, 1));
     expect(valueOf(renderer)).toBe('fault');
     fail = false;
     act(() => {
-      value.rebuild();
+      store.rebuild(value);
       renderer.update(tree(1));
     });
     expect(valueOf(renderer)).toBe('1');
     act(() => renderer.unmount());
-    projection.dispose();
+    store.dispose();
   });
   it('renders keyed projection items precisely and leaves ownership with the service', () => {
     const model = object({ rows: table(object({ label: field<string>() })) });
@@ -166,24 +176,28 @@ describe('doxum/react', () => {
       schema: model,
       initial: { rows: { ids: ['a', 'b'], byId: { a: { label: 'A' }, b: { label: 'B' } } } },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const rows = projection.map(
-      projection.document(runtime).collection(path => path.rows),
+    const rows = project(
+      runtime,
+      path => path.rows,
       (_id, row) => row.label
     );
+    const rowA = project({ rows }, ({ rows }) => rows.get('a'));
     let renders = 0;
     function Probe() {
       renders++;
-      return text(useReadable(rows.item('a')));
+      return text(useProjection(rowA));
     }
-    expect(renderToString(React.createElement(Probe))).toContain('A');
+    const app = () =>
+      React.createElement(ProjectionProvider, { value: store }, React.createElement(Probe));
+    expect(renderToString(app())).toContain('A');
     let renderer!: ReactTestRenderer;
     act(() => {
-      renderer = create(React.createElement(Probe));
+      renderer = create(app());
     });
     const baseline = renders;
     act(() => {
@@ -191,7 +205,7 @@ describe('doxum/react', () => {
     });
     expect(renders).toBe(baseline);
     act(() => {
-      projection.batch(() => {
+      store.batch(() => {
         runtime.update(tx => (tx.rows.get('a')!.label = 'AA'));
         runtime.update(tx => (tx.rows.get('a')!.label = 'AAA'));
       });
@@ -200,9 +214,9 @@ describe('doxum/react', () => {
     expect(renders).toBe(baseline + 1);
     act(() => renderer.unmount());
     runtime.update(tx => (tx.rows.get('a')!.label = 'after unmount'));
-    expect(rows.item('a').current()).toBe('after unmount');
+    expect(store.get(rows).get('a')).toBe('after unmount');
     expect(renders).toBe(baseline + 1);
-    projection.dispose();
+    store.dispose();
     runtime.dispose();
   });
   it('tracks selector dependencies and ignores unrelated commits', () => {

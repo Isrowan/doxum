@@ -1,12 +1,12 @@
 import type {
   CollectionInput,
   CollectionRead,
-  ProjectionInputs,
-  ProjectionRuntime,
-  ProjectionSource,
-  ProjectionSources,
-  ProjectionValue,
-  ValueSpec,
+  EngineInputs,
+  ProjectionEngine,
+  EngineSource,
+  EngineSources,
+  MaterializedValue,
+  EngineValueSpec,
 } from './contract';
 import type { Synchronous } from '../runtime/contract';
 import { assertSynchronous, createScheduler } from './scheduler';
@@ -20,34 +20,34 @@ const debug = new WeakMap<
   object,
   () => { nodes: number; sources: number; subscriptions: number; pending: number }
 >();
-export const projectionDebug = (runtime: ProjectionRuntime) => {
+export const projectionEngineDebug = (runtime: ProjectionEngine) => {
   const read = debug.get(runtime);
-  if (!read) throw new Error('Unknown projection runtime.');
+  if (!read) throw new Error('Unknown projection engine.');
   return Object.freeze(read());
 };
-export const createProjectionRuntime = (options: {
+export const createProjectionEngine = (options: {
   readonly onError: (error: ProjectionError) => void;
-}): ProjectionRuntime => {
+}): ProjectionEngine => {
   const scheduler = createScheduler(options.onError);
   const sources = createSources(scheduler);
-  function value<S extends ProjectionSources, T>(
+  function value<S extends EngineSources, T>(
     sources: S,
-    compute: (sources: ProjectionInputs<S>) => Synchronous<T>,
+    compute: (sources: EngineInputs<S>) => Synchronous<T>,
     options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): ProjectionValue<T>;
-  function value<S extends ProjectionSources, T>(
-    spec: ValueSpec<S, T>,
+  ): MaterializedValue<T>;
+  function value<S extends EngineSources, T>(
+    spec: EngineValueSpec<S, T>,
     options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): ProjectionValue<T>;
-  function value<S extends ProjectionSources, T>(
-    input: S | ValueSpec<S, T>,
+  ): MaterializedValue<T>;
+  function value<S extends EngineSources, T>(
+    input: S | EngineValueSpec<S, T>,
     computeOrOptions?:
-      ((sources: ProjectionInputs<S>) => T) | { readonly isEqual?: (a: T, b: T) => boolean },
+      ((sources: EngineInputs<S>) => T) | { readonly isEqual?: (a: T, b: T) => boolean },
     options?: { readonly isEqual?: (a: T, b: T) => boolean }
-  ): ProjectionValue<T> {
+  ): MaterializedValue<T> {
     if (typeof computeOrOptions !== 'function')
-      return createValue(scheduler, input as ValueSpec<S, T>, computeOrOptions);
-    const compute = (input: ProjectionInputs<S>) => {
+      return createValue(scheduler, input as EngineValueSpec<S, T>, computeOrOptions);
+    const compute = (input: EngineInputs<S>) => {
       const result = computeOrOptions(input);
       assertSynchronous(result);
       return result;
@@ -65,7 +65,7 @@ export const createProjectionRuntime = (options: {
     );
   }
   const map = <K extends string, V, R>(
-    source: ProjectionSource<
+    source: EngineSource<
       | CollectionInput<K, V>
       | {
           readonly read: CollectionRead<K, V>;
@@ -129,7 +129,7 @@ export const createProjectionRuntime = (options: {
       },
     });
   };
-  const runtime: ProjectionRuntime = {
+  const runtime: ProjectionEngine = {
     document: sources.document,
     input: sources.input,
     fromReadable: sources.fromReadable,

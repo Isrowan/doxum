@@ -84,20 +84,20 @@ document.apply(
 ## 投影与 React
 
 ```ts
-const projection = createProjectionRuntime({ onError: console.error });
-const titles = projection.map(
-  projection.document(document).collection(path => path.tasks),
+const titles = project(
+  document,
+  path => path.tasks,
   (_id, task) => task.title
 );
-const total = projection.value({ titles }, ({ titles }) => titles.ids().length);
-const zoom = projection.input(1);
-const scaled = projection.value(
-  { total, zoom: zoom.source },
-  ({ total, zoom }) => total.value * zoom.value
-);
+const total = project({ titles }, ({ titles }) => titles.ids().length);
+const zoom = input(1);
+const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
+const store = createProjectionStore({ onError: console.error });
+store.get(scaled);
 ```
 
-投影值、ids、all、item(id) 使用 useReadable，document.history 使用 useHistory。
-自定义集合 processor 通过 writer.set/remove/order/replace 暂存输出，
+投影定义使用 `useProjection` 和一个 store，document.history 等既有 Readable
+使用 `useReadable` 或 `useHistory`。自定义集合 processor 通过
+writer.set/remove/order/replace 暂存输出，
 previous/next 读取只在作用域内有效。candidates 汇总整个 batch，以最终状态派生输出。
 React 追踪实际读取，但 processor 依赖仍显式声明。

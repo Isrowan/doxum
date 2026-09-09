@@ -51,16 +51,26 @@ export type { MutationIssue, MutationIssueCode } from './mutation/issue';
 export type { Readable } from './projection/readable';
 export { select } from './projection/select';
 export type { DocumentSelector } from './projection/select';
-export { createProjectionRuntime } from './projection/runtime';
+export { input, project } from './projection/definition';
+export { createProjectionStore } from './projection/store';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
-  ProjectionRuntime,
-  ProjectionSource,
-  DocumentSource,
-  DocumentCollectionSource,
-  ProjectionInput,
-  ValueSpec,
-  ProjectionValue,
-  CollectionSpec,
-  ProjectionCollection,
-} from './projection/contract';
+  Projection,
+  ValueProjection,
+  InputProjection,
+  CollectionProjection,
+  CollectionSource,
+  DocumentProjection,
+  DocumentCollectionProjection,
+  ProjectionSources,
+  ProjectionValues,
+  ProjectionEvents,
+  ValueEvent,
+  DocumentEvent,
+  DocumentCollectionEvent,
+  CollectionEvent,
+  AdvancedValueSpec,
+  AdvancedCollectionSpec,
+  AdvancedCollectionProcess,
+} from './projection/definition';
+export type { ProjectionStore } from './projection/store';

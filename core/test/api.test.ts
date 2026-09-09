@@ -1,18 +1,60 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
+  input,
   object,
+  project,
   table,
   variant,
   TransactionRejected,
-  type ProjectionValue,
+  type ValueProjection,
+  type AdvancedCollectionSpec,
   type Readable,
 } from '../src';
 import { startProfile } from '../src/profile';
 import { assign } from '../src';
 describe('projection composition', () => {
+  it('materializes one reusable definition independently in each store', () => {
+    const n = input(1);
+    const doubled = project({ n }, ({ n }) => n * 2);
+    const first = createProjectionStore({
+      onError: error => {
+        throw error;
+      },
+    });
+    const second = createProjectionStore({
+      onError: error => {
+        throw error;
+      },
+    });
+
+    expect(first.get(doubled)).toBe(2);
+    expect(second.get(doubled)).toBe(2);
+    first.set(n, 3);
+    expect(first.get(doubled)).toBe(6);
+    expect(second.get(doubled)).toBe(2);
+
+    first.dispose();
+    second.dispose();
+  });
+  it('captures the declared source map before lazy materialization', () => {
+    const first = input(1);
+    const second = input(10);
+    const sources: { value: typeof first | typeof second } = { value: first };
+    const doubled = project(sources, ({ value }) => value * 2);
+    sources.value = second;
+    const store = createProjectionStore({ onError: () => {} });
+
+    expect(store.get(doubled)).toBe(2);
+    store.set(first, 3);
+    expect(store.get(doubled)).toBe(6);
+    store.set(second, 20);
+    expect(store.get(doubled)).toBe(6);
+
+    store.dispose();
+  });
   it('binds collections in inactive variant branches and rebuilds across branch changes', () => {
     const model = object({
       content: variant('kind', {
@@ -24,23 +66,26 @@ describe('projection composition', () => {
       schema: model,
       initial: { content: { kind: 'empty', label: '' } },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const source = projection.document(runtime).collection(path => path.content.rows);
-    const mapped = projection.map(source, (_id, row) => row.n);
-    expect(mapped.ids.current()).toEqual([]);
+    const mapped = project(
+      runtime,
+      path => path.content.rows,
+      (_id, row) => row.n
+    );
+    expect(store.get(mapped).ids()).toEqual([]);
     runtime.update(tx =>
       assign(tx, 'content', { kind: 'populated', rows: { ids: ['a'], byId: { a: { n: 1 } } } })
     );
-    expect(mapped.item('a').current()).toBe(1);
+    expect(store.get(mapped).get('a')).toBe(1);
     runtime.history.undo();
-    expect(mapped.ids.current()).toEqual([]);
+    expect(store.get(mapped).ids()).toEqual([]);
     runtime.history.redo();
-    expect(mapped.item('a').current()).toBe(1);
-    projection.dispose();
+    expect(store.get(mapped).get('a')).toBe(1);
+    store.dispose();
     runtime.dispose();
   });
   it('updates a two-stage 100k mapping without scanning unrelated keys', () => {
@@ -50,73 +95,72 @@ describe('projection composition', () => {
       schema: model,
       initial: { rows: { ids, byId: Object.fromEntries(ids.map(id => [id, { n: Number(id) }])) } },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const first = projection.map(
-      projection.document(runtime).collection(path => path.rows),
+    const first = project(
+      runtime,
+      path => path.rows,
       (_id, row) => row.n
     );
-    const second = projection.map(first, (_id, n) => ({ n }));
-    const stable = second.item('2').current();
+    const second = project(first, (_id, n) => ({ n }));
+    const stable = store.get(second).get('2');
     const profile = startProfile();
     runtime.update(tx => (tx.rows.get('1')!.n = 99));
     const counters = profile.stop();
     expect(counters.collectionView.mappedItems).toBe(2);
     expect(counters.collectionView.idsScanned).toBe(0);
     expect(counters.collectionView.arraysCopied).toBe(0);
-    expect(second.item('1').current()).toEqual({ n: 99 });
-    expect(second.item('2').current()).toBe(stable);
-    projection.dispose();
+    expect(store.get(second).get('1')).toEqual({ n: 99 });
+    expect(store.get(second).get('2')).toBe(stable);
+    store.dispose();
     runtime.dispose();
   });
   it('infers pure and stateful values independently from equality and rejects asynchronous computes', () => {
-    const projection = createProjectionRuntime({ onError: () => {} });
-    const input = projection.input(1);
-    const pure = projection.value({ n: input.source }, ({ n }) => ({ n: n.value % 2 }), {
+    const store = createProjectionStore({ onError: () => {} });
+    const n = input(1);
+    const pure = project({ n }, ({ n }) => ({ n: n % 2 }), {
       isEqual: (a, b) => a.n === b.n,
     });
-    const stateful = projection.value(
-      {
-        sources: { n: input.source },
-        build: ({ n }) => ({
-          value: { n: n.value },
-          update: ({ n }) => ({ kind: 'changed', value: { n: n.value } }),
-        }),
-      },
-      { isEqual: (a, b) => a.n === b.n }
-    );
+    const stateful = project({
+      kind: 'value',
+      sources: { n },
+      build: ({ n }) => ({
+        value: { n: n.value },
+        update: ({ n }) => ({ kind: 'changed', value: { n: n.value } }),
+      }),
+      isEqual: (a, b) => a.n === b.n,
+    });
     expectTypeOf(pure).toEqualTypeOf<
-      ProjectionValue<{
+      ValueProjection<{
         n: number;
       }>
     >();
     expectTypeOf(stateful).toEqualTypeOf<
-      ProjectionValue<{
+      ValueProjection<{
         n: number;
       }>
     >();
-    const before = pure.current();
-    input.set(3);
-    expect(pure.current()).toBe(before);
-    expect(stateful.current()).toEqual({ n: 3 });
-    // @ts-expect-error Pure computations must be synchronous.
-    expect(() => projection.value({ n: input.source }, async ({ n }) => n.value)).toThrow(
-      'synchronous'
-    );
-    projection.dispose();
+    const before = store.get(pure);
+    store.set(n, 3);
+    expect(store.get(pure)).toBe(before);
+    expect(store.get(stateful)).toEqual({ n: 3 });
+    const asyncValue = project({ n }, (async ({ n }: { n: number }) => n) as never);
+    expect(() => store.get(asyncValue)).toThrow('synchronous');
+    store.dispose();
   });
   it('maps projected collections including present undefined values, order changes and disposal', () => {
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const source = projection.input(false);
-    const rows = projection.collection<number | undefined>()({
-      sources: { source: source.source },
+    const source = input(false);
+    const rows = project({
+      kind: 'collection',
+      sources: { source },
       build: ({ writer }) => {
         writer.replace([
           ['a', undefined],
@@ -131,23 +175,23 @@ describe('projection composition', () => {
           },
         };
       },
-    });
+    } satisfies AdvancedCollectionSpec<{ source: typeof source }, string, number | undefined>);
     const mapper = vi.fn((_id: string, value: number | undefined) =>
       value === undefined ? 'empty' : String(value)
     );
-    const mapped = projection.map(rows, mapper);
-    expect(mapped.item('a').current()).toBe('empty');
+    const mapped = project(rows, mapper);
+    expect(store.get(mapped).get('a')).toBe('empty');
     mapper.mockClear();
-    source.set(true);
+    store.set(source, true);
     expect(mapper).toHaveBeenCalledTimes(1);
-    expect(mapped.ids.current()).toEqual(['b', 'a']);
-    source.set(false);
-    expect(mapped.ids.current()).toEqual(['b']);
-    expect(mapped.item('a').current()).toBeUndefined();
-    expect(() => rows.dispose()).toThrow();
-    mapped.dispose();
-    rows.dispose();
-    projection.dispose();
+    expect(store.get(mapped).ids()).toEqual(['b', 'a']);
+    store.set(source, false);
+    expect(store.get(mapped).ids()).toEqual(['b']);
+    expect(store.get(mapped).has('a')).toBe(false);
+    expect(() => store.release(rows)).toThrow();
+    store.release(mapped);
+    store.release(rows);
+    store.dispose();
   });
   it('publishes document candidate keys once per batch including net-zero changes and reset', () => {
     const model = object({ title: field<string>(), rows: table(object({ n: field<number>() })) });
@@ -155,12 +199,12 @@ describe('projection composition', () => {
       schema: model,
       initial: { title: '', rows: { ids: ['a'], byId: { a: { n: 0 } } } },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const rows = projection.document(runtime).collection(path => path.rows);
+    const rows = project(runtime, path => path.rows);
     const compute = vi.fn(
       ({
         rows,
@@ -174,24 +218,32 @@ describe('projection composition', () => {
         };
       }) => (rows.reset ? 'reset' : rows.candidates.keys.join(','))
     );
-    const summary = projection.value({ rows }, compute);
+    const summary = project({
+      kind: 'value',
+      sources: { rows },
+      build: events => ({
+        value: compute(events),
+        update: events => ({ kind: 'changed', value: compute(events) }),
+      }),
+    });
+    expect(store.get(summary)).toBe('');
     runtime.update(tx => (tx.title = 'unrelated'));
     expect(compute).toHaveBeenCalledTimes(1);
-    projection.batch(() => {
+    store.batch(() => {
       runtime.update(tx => (tx.rows.get('a')!.n = 1));
       runtime.update(tx => (tx.rows.get('a')!.n = 0));
       runtime.update(tx => tx.rows.create({ id: 'b', value: { n: 2 } }));
       runtime.update(tx => tx.rows.remove('b'));
     });
-    expect(summary.current()).toBe('a,b');
+    expect(store.get(summary)).toBe('a,b');
     expect(compute).toHaveBeenCalledTimes(2);
     runtime.replace({ title: '', rows: { ids: [], byId: {} } });
-    expect(summary.current()).toBe('reset');
-    projection.dispose();
+    expect(store.get(summary)).toBe('reset');
+    store.dispose();
     runtime.dispose();
   });
   it('shares external subscriptions while honoring distinct equality policies atomically', () => {
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
@@ -206,32 +258,21 @@ describe('projection composition', () => {
     });
     const readable: Readable<typeof value> = { current: () => value, revision: () => 0, subscribe };
     const equalX = (a: typeof value, b: typeof value) => a.x === b.x;
-    const x = projection.fromReadable(readable, { isEqual: equalX });
-    const y = projection.fromReadable(readable, { isEqual: (a, b) => a.y === b.y });
-    expect(projection.fromReadable(readable, { isEqual: equalX })).toBe(x);
-    const compute = vi.fn(
-      ({
-        x,
-        y,
-      }: {
-        x: {
-          value: typeof value;
-        };
-        y: {
-          value: typeof value;
-        };
-      }) => [x.value.x, y.value.y]
-    );
-    const result = projection.value({ x, y }, compute);
+    const external = project(readable);
+    const x = project({ external }, ({ external }) => external, { isEqual: equalX });
+    const y = project({ external }, ({ external }) => external, { isEqual: (a, b) => a.y === b.y });
+    const compute = vi.fn(({ x, y }: { x: typeof value; y: typeof value }) => [x.x, y.y]);
+    const result = project({ x, y }, compute);
+    expect(store.get(result)).toEqual([1, 1]);
     value = { x: 1, y: 2 };
     listeners.forEach(listener => listener());
-    expect(result.current()).toEqual([1, 2]);
+    expect(store.get(result)).toEqual([1, 2]);
     value = { x: 3, y: 4 };
     listeners.forEach(listener => listener());
-    expect(result.current()).toEqual([3, 4]);
+    expect(store.get(result)).toEqual([3, 4]);
     expect(compute).toHaveBeenCalledTimes(3);
     expect(subscribe).toHaveBeenCalledTimes(1);
-    projection.dispose();
+    store.dispose();
     expect(listeners.size).toBe(0);
   });
 });
@@ -291,18 +332,15 @@ describe('observable grouped history', () => {
   });
   it('isolates history listener errors after projections settle and forbids observer writes', () => {
     const runtime = setup();
-    const projection = createProjectionRuntime({ onError: () => {} });
-    const view = projection.value(
-      { document: projection.document(runtime) },
-      ({ document }) => document.read.n
-    );
+    const store = createProjectionStore({ onError: () => {} });
+    const view = project({ document: project(runtime) }, ({ document }) => document.n);
     const fault = new Error('history listener');
     const observed: number[] = [];
     runtime.history.subscribe(() => {
       throw fault;
     });
     runtime.history.subscribe(() => {
-      observed.push(view.current());
+      observed.push(store.get(view));
       runtime.update(tx => (tx.n = 99));
     });
     runtime.history.subscribe(() => observed.push(runtime.history.current().undoDepth));
@@ -315,7 +353,7 @@ describe('observable grouped history', () => {
     expect(undo.status).toBe('committed');
     if (undo.status === 'committed') expect(undo.observerErrors).toHaveLength(2);
     expect(runtime.snapshot().n).toBe(0);
-    projection.dispose();
+    store.dispose();
     runtime.dispose();
   });
   it('restores the undo stack when a grouped inverse is rejected after partial work', () => {
@@ -338,22 +376,22 @@ describe('observable grouped history', () => {
   });
   it('feeds history into projections and protects an active group from nested ownership', () => {
     const runtime = setup();
-    const projection = createProjectionRuntime({ onError: () => {} });
-    const history = projection.fromReadable(runtime.history);
-    const count = projection.value({ history }, ({ history }) => history.value.undoDepth);
+    const store = createProjectionStore({ onError: () => {} });
+    const history = project(runtime.history);
+    const count = project({ history }, ({ history }) => history.undoDepth);
     const group = runtime.history.group();
     expect(() => runtime.history.group()).toThrow('already active');
     runtime.update(tx => (tx.n = 1));
-    expect(count.current()).toBe(1);
+    expect(store.get(count)).toBe(1);
     group.end();
     runtime.history.clear();
-    expect(count.current()).toBe(0);
-    projection.dispose();
+    expect(store.get(count)).toBe(0);
+    store.dispose();
     runtime.dispose();
   });
   it('settles document and history sources together before any graph listener', () => {
     const runtime = setup();
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
@@ -363,29 +401,22 @@ describe('observable grouped history', () => {
         document,
         history,
       }: {
-        document: {
-          read: {
-            n: number;
-          };
-        };
-        history: {
-          value: {
-            undoDepth: number;
-          };
-        };
-      }) => `${document.read.n}:${history.value.undoDepth}`
+        document: { readonly n: number; readonly title: string };
+        history: { readonly undoDepth: number; readonly redoDepth: number };
+      }) => `${document.n}:${history.undoDepth}`
     );
-    const summary = projection.value(
-      { document: projection.document(runtime), history: projection.fromReadable(runtime.history) },
+    const summary = project(
+      { document: project(runtime), history: project(runtime.history) },
       compute
     );
     const observed: string[] = [];
-    summary.subscribe(() => observed.push(summary.current()));
+    store.subscribe(summary, () => observed.push(store.get(summary)));
+    expect(store.get(summary)).toBe('0:0');
     runtime.update(tx => (tx.n = 1));
     runtime.history.undo();
     expect(observed).toEqual(['1:1', '0:0']);
     expect(compute).toHaveBeenCalledTimes(3);
-    projection.dispose();
+    store.dispose();
     runtime.dispose();
   });
   it('consumes a net-zero group without creating a document commit', () => {

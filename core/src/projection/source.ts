@@ -6,7 +6,7 @@ import { attachProjection, documentReadableOwner } from '../runtime/notification
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
 import { compilePath } from '../schema';
-import type { DocumentSource, ProjectionSource, ValueInput } from './contract';
+import type { DocumentSource, EngineSource, ValueInput } from './contract';
 import { ProjectionError } from './contract';
 import { collectionHandles } from './collection';
 import type { Readable } from './readable';
@@ -181,7 +181,7 @@ export const createSources = (scheduler: Scheduler) => {
     let value = initial;
     let previous = initial;
     let revision = 0;
-    const handle = Object.freeze({}) as ProjectionSource<ValueInput<T>>;
+    const handle = Object.freeze({}) as EngineSource<ValueInput<T>>;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
@@ -234,14 +234,14 @@ export const createSources = (scheduler: Scheduler) => {
     fromReadable: <T>(
       readable: Readable<T>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }
-    ): ProjectionSource<ValueInput<T>> => {
+    ): EngineSource<ValueInput<T>> => {
       scheduler.assertIdle();
       if (projectionHandles.has(readable))
         throw new Error('Projection nodes must be declared directly as sources.');
       const equal = options?.isEqual ?? Object.is;
       let bindings = readables.get(readable);
       const old = bindings?.get(equal);
-      if (old) return old.source as ProjectionSource<ValueInput<T>>;
+      if (old) return old.source as EngineSource<ValueInput<T>>;
       const input = valueSource(readable.current(), equal);
       if (bindings) {
         bindings.set(equal, { source: input.source, accept: value => input.accept(value as T) });

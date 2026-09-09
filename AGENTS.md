@@ -87,14 +87,14 @@ when a change touches addressing, mutation, impact, notifications, or views.
   address walk for every field write. Collection dispatch remains local by domain.
 - Root ObjectNode is schema identity. Subscription/impact/collection paths compile
   at their consumer boundary; do not export application target constructors.
-- `ProjectionCollection` and `ProjectionValue` are derived state. Their values must
-  be recomputed from runtime state and declared sources, never manually kept in
-  sync by callers.
+- Projection definitions are lazy and reusable. `ProjectionStore` is the only
+  owner of materialized derived state; values are recomputed from runtime state
+  and declared sources, never manually kept in sync by callers.
 - Preserve notification ordering: materialized processors settle before
   external listeners; writes remain forbidden while notifying. Observer
   failures are returned on the committed result and must not be rethrown as a
   mutation rejection.
-- Explicit projection batches defer graph settlement and projection listeners,
+- Explicit projection store batches defer graph settlement and projection listeners,
   but not document commits or document listeners. Batch the full application
   action before its first commit; readers return the last published projection
   inside the batch. Processor dependencies are explicit, not automatically tracked.

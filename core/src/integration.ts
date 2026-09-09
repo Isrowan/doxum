@@ -3,7 +3,7 @@ import type { Read } from './access/scope';
 import type { DocumentReadable } from './runtime/contract';
 import { createDependencyTracker } from './access/dependency';
 import { readWith } from './runtime/access';
-export { projectionDebug } from './projection/runtime';
+export { projectionStoreDebug } from './projection/store';
 export type { AddressRef } from './address';
 export { contains, debugKey, overlaps, read as readAddress, resolveAddress } from './address';
 export { subscribeDependencies } from './runtime/notification';

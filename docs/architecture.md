@@ -282,10 +282,12 @@ History stores sequences of complete commit ChangeSets. Undo reads before in
 reverse commit order; redo reads after in forward order, within one session.
 Local root reset is reversible. Remote commits invalidate local history.
 
-Projection sources explicitly declare dependencies. Capture, settle, flush,
-history listeners, filtered document listeners and root listeners retain their
-ordering. Writes are forbidden while notifying or evaluating document reads.
-Observer errors are attached to an already committed result.
+Projection definitions explicitly declare dependencies and are lazy. A
+`ProjectionStore` materializes definitions and owns processor closures,
+subscriptions, batching, errors and disposal. Capture, settle, flush, history
+listeners, filtered document listeners and root listeners retain their ordering.
+Writes are forbidden while notifying or evaluating document reads. Observer errors
+are attached to an already committed result.
 
 ## Cost Model
 
@@ -341,4 +343,10 @@ normalized ChangeSet through replay without decoding it a second time.
 
 ## Projection Context Ownership
 
-Document source bindings own their receiver and candidate state directly. Collection source construction derives targets from its selector. Each evaluation creates one scope predicate shared by its source contexts, and never reactivates an old predicate. Collection item records own their stable readable, revision and lazy listeners; a separate active-subscription set limits fault notifications to subscribed records. Item values remain derived from the collection's published values.
+Projection definitions contain only immutable dependencies and algorithms. Each
+store materializes its own processor closures and indexes, so one definition can
+run in multiple stores without sharing mutable derived state. Document source
+bindings own their receiver and candidate state inside the store. Collection source
+construction derives targets from its selector. Each evaluation creates one scope
+predicate shared by its source contexts and never reactivates an old predicate.
+Materialized collection values remain derived from published processor output.

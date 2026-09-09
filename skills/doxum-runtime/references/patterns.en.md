@@ -85,20 +85,20 @@ envelopes or treat its container address as whole-container invalidation.
 ## Projection And React
 
 ```ts
-const projection = createProjectionRuntime({ onError: console.error });
-const titles = projection.map(
-  projection.document(document).collection(path => path.tasks),
+const titles = project(
+  document,
+  path => path.tasks,
   (_id, task) => task.title
 );
-const total = projection.value({ titles }, ({ titles }) => titles.ids().length);
-const zoom = projection.input(1);
-const scaled = projection.value(
-  { total, zoom: zoom.source },
-  ({ total, zoom }) => total.value * zoom.value
-);
+const total = project({ titles }, ({ titles }) => titles.ids().length);
+const zoom = input(1);
+const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
+const store = createProjectionStore({ onError: console.error });
+store.get(scaled);
 ```
 
-Use useReadable for values, ids, all and item(id); useHistory for document.history.
-Custom collection processors stage writer.set/remove/order/replace and use scoped
-previous/next reads. Candidates span the complete batch; derive output from final state.
-Processor dependencies are explicit even though React selectors track actual reads.
+Use `useProjection` with a store for projection definitions; use `useReadable`
+for history and other existing Readable values. Custom collection processors stage
+writer.set/remove/order/replace and use scoped previous/next reads. Candidates span
+the complete batch; derive output from final state. Processor dependencies remain
+explicit even though React selectors track actual reads.

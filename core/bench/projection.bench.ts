@@ -1,5 +1,13 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, table } from '../src';
+import {
+  createDocument,
+  createProjectionStore,
+  field,
+  input,
+  object,
+  project,
+  table,
+} from '../src';
 const model = object({ rows: table(object({ value: field<number>() })) });
 const ids = Array.from({ length: 100000 }, (_, i) => String(i));
 const runtime = createDocument({
@@ -7,18 +15,20 @@ const runtime = createDocument({
   history: false,
   initial: { rows: { ids, byId: Object.fromEntries(ids.map((id, i) => [id, { value: i }])) } },
 });
-const projection = createProjectionRuntime({
+const store = createProjectionStore({
   onError: error => {
     throw error;
   },
 });
-const rows = projection.map(
-  projection.document(runtime).collection(path => path.rows),
+const rows = project(
+  runtime,
+  path => path.rows,
   (_id, row) => row.value
 );
-const viewport = projection.input(1);
-const summary = projection.value({
-  sources: { rows, viewport: viewport.source },
+const viewport = input(1);
+const summary = project({
+  kind: 'value',
+  sources: { rows, viewport },
   build: ({ rows, viewport }) => ({
     value: (rows.get('42') ?? 0) * viewport.value,
     update: ({ rows, viewport }) => ({
@@ -31,21 +41,21 @@ let revision = 0;
 describe('explicit projection runtime', () => {
   bench('one mapped row in 100k without all', () => {
     runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-    rows.item('42').current();
+    store.get(rows).get('42');
   });
   bench('document and external source in one batch', () => {
-    projection.batch(() => {
+    store.batch(() => {
       runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-      viewport.set(revision);
+      store.set(viewport, revision);
     });
-    summary.current();
+    store.get(summary);
   });
   bench('lazy all after one update', () => {
     runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-    rows.all.current();
+    store.get(rows).ids();
   });
 });
 afterAll(() => {
-  projection.dispose();
+  store.dispose();
   runtime.dispose();
 });

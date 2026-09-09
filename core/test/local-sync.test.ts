@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-import { createDocument, createProjectionRuntime, field, map, object, select, table } from '../src';
+import {
+  createDocument,
+  createProjectionStore,
+  field,
+  map,
+  object,
+  project,
+  select,
+  table,
+} from '../src';
 import {
   attachLocalSync,
   LocalSyncDataError,
@@ -237,15 +246,12 @@ describe('local sync', () => {
       database: name,
       documentId: 'observable',
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const status = projection.value(
-      { state: projection.fromReadable(follower.state) },
-      ({ state }) => state.value.status
-    );
+    const status = project({ state: project(follower.state) }, ({ state }) => state.status);
     const snapshot = leader.state.current();
     const revision = leader.state.revision();
     await leader.flush();
@@ -264,10 +270,10 @@ describe('local sync', () => {
     expect(heads).toEqual([1]);
     expect(errors).toHaveLength(1);
     expect(leader.state.current().status).toBe('leader');
-    expect(status.current()).toBe('follower');
+    expect(store.get(status)).toBe('follower');
     await leader.dispose();
-    await waitFor(() => status.current() === 'leader');
-    projection.dispose();
+    await waitFor(() => store.get(status) === 'leader');
+    store.dispose();
     const states: string[] = [];
     follower.state.subscribe(() => states.push(follower.state.current().status));
     await follower.dispose();

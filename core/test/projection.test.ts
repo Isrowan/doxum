@@ -2,16 +2,14 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   asReadable,
   createDocument,
-  createProjectionRuntime,
   field,
   object,
   table,
-  type ProjectionRuntime,
   type ProjectionError,
   type CollectionImpact,
-  type CollectionSpec,
 } from '../src';
-import { projectionDebug } from '../src/integration';
+import { createProjectionEngine, projectionEngineDebug } from '../src/projection/runtime';
+import type { EngineCollectionSpec, ProjectionEngine } from '../src/projection/contract';
 import { startProfile } from '../src/profile';
 import { TransactionRejected, type SchemaPath } from '../src';
 const model = object({
@@ -22,10 +20,10 @@ const initial = () => ({
   title: 'one',
   items: { ids: ['a', 'b'], byId: { a: { value: 1, group: 'x' }, b: { value: 2, group: 'y' } } },
 });
-const owners: ProjectionRuntime[] = [];
+const owners: ProjectionEngine[] = [];
 const setup = () => {
   const errors: ProjectionError[] = [];
-  const projection = createProjectionRuntime({ onError: error => errors.push(error) });
+  const projection = createProjectionEngine({ onError: error => errors.push(error) });
   owners.push(projection);
   const runtime = createDocument({ schema: model, initial: initial() });
   const document = projection.document(runtime);
@@ -50,7 +48,7 @@ describe('projection source and value', () => {
     expectTypeOf(view.item('a').current()).toEqualTypeOf<number | undefined>();
     runtime.update(tx => (tx.items.get('a')!.value = 5));
     expect(pick).toHaveBeenCalledTimes(1);
-    expect(projectionDebug(projection).subscriptions).toBe(1);
+    expect(projectionEngineDebug(projection).subscriptions).toBe(1);
     expect(() =>
       document.collection(path => {
         // @ts-expect-error A field is not a collection path.
@@ -153,7 +151,7 @@ describe('projection source and value', () => {
   });
   it('settles every graph before starting graph listeners', () => {
     const { projection, runtime, source } = setup();
-    const other = createProjectionRuntime({ onError: () => undefined });
+    const other = createProjectionEngine({ onError: () => undefined });
     owners.push(other);
     const a = projection.map(source, (_id, entry) => entry.value);
     const b = other.map(
@@ -213,7 +211,7 @@ describe('projection source and value', () => {
   });
   it('rejects foreign sources, invalid schema targets and reads after disposal', () => {
     const { projection, runtime, document, source } = setup();
-    const other = createProjectionRuntime({ onError: () => undefined });
+    const other = createProjectionEngine({ onError: () => undefined });
     owners.push(other);
     expect(() => other.map(source, () => 0)).toThrow('foreign');
     expect(() => document.targets((() => ({})) as never)).toThrow('path');
@@ -301,7 +299,8 @@ describe('projection collection publication', () => {
     const { projection } = setup();
     const input = projection.input(0);
     let writer:
-      Parameters<CollectionSpec<{}, string, number | undefined>['build']>[0]['writer'] | undefined;
+      | Parameters<EngineCollectionSpec<{}, string, number | undefined>['build']>[0]['writer']
+      | undefined;
     const collection = projection.collection<number | undefined>()({
       sources: { input: input.source },
       isEqual: (a: number | undefined, b) => Object.is(a, b),
@@ -505,7 +504,7 @@ describe('batch, recovery and lifecycle', () => {
     const reporter = vi.fn(() => {
       throw new Error('reporter');
     });
-    const projection = createProjectionRuntime({ onError: reporter });
+    const projection = createProjectionEngine({ onError: reporter });
     owners.push(projection);
     const input = projection.input(0);
     const view = projection.value({
@@ -552,7 +551,7 @@ describe('batch, recovery and lifecycle', () => {
   });
   it('cleans a failed source registration and finishes cleanup even when an external unsubscribe throws', () => {
     const { projection } = setup();
-    const before = projectionDebug(projection);
+    const before = projectionEngineDebug(projection);
     expect(() =>
       projection.fromReadable({
         current: () => 0,
@@ -562,7 +561,7 @@ describe('batch, recovery and lifecycle', () => {
         },
       })
     ).toThrow('subscribe');
-    expect(projectionDebug(projection)).toEqual(before);
+    expect(projectionEngineDebug(projection)).toEqual(before);
     projection.fromReadable({
       current: () => 0,
       revision: () => 0,
@@ -576,7 +575,7 @@ describe('batch, recovery and lifecycle', () => {
     });
     expect(() => projection.dispose()).toThrow('cleanup failed');
     expect(() => view.current()).toThrow('disposed');
-    expect(projectionDebug(projection)).toEqual({
+    expect(projectionEngineDebug(projection)).toEqual({
       nodes: 0,
       sources: 0,
       subscriptions: 0,
@@ -781,7 +780,7 @@ describe('batch, recovery and lifecycle', () => {
     expect(() => item.current()).toThrow('disposed');
     expect(() => item.subscribe(() => undefined)).toThrow('disposed');
     projection.dispose();
-    expect(projectionDebug(projection)).toEqual({
+    expect(projectionEngineDebug(projection)).toEqual({
       nodes: 0,
       sources: 0,
       subscriptions: 0,

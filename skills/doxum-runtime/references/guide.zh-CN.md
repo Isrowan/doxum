@@ -72,11 +72,12 @@ apply(changes, { expectedRevision }) 拒绝缺失或不匹配的本地基线；�
 本地 replace 是可撤销根重置，remote commit 使 history 失效。
 observerErrors 属于已提交结果。
 
-集合映射使用 projection.document(document).collection(path => path.tasks)
-和 projection.map。纯派生值使用 projection.value(sources, compute)；
-有状态算法使用 value spec 或 projection.collection<T>()(spec)，sources 显式声明。
-input/fromReadable 接入外部边界值。随所属服务 dispose。
-batch 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
+集合增量映射使用 `project(document, path => path.tasks, mapper)`。
+纯派生值使用 `project(sources, compute)`；有状态算法使用带 kind 的 value
+或 collection spec。定义是惰性的，由 `createProjectionStore({ onError })`
+实例物化和管理。sources 仍然显式声明。
+`input` 与 `project(readable)` 接入外部边界值。随所属服务 dispose store。
+`store.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
 不提供跨文档回滚。
 
 doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入，

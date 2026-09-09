@@ -1,13 +1,13 @@
-import type { ProjectionSources, ProjectionValue, ValueSpec } from './contract';
+import type { EngineSources, MaterializedValue, EngineValueSpec } from './contract';
 import { createNode } from './node';
 import { assertScope, assertSynchronous, type Scheduler } from './scheduler';
 import { profile } from '../profile';
 
-export const createValue = <S extends ProjectionSources, T>(
+export const createValue = <S extends EngineSources, T>(
   scheduler: Scheduler,
-  spec: ValueSpec<S, T>,
+  spec: EngineValueSpec<S, T>,
   options?: { readonly isEqual?: (a: T, b: T) => boolean }
-): ProjectionValue<T> => {
+): MaterializedValue<T> => {
   let instance: ReturnType<typeof spec.build> | undefined;
   let value!: T;
   let next!: T;
@@ -97,7 +97,7 @@ export const createValue = <S extends ProjectionSources, T>(
     },
     rebuild: owner.rebuild,
     dispose: owner.dispose,
-  }) as ProjectionValue<T>;
+  }) as MaterializedValue<T>;
   owner.install(handle);
   return handle;
 };

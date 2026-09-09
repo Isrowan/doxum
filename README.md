@@ -193,28 +193,36 @@ with `history: false` close the active group.
 ## Projections
 
 ```ts
-import { createProjectionRuntime } from 'doxum';
+import { createProjectionStore, input, project } from 'doxum';
 
-const projection = createProjectionRuntime({ onError: console.error });
-const source = projection.document(document);
-const titles = projection.map(
-  source.collection(path => path.tasks),
+const titles = project(
+  document,
+  path => path.tasks,
   (id, task) => `${id}: ${task.title}`
 );
-const count = projection.value({ titles }, ({ titles }) => titles.ids().length);
+const count = project({ titles }, ({ titles }) => titles.ids().length);
+const zoom = input(1);
+const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
+
+const store = createProjectionStore({ onError: console.error });
+store.get(scaled);
+store.set(zoom, 2);
 ```
 
-Sources and processor dependencies are explicit. Use `source.targets(path => ...)`
-to restrict a document source, `projection.input` for application boundary values,
-and `projection.fromReadable` for external readable state. Stateful algorithms use
-`projection.value({ sources, build })` or `projection.collection<T>()(spec)`.
-Document collection contexts supply scoped `read.get/has/ids`, final candidate
+Projection declarations are lazy and reusable. A `ProjectionStore` owns
+materialized values, subscriptions, batching, processor state and disposal.
+`project(document, path)` binds a document collection; adding a mapper performs
+incremental keyed mapping. `project(readable)` bridges an external readable.
+Pure computations receive current values. Advanced processors use tagged specs:
+`project({ kind: 'value', sources, build })` and
+`project({ kind: 'collection', sources, build })`.
+Document collection events provide scoped `read.get/has/ids`, final candidate
 keys, order dirtiness, commits and reset state.
 
-Processors settle before external listeners. `projection.batch` defers graph
+Processors settle before external listeners. `store.batch` defers graph
 settlement and projection notifications, but document commits/listeners remain
 synchronous. Projection readers inside the batch see the last publication.
-Dispose projection runtimes with their owning service.
+Dispose projection stores with their owning service.
 See [projection contracts](docs/projections.md).
 
 ## Local Sync

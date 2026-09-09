@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createDocument,
-  createProjectionRuntime,
+  createProjectionStore,
   field,
   list,
   map,
   object,
+  project,
   select,
   snapshot,
   table,
@@ -275,27 +276,28 @@ describe('bounded mutation work', () => {
         rows: Object.fromEntries(Array.from({ length: 10000 }, (_, n) => [String(n), { n }])),
       },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const view = projection.map(
-      projection.document(runtime).collection(p => p.rows),
+    const view = project(
+      runtime,
+      p => p.rows,
       (_id, row) => snapshot(row)
     );
-    const stable = view.item('1').current(),
+    const stable = store.get(view).get('1'),
       profile = startProfile();
     runtime.update(d => d.rows['2']!.n++);
     const counters = profile.stop();
-    expect(view.item('1').current()).toBe(stable);
+    expect(store.get(view).get('1')).toBe(stable);
     expect(counters.collectionView).toMatchObject({
       mappedItems: 1,
       idsScanned: 0,
       arraysCopied: 0,
     });
     expect(counters.access.snapshots).toBe(1);
-    projection.dispose();
+    store.dispose();
   });
   it('rolls back a root replacement and subsequent edits in grouped history', () => {
     const runtime = createDocument({ schema: object({ n: field<number>() }), initial: { n: 0 } });

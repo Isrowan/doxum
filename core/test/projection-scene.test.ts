@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, createProjectionRuntime, field, object, table } from '../src';
-import { projectionDebug } from '../src/integration';
+import {
+  createDocument,
+  createProjectionStore,
+  field,
+  input,
+  object,
+  project,
+  table,
+  type AdvancedCollectionSpec,
+} from '../src';
+import { projectionStoreDebug } from '../src/integration';
 import { startProfile } from '../src/profile';
 describe('explicit projection workloads', () => {
   it('routes only adjacent edges after geometry changes and reconnects without automatic dependencies', () => {
@@ -21,19 +30,20 @@ describe('explicit projection workloads', () => {
         },
       },
     });
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const document = projection.document(runtime);
-    const nodes = projection.map(
-      document.collection(path => path.nodes),
+    const nodes = project(
+      runtime,
+      path => path.nodes,
       (_id, node) => node.x
     );
-    const edges = document.collection(path => path.edges);
+    const edges = project(runtime, path => path.edges);
     const calculated: string[] = [];
-    const routes = projection.collection<string>()({
+    const routes = project({
+      kind: 'collection',
       sources: { nodes, edges },
       isEqual: (a: string, b) => a === b,
       build: ({ sources, writer }) => {
@@ -87,37 +97,43 @@ describe('explicit projection workloads', () => {
           },
         };
       },
-    });
-    const render = projection.map(routes, (_id, route) => `path:${route}`);
+    } satisfies AdvancedCollectionSpec<
+      { nodes: typeof nodes; edges: typeof edges },
+      string,
+      string
+    >);
+    const render = project(routes, (_id, route) => `path:${route}`);
+    store.get(render);
     runtime.update(tx => (tx.nodes.get('a')!.label = 'content only'));
     expect(calculated).toEqual([]);
     runtime.update(tx => (tx.nodes.get('a')!.x = 10));
     expect(calculated.splice(0)).toEqual(['ab']);
-    expect(routes.item('ab').current()).toBe('10:2');
-    expect(render.item('ab').current()).toBe('path:10:2');
+    expect(store.get(routes).get('ab')).toBe('10:2');
+    expect(store.get(render).get('ab')).toBe('path:10:2');
     runtime.update(tx => (tx.edges.get('ab')!.from = 'c'));
     expect(calculated.splice(0)).toEqual(['ab']);
-    expect(routes.item('ab').current()).toBe('3:2');
+    expect(store.get(routes).get('ab')).toBe('3:2');
     runtime.update(tx => (tx.nodes.get('a')!.x = 20));
     expect(calculated).toEqual([]);
     runtime.update(tx => (tx.nodes.get('c')!.x = 30));
     expect(new Set(calculated.splice(0))).toEqual(new Set(['bc', 'ab']));
     runtime.update(tx => tx.edges.remove('ab'));
-    expect(routes.item('ab').current()).toBeUndefined();
-    expect(render.item('ab').current()).toBeUndefined();
-    projection.dispose();
+    expect(store.get(routes).get('ab')).toBeUndefined();
+    expect(store.get(render).get('ab')).toBeUndefined();
+    store.dispose();
     runtime.dispose();
   });
   it('keeps hover updates local using previous and current input values', () => {
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const hover = projection.input<string | undefined>(undefined);
+    const hover = input<string | undefined>(undefined);
     const candidates: string[] = [];
-    const view = projection.collection<boolean>()({
-      sources: { hover: hover.source },
+    const view = project({
+      kind: 'collection',
+      sources: { hover },
       isEqual: (a: boolean, b) => a === b,
       build: () => ({
         update: ({ sources, writer }) => {
@@ -128,44 +144,49 @@ describe('explicit projection workloads', () => {
             }
         },
       }),
-    });
-    hover.set('a');
+    } satisfies AdvancedCollectionSpec<{ hover: typeof hover }, string, boolean>);
+    store.get(view);
+    store.set(hover, 'a');
     candidates.length = 0;
-    hover.set('b');
+    store.set(hover, 'b');
     expect(candidates).toEqual(['a', 'b']);
-    expect(view.item('a').current()).toBe(false);
-    expect(view.item('b').current()).toBe(true);
-    projection.dispose();
+    expect(store.get(view).get('a')).toBe(false);
+    expect(store.get(view).get('b')).toBe(true);
+    store.dispose();
   });
   it('does not run unrelated nodes and removes disposed nodes from dispatch', () => {
-    const projection = createProjectionRuntime({
+    const store = createProjectionStore({
       onError: error => {
         throw error;
       },
     });
-    const source = projection.input(0);
-    const other = projection.input(0);
+    const source = input(0);
+    const other = input(0);
     const update = vi.fn(() => ({ kind: 'unchanged' as const }));
     for (let i = 0; i < 10000; i++)
-      projection
-        .value({ sources: { input: source.source }, build: () => ({ value: 0, update }) })
-        .dispose();
+      store.release(
+        project({ kind: 'value', sources: { input: source }, build: () => ({ value: 0, update }) })
+      );
     for (let i = 0; i < 100; i++)
-      projection.value({ sources: { input: other.source }, build: () => ({ value: 0, update }) });
-    const active = projection.value({
-      sources: { input: source.source },
+      store.get(
+        project({ kind: 'value', sources: { input: other }, build: () => ({ value: 0, update }) })
+      );
+    const active = project({
+      kind: 'value',
+      sources: { input: source },
       build: ({ input }) => ({
         value: input.value,
         update: ({ input }) => ({ kind: 'changed', value: input.value }),
       }),
     });
     const profile = startProfile();
-    source.set(1);
+    store.get(active);
+    store.set(source, 1);
     const counters = profile.stop();
-    expect(active.current()).toBe(1);
+    expect(store.get(active)).toBe(1);
     expect(update).not.toHaveBeenCalled();
-    expect(counters.materialized.updated).toBe(1);
-    expect(projectionDebug(projection).nodes).toBe(101);
-    projection.dispose();
+    expect(counters.materialized.updated).toBe(2);
+    expect(projectionStoreDebug(store).nodes).toBe(103);
+    store.dispose();
   });
 });

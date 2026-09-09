@@ -3,10 +3,10 @@ import { profile } from '../profile';
 import type {
   CollectionInput,
   CollectionRead,
-  CollectionSpec,
-  ProjectionCollectionWriter,
-  ProjectionCollection,
-  ProjectionSources,
+  EngineCollectionSpec,
+  MaterializedCollectionWriter,
+  MaterializedCollection,
+  EngineSources,
 } from './contract';
 import type { Readable } from './readable';
 import { createNode } from './node';
@@ -31,10 +31,10 @@ const readonlySet = <T>(values: Iterable<T>): ReadonlySet<T> => {
   return view;
 };
 type Entry<V> = { present: true; value: V } | { present: false };
-export const createCollection = <S extends ProjectionSources, K extends string, V>(
+export const createCollection = <S extends EngineSources, K extends string, V>(
   scheduler: Scheduler,
-  spec: CollectionSpec<S, K, V>
-): ProjectionCollection<K, V> => {
+  spec: EngineCollectionSpec<S, K, V>
+): MaterializedCollection<K, V> => {
   const values = new Map<K, V>();
   let ids: readonly K[] = Object.freeze([]);
   let staged = new Map<K, Entry<V>>();
@@ -54,6 +54,20 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
   const listeners = new Set<(change: CollectionImpact<K>) => void>();
   const changedKeys = new Set<K>();
   let orderChanged = false;
+  const current: CollectionRead<K, V> = Object.freeze({
+    get: (key: K) => {
+      owner.check();
+      return values.get(key);
+    },
+    has: (key: K) => {
+      owner.check();
+      return values.has(key);
+    },
+    ids: () => {
+      owner.check();
+      return ids;
+    },
+  });
   const hasNext = (key: K) => (staged.has(key) ? staged.get(key)!.present : values.has(key));
   const getNext = (key: K) => {
     const entry = staged.get(key);
@@ -99,7 +113,7 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
           return next ? Object.freeze(explicitOrder ? explicitOrder.slice() : deriveIds()) : ids;
         },
       });
-      const writer: ProjectionCollectionWriter<K, V> = {
+      const writer: MaterializedCollectionWriter<K, V> = {
         set: (key, value) => {
           assertScope(active);
           if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
@@ -277,6 +291,10 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
     },
   });
   const handle = {
+    current: () => {
+      owner.check();
+      return current;
+    },
     ids: {
       current: () => {
         owner.check();
@@ -357,7 +375,7 @@ export const createCollection = <S extends ProjectionSources, K extends string, 
     },
     rebuild: owner.rebuild,
     dispose: owner.dispose,
-  } as ProjectionCollection<K, V>;
+  } as MaterializedCollection<K, V>;
   projectionHandles.add(handle.ids);
   projectionHandles.add(handle.all);
   collectionHandles.add(handle);

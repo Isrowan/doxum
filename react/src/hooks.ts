@@ -6,9 +6,44 @@ import type {
   LocalHistory,
   OperationResult,
   Readable,
+  ProjectionStore,
+  ValueProjection,
+  InputProjection,
 } from 'doxum';
 import { track, subscribeDependencies, sameTarget, type ImpactTarget } from 'doxum/integration';
-import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
+
+export const ProjectionContext = createContext<ProjectionStore | undefined>(undefined);
+export const ProjectionProvider = ProjectionContext.Provider;
+
+export function useProjection<T>(projection: ValueProjection<T>, store?: ProjectionStore): T {
+  const context = useContext(ProjectionContext);
+  const owner = store ?? context;
+  if (!owner) throw new Error('ProjectionStore is required.');
+  const read = useCallback(() => owner.get(projection), [owner, projection]);
+  const subscribe = useCallback(
+    (listener: () => void) => owner.subscribe(projection, listener),
+    [owner, projection]
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+export function useSetProjection<T>(
+  projection: InputProjection<T>,
+  store?: ProjectionStore
+): (value: T) => void {
+  const context = useContext(ProjectionContext);
+  const owner = store ?? context;
+  if (!owner) throw new Error('ProjectionStore is required.');
+  return useCallback((value: T) => owner.set(projection, value), [owner, projection]);
+}
 
 export type DocumentSelectorOptions<TResult> = {
   readonly isEqual?: (previous: TResult, next: TResult) => boolean;
