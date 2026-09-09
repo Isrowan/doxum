@@ -44,3 +44,17 @@ export function remove(
   for (const id of removed) session.writeMember(container, id, undefined, 'remove');
   table.ids = table.ids.filter(id => !removed.has(id));
 }
+
+export function replace(
+  session: MutationSession,
+  container: ResolvedContainer,
+  id: string,
+  value: unknown
+): void {
+  const { at, node, value: tableValue } = container;
+  if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
+  const table = tableValue as { byId: Record<string, unknown> };
+  if (!Object.hasOwn(table.byId, id))
+    return fail(at.concat(id), 'missing-entity', 'Table key does not exist.');
+  session.writeMember(container, id, value, 'set');
+}

@@ -11,7 +11,7 @@ const model = object({
 });
 ```
 
-Edit position.x, replace stroke whole, use rows.set(key, value) for keyed item edits.
+Edit position.x, replace stroke whole, and use rows.replace(key, value) for keyed item edits.
 
 ## Complex Replacement
 
@@ -21,13 +21,13 @@ const model = object({
 });
 const document = createDocument({ schema: model, initial: { entries: {} } });
 document.update(draft => {
-  assign(draft.entries, 'a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
-  draft.entries.a!.rows.get('x')!.title = 'Updated';
+  draft.entries.put('a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
+  draft.entries.get('a')!.rows.get('x')!.title = 'Updated';
 });
 ```
 
-TypeScript cannot express different read/write types for mapped properties.
-assign checks Infer replacement data and uses the same mutation session.
+Map entries use put. Use top-level replace for object/variant members whose Draft
+type contains collection tools; collection replace(next) handles whole containers.
 
 ## Domain Keys
 
@@ -45,7 +45,7 @@ const model = object({ people: map(object({ name: field(text) }), { key: personI
 const initial = parse(model, { people: { 'person:1': { name: 'Ada' } } });
 ```
 
-Brands flow through indexed access, table methods, symbolic paths and collection impact.
+Brands flow through map/table methods, symbolic paths and collection impact.
 
 ## Ordered Edits, History And Replay
 

@@ -1,5 +1,4 @@
 import {
-  assign,
   createDocument,
   createProjectionStore,
   field,
@@ -26,10 +25,10 @@ export const documentationExamples = () => {
   const initial: Value = { title: 'Launch', tasks: { a: { title: 'Write', done: false } } };
   const document = createDocument({ schema: model, initial });
   const commit = document.update(draft => {
-    const item = draft.tasks.a;
+    const item = draft.tasks.get('a');
     if (!item) throw new TransactionRejected({ code: 'missing', message: 'Missing task.' });
     item.done = true;
-    draft.tasks.b = { title: 'Review', done: false };
+    draft.tasks.put('b', { title: 'Review', done: false });
     return { warnings: [] };
   });
   const tasks: Infer<typeof model>['tasks'] = select(document, state => snapshot(state.tasks));
@@ -44,7 +43,7 @@ export const documentationExamples = () => {
     replica.apply(commit.commit.changes, { expectedRevision: 0, source: 'remote' });
     replica.dispose();
   }
-  track(document, state => state.tasks.a?.done);
+  track(document, state => state.tasks.get('a')?.done);
   const titles = project(
     document,
     path => path.tasks,
@@ -66,8 +65,8 @@ export const documentationExamples = () => {
     initial: { entries: {} },
   });
   board.update(d => {
-    assign(d.entries, 'a', { rows: { ids: [], byId: {} } });
-    d.entries.a!.rows.create({ id: 'x', value: { title: 'X', done: false } });
+    d.entries.put('a', { rows: { ids: [], byId: {} } });
+    d.entries.get('a')!.rows.create('x', { title: 'X', done: false });
   });
   const item = field<{ id: string; title: string }>();
   const structure = object({

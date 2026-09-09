@@ -117,8 +117,8 @@ describe('ChangeSet boundary', () => {
     const result = a.update(d => {
       d.n = 1;
       d.n = 2;
-      d.rows.b = { n: 3 };
-      d.rows.b.n++;
+      d.rows.put('b', { n: 3 });
+      d.rows.get('b')!.n++;
     });
     if (result.status !== 'committed') throw new Error('commit');
     expect(b.apply(result.commit.changes, { expectedRevision: 0 }).status).toBe('committed');
@@ -311,7 +311,7 @@ describe('ChangeSet boundary', () => {
     const result = a.update(d => {
       d.rows.remove('a');
       d.rows.insert({ id: 'c', n: 3 }, { at: 'start' });
-      d.rows.set('b', { id: 'b', n: 4 });
+      d.rows.replace('b', { id: 'b', n: 4 });
     });
     if (result.status !== 'committed') throw new Error('commit');
     expect(b.apply(result.commit.changes, { expectedRevision: 0 }).status).toBe('committed');

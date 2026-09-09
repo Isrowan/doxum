@@ -14,7 +14,7 @@ import {
   type Readable,
 } from '../src';
 import { startProfile } from '../src/profile';
-import { assign } from '../src';
+import { replace } from '../src';
 describe('projection composition', () => {
   it('materializes one reusable definition independently in each store', () => {
     const n = input(1);
@@ -78,7 +78,7 @@ describe('projection composition', () => {
     );
     expect(store.get(mapped).ids()).toEqual([]);
     runtime.update(tx =>
-      assign(tx, 'content', { kind: 'populated', rows: { ids: ['a'], byId: { a: { n: 1 } } } })
+      replace(tx, 'content', { kind: 'populated', rows: { ids: ['a'], byId: { a: { n: 1 } } } })
     );
     expect(store.get(mapped).get('a')).toBe(1);
     runtime.history.undo();
@@ -232,7 +232,7 @@ describe('projection composition', () => {
     store.batch(() => {
       runtime.update(tx => (tx.rows.get('a')!.n = 1));
       runtime.update(tx => (tx.rows.get('a')!.n = 0));
-      runtime.update(tx => tx.rows.create({ id: 'b', value: { n: 2 } }));
+      runtime.update(tx => tx.rows.create('b', { n: 2 }));
       runtime.update(tx => tx.rows.remove('b'));
     });
     expect(store.get(summary)).toBe('a,b');
@@ -364,7 +364,7 @@ describe('observable grouped history', () => {
     });
     const group = runtime.history.group();
     runtime.update(tx => (tx.rows.get('a')!.n = 1));
-    runtime.update(tx => tx.rows.create({ id: 'b', value: { n: 2 } }));
+    runtime.update(tx => tx.rows.create('b', { n: 2 }));
     group.end();
     runtime.update(tx => tx.rows.remove('a'), { history: false });
     const before = runtime.snapshot();

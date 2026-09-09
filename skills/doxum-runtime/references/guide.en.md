@@ -13,12 +13,12 @@ const document = createDocument({
   initial: { tasks: { a: { title: 'Write', done: false } } },
 });
 document.update(draft => {
-  const task = draft.tasks.a;
+  const task = draft.tasks.get('a');
   if (task) task.done = !task.done;
-  draft.tasks.b = { title: 'Review', done: false };
+  draft.tasks.put('b', { title: 'Review', done: false });
   return { warnings: [] };
 });
-const done = select(document, state => state.tasks.a?.done);
+const done = select(document, state => state.tasks.get('a')?.done);
 const tasks = select(document, state => snapshot(state.tasks));
 document.subscribe(
   path => path.tasks.item('a').done,
@@ -43,20 +43,24 @@ returns its original readonly reference. Published data is not frozen. Field cop
 are not supported; mutable exports and serialization belong to application boundaries.
 
 Infer preserves optional properties and flat variant unions. Read/Draft contain
-collection tools; assign(scope, key, inferValue) handles plain replacements containing
-nested table/list/tree data.
+collection tools. Maps use explicit methods; table/list/tree overload replace for
+member and whole-container replacement. `replace(parent, key, inferValue)` handles
+plain replacement of object or variant members that contain collection data.
 
 ## Containers And Validation
 
-| Definition                       | Data          | Draft methods                                                 |
-| -------------------------------- | ------------- | ------------------------------------------------------------- |
-| map(valueSchema, { key }?)       | record        | indexing, assignment, delete                                  |
-| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move                                |
-| list(field, { keyOf })           | array         | get/has/ids/insert/set/remove/move/replace                    |
-| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/set/remove/move/replace |
+| Definition                       | Data          | Draft methods                                             |
+| -------------------------------- | ------------- | --------------------------------------------------------- |
+| map(valueSchema, { key }?)       | record        | get/has/ids/put/remove/replace                            |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/replace                    |
+| list(field, { keyOf })           | array         | get/has/ids/insert/remove/move/replace                    |
+| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/remove/move/replace |
 
-Read scopes expose only read methods. Map supports field/object/variant values.
-List replacement retains the addressed key. Simple arrays and strokes can be one
+Read scopes expose only read methods. Map supports field/object/variant values;
+put is an upsert and removing a missing key is a no-op. `replace(id, value)` is
+existing-only for table/list/tree, preserves table/list order, and changes only a
+tree payload. `replace(value)` replaces a whole collection. List member replacement
+retains the addressed key. Simple arrays and strokes can be one
 atomic field. Optional supports field/variant/map/list/tree. Absent differs from
 present undefined. Variant tags are readonly; change branch by whole replacement.
 
@@ -64,7 +68,7 @@ Pure synchronous functions and Standard Schema v1 validators receive original in
 They must not mutate it; successful output is ignored, with no copy or deep conversion
 check. Transform values before entering Doxum. parse(model, unknown) copies validated
 structure and shares readonly payloads; strict parse requires atomic validators.
-Branded map/table keys flow through access, symbolic paths and impact.
+Branded map/table keys flow through methods, symbolic paths and impact.
 Path callbacks describe locations, including absent entries, and compile at registration.
 React useDocumentSelector tracks actual reads and changes dependencies when branching.
 

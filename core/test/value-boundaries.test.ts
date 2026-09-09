@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  assign,
+  replace,
   createDocument,
   createProjectionStore,
   field,
@@ -34,11 +34,11 @@ describe('schema validation and snapshots', () => {
     const schema = object({ entries: map(object({ nested: object({ n: field<number>() }) })) });
     const runtime = createDocument({ schema, initial: { entries: { a: { nested: { n: 1 } } } } });
     runtime.update(d => {
-      const nested = d.entries.a!.nested;
+      const nested = d.entries.get('a')!.nested;
       expect(snapshot(nested)).toEqual({ n: 1 });
-      delete d.entries.a;
+      d.entries.remove('a');
       expect(snapshot(nested)).toBeUndefined();
-      d.entries.a = { nested: { n: 2 } };
+      d.entries.put('a', { nested: { n: 2 } });
       expect(snapshot(nested)).toEqual({ n: 2 });
     });
   });
@@ -71,7 +71,7 @@ describe('schema validation and snapshots', () => {
     expect(
       runtime.update(d => {
         d.n = 1;
-        assign(d.rows, 'a', invalid);
+        d.rows.put('a', invalid);
       }).status
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual(initial);
@@ -146,7 +146,7 @@ describe('schema validation and snapshots', () => {
     expect(runtime.snapshot().payload).toBe(payload);
     expect(
       runtime.update(d => {
-        d.values.another = 2;
+        d.values.put('another', 2);
         d.missing = undefined;
       }).status
     ).toBe('committed');
@@ -166,15 +166,15 @@ describe('schema validation and snapshots', () => {
     const unchanged = vi.fn();
     runtime.subscribe(p => p.values.item('nan'), unchanged);
     const result = runtime.update(d => {
-      d.values.zero = -0;
-      d.values.nan = 1;
-      d.values.nan = NaN;
-      d.values.text = 'new';
-      d.values.flag = true;
-      d.values.big = 2n;
-      d.values.empty = null;
-      d.values.symbol = token;
-      d.values.missing = undefined;
+      d.values.put('zero', -0);
+      d.values.put('nan', 1);
+      d.values.put('nan', NaN);
+      d.values.put('text', 'new');
+      d.values.put('flag', true);
+      d.values.put('big', 2n);
+      d.values.put('empty', null);
+      d.values.put('symbol', token);
+      d.values.put('missing', undefined);
     });
     expect(result.status).toBe('committed');
     if (result.status !== 'committed') throw new Error('Expected commit');
@@ -237,9 +237,9 @@ describe('schema validation and snapshots', () => {
     const runtime = createDocument({ schema, initial });
     expect(
       runtime.update(d => {
-        const position = d.rows.a!.position;
+        const position = d.rows.get('a')!.position;
         position.x = 2;
-        delete d.rows.a;
+        d.rows.remove('a');
         expect(position.x).toBeUndefined();
         position.x = 3;
       }).status
@@ -416,13 +416,13 @@ describe('schema validation and snapshots', () => {
       },
     });
     validate.mockClear();
-    runtime.update(d => d.rows['1']!.n++);
+    runtime.update(d => d.rows.get('1')!.n++);
     expect(validate).toHaveBeenCalledTimes(1);
     const before = runtime.snapshot();
     expect(
       runtime.update(d => {
-        d.rows['1']!.n++;
-        d.rows['2']!.n = NaN;
+        d.rows.get('1')!.n++;
+        d.rows.get('2')!.n = NaN;
       }).status
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual(before);
@@ -501,25 +501,25 @@ describe('schema validation and snapshots', () => {
   it('records exact dependencies for field reads, presence, membership and subtrees', () => {
     const schema = object({ rows: map(object({ n: field<number>(), title: field<string>() })) });
     const runtime = createDocument({ schema, initial: { rows: { a: { n: 1, title: 'A' } } } });
-    const selected = track(runtime, s => s.rows.a?.n),
+    const selected = track(runtime, s => s.rows.get('a')?.n),
       listener = vi.fn();
     subscribeDependencies(runtime, selected.targets, listener);
-    runtime.update(d => (d.rows.a!.title = 'new'));
+    runtime.update(d => (d.rows.get('a')!.title = 'new'));
     expect(listener).not.toHaveBeenCalled();
-    runtime.update(d => d.rows.a!.n++);
+    runtime.update(d => d.rows.get('a')!.n++);
     expect(listener).toHaveBeenCalledTimes(1);
     runtime.update(d => {
-      delete d.rows.a;
+      d.rows.remove('a');
     });
     expect(listener).toHaveBeenCalledTimes(2);
-    runtime.update(d => (d.rows.a = { n: 2, title: 'A' }));
+    runtime.update(d => d.rows.put('a', { n: 2, title: 'A' }));
     expect(listener).toHaveBeenCalledTimes(3);
-    const missing = track(runtime, s => s.rows.missing?.n),
+    const missing = track(runtime, s => s.rows.get('missing')?.n),
       missingListener = vi.fn();
     subscribeDependencies(runtime, missing.targets, missingListener);
-    runtime.update(d => (d.rows.other = { n: 1, title: 'O' }));
+    runtime.update(d => d.rows.put('other', { n: 1, title: 'O' }));
     expect(missingListener).not.toHaveBeenCalled();
-    runtime.update(d => (d.rows.missing = { n: 1, title: 'M' }));
+    runtime.update(d => d.rows.put('missing', { n: 1, title: 'M' }));
     expect(missingListener).toHaveBeenCalledTimes(1);
   });
   it('updates atomic map projections, including present undefined entries', () => {
@@ -536,24 +536,24 @@ describe('schema validation and snapshots', () => {
       (id, n) => `${id}:${n}`
     );
     runtime.update(d => {
-      d.values.b = undefined;
-      d.values.a = 2;
+      d.values.put('b', undefined);
+      d.values.put('a', 2);
     });
     expect(store.get(view).ids()).toEqual(['a', 'b']);
     expect(store.get(view).get('b')).toBe('b:undefined');
     runtime.update(d => {
-      delete d.values.a;
+      d.values.remove('a');
     });
     expect(store.get(view).ids()).toEqual(['b']);
     store.dispose();
   });
-  it('uses typed assignment for a replacement containing structural collection data', () => {
+  it('puts plain map values containing structural collection data', () => {
     const schema = object({
       entries: map(object({ rows: table(object({ n: field<number>() })) })),
     });
     const runtime = createDocument({ schema, initial: { entries: {} } });
-    runtime.update(d => assign(d.entries, 'a', { rows: { ids: ['x'], byId: { x: { n: 1 } } } }));
-    runtime.update(d => d.entries.a!.rows.get('x')!.n++);
+    runtime.update(d => d.entries.put('a', { rows: { ids: ['x'], byId: { x: { n: 1 } } } }));
+    runtime.update(d => d.entries.get('a')!.rows.get('x')!.n++);
     expect(runtime.snapshot().entries.a.rows.byId.x.n).toBe(2);
   });
   it('rejects detached collection reads after their schema branch is replaced', () => {
@@ -570,7 +570,7 @@ describe('schema validation and snapshots', () => {
     });
     runtime.update(d => {
       const ids = d.choice.rows.ids;
-      assign(d, 'choice', { kind: 'b', rows: [{ id: 'a', other: 'b' }] });
+      replace(d, 'choice', { kind: 'b', rows: [{ id: 'a', other: 'b' }] });
       expect(() => ids()).toThrow('replaced schema branch');
       expect(d.choice.rows.ids()).toEqual(['b']);
     });
@@ -603,9 +603,9 @@ describe('schema validation and snapshots', () => {
     });
     const runtime = createDocument({ schema, initial: {} });
     runtime.update(d => {
-      assign(d, 'rows', ['a']);
-      assign(d, 'outline', { nodes: {} });
-      d.values = { a: 1 };
+      replace(d, 'rows', ['a']);
+      replace(d, 'outline', { nodes: {} });
+      replace(d, 'values', { a: 1 });
       d.rows!.insert('b');
       d.outline!.insert('r', 'R');
     });

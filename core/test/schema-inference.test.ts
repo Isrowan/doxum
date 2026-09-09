@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
-  assign,
+  replace,
   createDocument,
   createProjectionStore,
   field,
@@ -48,6 +48,11 @@ describe('schema inference and public access', () => {
       }
     });
     const illegal = (d: Draft<typeof runtime.schema>) => {
+      if (d.outcome.kind === 'victory') {
+        replace(d.outcome, 'reason', 'destroyed');
+        // @ts-expect-error Replacement values retain the narrowed variant branch.
+        replace(d.outcome, 'reason', 'deadline');
+      }
       // @ts-expect-error The discriminant is readonly.
       d.outcome.kind = 'defeat';
     };
@@ -103,7 +108,7 @@ describe('schema inference and public access', () => {
     };
     void illegal;
   });
-  it('preserves domain keys across bracket access, table methods, paths, impact and projections', () => {
+  it('preserves domain keys across map/table methods, paths, impact and projections', () => {
     const person = object({ age: field<number>() });
     const schema = object({
       people: map(person, { key: personId }),
@@ -115,8 +120,8 @@ describe('schema inference and public access', () => {
     });
     const id = personId('person:1');
     const result = runtime.update(d => {
-      d.people[id] = { age: 1 };
-      d.ordered.create({ id, value: { age: 1 } });
+      d.people.put(id, { age: 1 });
+      d.ordered.create(id, { age: 1 });
     });
     if (result.status !== 'committed') throw new Error('commit');
     expectTypeOf(result.commit.impact.collection(p => p.people)).toEqualTypeOf<
@@ -138,12 +143,14 @@ describe('schema inference and public access', () => {
     expectTypeOf(store.get(view).ids()).toEqualTypeOf<readonly PersonId[]>();
     expect(store.get(view).get(id)).toBe(1);
     const illegal = (d: Draft<typeof schema>, read: Read<typeof schema>, trip: TripId) => {
-      // @ts-expect-error Wrong domain for indexing.
-      read.people[trip];
+      // @ts-expect-error Wrong domain for map reads.
+      read.people.get(trip);
       // @ts-expect-error Wrong domain for writes.
-      d.people[trip] = { age: 1 };
-      // @ts-expect-error Wrong domain for typed assignment.
-      assign(d.people, trip, { age: 1 });
+      d.people.put(trip, { age: 1 });
+      // @ts-expect-error Map members are written through put, not top-level replace.
+      replace(d.people, id, { age: 1 });
+      // @ts-expect-error Read scopes cannot be passed to top-level replace.
+      replace(read, 'people', {});
       // @ts-expect-error Wrong domain for table access.
       d.ordered.get(trip);
       // @ts-expect-error Wrong anchor key domain.
@@ -159,7 +166,7 @@ describe('schema inference and public access', () => {
     void illegal;
     expect(
       runtime.update(d => {
-        d.people['trip:1' as PersonId] = { age: 3 };
+        d.people.put('trip:1' as PersonId, { age: 3 });
       }).status
     ).toBe('rejected');
     store.dispose();

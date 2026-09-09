@@ -56,7 +56,7 @@ for (const [count, changed, subscribers] of [
     runtime.update(d => {
       const start = measuring ? performance.now() : 0;
       for (let i = 0; i < changed; i++) {
-        const position = d.entities[ids[i]]!.position;
+        const position = d.entities.get(ids[i])!.position;
         position.x++;
         position.y += 2;
       }
@@ -152,7 +152,7 @@ const edits: [string, (draft: Draft<typeof structuralSchema>) => void][] = [
   [
     'list-values',
     d => {
-      for (let i = 0; i < 100; i++) d.items.set(String(i), { id: String(i), n: 1 });
+      for (let i = 0; i < 100; i++) d.items.replace(String(i), { id: String(i), n: 1 });
     },
   ],
   [
@@ -167,7 +167,7 @@ const edits: [string, (draft: Draft<typeof structuralSchema>) => void][] = [
   [
     'tree-repeated',
     d => {
-      for (let i = 0; i < 1000; i++) d.outline.set('r', i + 1);
+      for (let i = 0; i < 1000; i++) d.outline.replace('r', i + 1);
     },
   ],
 ];

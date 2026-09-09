@@ -36,7 +36,7 @@ const oracle = (state: State, command: Command) => {
 };
 const execute = (d: Draft<typeof model>, command: Command) => {
   const { id, kind, n } = command;
-  if (kind === 'create') d.rows.create({ id, value: { n } }, { at: 'start' });
+  if (kind === 'create') d.rows.create(id, { n }, { at: 'start' });
   else if (kind === 'remove') d.rows.remove(id);
   else if (kind === 'move') d.rows.move(id);
   else {

@@ -16,7 +16,9 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   their proxies must not escape. Public values should use snapshot when they need to
   outlive the callback.
 - Atomic fields are deeply readonly during access and replaced whole.
-- Use assign(scope, key, value) for replacements containing nested collection tools.
+- Maps use get/has/ids/put/remove/replace; table/list/tree use overloaded replace
+  for member and whole-container replacement. Use replace(parent, key, value) for
+  object or variant members whose Draft type contains collection tools.
 - Expected business failure throws TransactionRejected. Other exceptions roll back
   and rethrow unchanged. Callback returns carry business values and notices.
 - Commits contain final reversible ChangeSets. History and impact share those facts.

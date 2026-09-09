@@ -43,13 +43,23 @@ new object is a change. Restoring the same original atomic reference is net-zero
 Schema structures compare their fields by these rules. Cross-process baselines
 use revision/sequence, not reference comparison of transported before values.
 
-## Assignment Types
+## Replacement APIs
 
-Simple fields, object fields and ordinary map entries use property assignment.
-TypeScript does not support different read/write types on a mapped index
-signature: a nested table is read as collection tools but supplied as `{ ids, byId }`.
-Use `assign(container, key, value)` for such replacements. It validates the key and
-`Infer` data at compile time and routes to the same draft session at runtime.
+Simple fields and object members use property assignment. Maps expose only
+`get/has/ids/put/remove/replace`; they do not expose business keys as JavaScript
+properties. This keeps keys such as `get`, `replace`, `constructor` and `__proto__`
+unambiguous. `put(id, value)` is an upsert, `remove(id)` is a missing-key no-op, and
+`replace(nextMap)` replaces the complete map.
+
+Table, list and tree access overload `replace`: `replace(id, value)` replaces one
+existing member, while `replace(nextContainer)` replaces the whole container. A table
+member replacement preserves order, a list replacement must preserve `keyOf(value)`,
+and a tree member replacement changes only its payload, never topology.
+
+Use top-level `replace(parent, key, value)` when replacing an object or variant member
+whose Draft type contains collection access methods. It accepts only object/variant
+parents, validates the key and plain `Infer` value at compile time, and routes through
+the same draft session at runtime.
 
 ```ts
 const model = object({
@@ -57,15 +67,14 @@ const model = object({
 });
 const document = createDocument({ schema: model, initial: { entries: {} } });
 document.update(draft => {
-  assign(draft.entries, 'a', { rows: { ids: ['x'], byId: { x: { n: 1 } } } });
-  draft.entries.a!.rows.get('x')!.n++;
+  draft.entries.put('a', { rows: { ids: ['x'], byId: { x: { n: 1 } } } });
+  draft.entries.get('a')!.rows.get('x')!.n++;
 });
 ```
 
-The helper also handles optional list/tree initialization and object-inherited
-key names such as `constructor` when TypeScript's object type interferes with
-index assignment. It grants no extra mutation authority and cannot modify a read
-scope, ordinary object as a whole, or a variant discriminant.
+The helper also initializes optional map/list/tree members. It grants no extra
+mutation authority and cannot modify a read scope, a map entry, an ordinary object
+as a whole, or a variant discriminant.
 
 ## Validation
 
@@ -81,7 +90,7 @@ Reassigning an identical already-valid member is a no-op and does not invoke its
 validator. Validators must not rely on invocation counts or external mutable state.
 
 Map/table key validators can infer branded string keys. Those types survive
-indexing, table methods and anchors, symbolic item paths, projection mapping and
+map/table methods and anchors, symbolic item paths, projection mapping and
 collection impact. Symbolic path registration validates keys too. Raw external
 documents and ChangeSet assignments pass the same key boundary.
 
@@ -100,5 +109,5 @@ retaining it beyond that callback is undefined behavior. Projection source reade
 retain explicit expiration checks. Within a callback, retained child proxies are
 address accessors, not references to removed canonical objects. Delete/recreate
 and variant replacement must resolve current schema and data before later use.
-`in`, enumeration and snapshots register explicit read dependencies. Framework
+Map `get/has/ids` and snapshots register explicit read dependencies. Framework
 reads forbid document writes while evaluating their callback.

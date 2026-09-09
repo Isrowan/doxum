@@ -42,7 +42,7 @@ for (const [count, fraction, listeners] of [
       const result = runtime.update(draft => {
         for (let i = 0; i < changed; i++) {
           const id = ids[(frame * changed + i) % count];
-          const position = draft.entities[id].position;
+          const position = draft.entities.get(id).position;
           position.x += 1;
           position.y += 2;
         }
@@ -76,7 +76,7 @@ for (const [count, fraction, listeners] of [
     samples.push(...trialSamples);
     means.push(trialSamples.reduce((a, b) => a + b, 0) / trialSamples.length);
     const total = select(runtime, read =>
-      ids.reduce((sum, id) => sum + read.entities[id].position.x, 0)
+      ids.reduce((sum, id) => sum + read.entities.get(id).position.x, 0)
     );
     assert.equal(total, 80 * changed);
     assert.equal(observed, 80);

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  assign,
+  replace,
   asReadable,
   createDocument,
   field,
@@ -40,7 +40,7 @@ describe('draft transactions', () => {
     const result = runtime.update(draft => {
       draft.n = 1;
       draft.n += 2;
-      draft.rows.a!.n = draft.n;
+      draft.rows.get('a')!.n = draft.n;
       return { warnings: ['review'], n: draft.n };
     });
     expect(result.status).toBe('committed');
@@ -66,8 +66,8 @@ describe('draft transactions', () => {
       runtime.update(d => {
         d.n++;
         d.n--;
-        d.rows.b = { n: 5, title: 'B' };
-        delete d.rows.b;
+        d.rows.put('b', { n: 5, title: 'B' });
+        d.rows.remove('b');
       }).status
     ).toBe('unchanged');
     expect(runtime.revision()).toBe(0);
@@ -94,7 +94,7 @@ describe('draft transactions', () => {
       try {
         runtime.update(d => {
           d.n = 9;
-          delete d.rows.a;
+          d.rows.remove('a');
           d.ordered.remove('b');
           throw error;
         });
@@ -127,23 +127,23 @@ describe('draft transactions', () => {
   it('keeps draft identities stable within a scope and snapshots selected values', () => {
     const runtime = setup();
     runtime.update(d => {
-      expect(d.rows.a).toBe(d.rows.a);
+      expect(d.rows.get('a')).toBe(d.rows.get('a'));
       d.n++;
     });
-    const copy = select(runtime, state => snapshot(state.rows.a));
+    const copy = select(runtime, state => snapshot(state.rows.get('a')));
     expect(copy).toEqual({ n: 1, title: 'A' });
-    runtime.update(d => d.rows.a!.n++);
+    runtime.update(d => d.rows.get('a')!.n++);
     expect(copy?.n).toBe(1);
   });
   it('re-resolves retained child drafts after deletion and recreation', () => {
     const runtime = setup();
     runtime.update(d => {
-      const a = d.rows.a!;
-      delete d.rows.a;
+      const a = d.rows.get('a')!;
+      d.rows.remove('a');
       expect(a.n).toBeUndefined();
-      d.rows.a = { n: 8, title: 'new' };
+      d.rows.put('a', { n: 8, title: 'new' });
       a.n = 9;
-      expect(d.rows.a.n).toBe(9);
+      expect(d.rows.get('a')!.n).toBe(9);
     });
     expect(runtime.snapshot().rows.a.n).toBe(9);
     runtime.history.undo();
@@ -153,8 +153,8 @@ describe('draft transactions', () => {
     const runtime = setup();
     expect(
       runtime.update(d => {
-        const a = d.rows.a!;
-        delete d.rows.a;
+        const a = d.rows.get('a')!;
+        d.rows.remove('a');
         a.n = 9;
       }).status
     ).toBe('rejected');
@@ -182,23 +182,45 @@ describe('draft transactions', () => {
     });
     expect(runtime.address.read(['get'])).toBe('updated');
   });
-  it('distinguishes missing map entries from present undefined and handles prototype-like keys', () => {
+  it('uses only map methods, including for method and prototype-like business keys', () => {
     const schema = object({ values: map(field<number | undefined>()) });
     const runtime = createDocument({ schema, initial: { values: {} } });
+    expect(runtime.update(d => d.values.remove('missing')).status).toBe('unchanged');
+    const keys = ['get', 'has', 'ids', 'put', 'remove', 'replace', '__proto__', 'constructor'];
     runtime.update(d => {
-      d.values.a = undefined;
-      d.values.__proto__ = 1;
-      assign(d.values, 'constructor', 2);
+      d.values.put('a', undefined);
+      keys.forEach((key, index) => d.values.put(key, index));
+      expect(d.values.get('get')).toBe(0);
+      expect(d.values.get('replace')).toBe(5);
+      expect('get' in d.values).toBe(false);
+      expect(Object.keys(d.values)).toEqual([]);
     });
-    expect(select(runtime, d => 'a' in d.values)).toBe(true);
-    expect(select(runtime, d => Object.keys(d.values))).toEqual(['a', '__proto__', 'constructor']);
+    expect(select(runtime, d => d.values.has('a'))).toBe(true);
+    expect(select(runtime, d => d.values.ids())).toEqual(['a', ...keys]);
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual({ values: {} });
     runtime.history.redo();
     runtime.update(d => {
-      delete d.values.a;
+      d.values.remove('a');
     });
-    expect(select(runtime, d => 'a' in d.values)).toBe(false);
+    expect(select(runtime, d => d.values.has('a'))).toBe(false);
+    const beforeWholeReplace = runtime.snapshot();
+    runtime.update(d => d.values.replace({ get: 10, replace: 20 }));
+    expect(runtime.snapshot().values).toEqual({ get: 10, replace: 20 });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(beforeWholeReplace);
+    const beforeLegacyWrite = runtime.snapshot();
+    expect(() =>
+      runtime.update(d => {
+        Reflect.set(d.values, 'legacy', 1);
+      })
+    ).toThrow('Invalid structural assignment');
+    expect(() =>
+      runtime.update(d => {
+        Reflect.deleteProperty(d.values, 'get');
+      })
+    ).toThrow('Invalid structural deletion');
+    expect(runtime.snapshot()).toEqual(beforeLegacyWrite);
   });
   it('supports optional deletion and reverses absent versus undefined', () => {
     const runtime = setup();
@@ -262,10 +284,10 @@ describe('structural transitions', () => {
   it('absorbs child changes into entry replacement and restoration', () => {
     const runtime = setup();
     const result = runtime.update(d => {
-      d.rows.a!.n = 5;
-      delete d.rows.a;
-      d.rows.a = { n: 6, title: 'new' };
-      d.rows.a.n = 7;
+      d.rows.get('a')!.n = 5;
+      d.rows.remove('a');
+      d.rows.put('a', { n: 6, title: 'new' });
+      d.rows.get('a')!.n = 7;
     });
     if (result.status !== 'committed') throw new Error('commit');
     expect(result.commit.changes.changes).toHaveLength(1);
@@ -286,7 +308,7 @@ describe('structural transitions', () => {
       runtime.update(d => {
         d.ordered.get('a')!.n = 9;
         d.ordered.remove('a');
-        d.ordered.create({ id: 'a', value: { n: 1, title: 'A' } }, { at: 'start' });
+        d.ordered.create('a', { n: 1, title: 'A' }, { at: 'start' });
         d.ordered.move('a', { at: 'end' });
         d.ordered.move('a', { at: 'start' });
       }).status
@@ -295,6 +317,59 @@ describe('structural transitions', () => {
     expect(result.status).toBe('committed');
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual(initial());
+  });
+  it('replaces existing table members without changing order and replaces whole tables', () => {
+    const runtime = setup();
+    const result = runtime.update(d => d.ordered.replace('a', { n: 9, title: 'updated' }));
+    expect(result.status).toBe('committed');
+    if (result.status !== 'committed') throw new Error('commit');
+    expect(runtime.snapshot().ordered.ids).toEqual(['a', 'b']);
+    expect(result.commit.changes.changes).toEqual([
+      {
+        kind: 'members',
+        at: ['ordered', 'a'],
+        members: [
+          {
+            key: 'n',
+            kind: 'updated',
+            before: 1,
+            after: 9,
+          },
+          {
+            key: 'title',
+            kind: 'updated',
+            before: 'A',
+            after: 'updated',
+          },
+        ],
+      },
+    ]);
+    expect(result.commit.impact.collection(p => p.ordered)).toEqual({
+      kind: 'incremental',
+      added: new Set(),
+      removed: new Set(),
+      updated: new Set(['a']),
+      orderChanged: false,
+    });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(initial());
+    expect(runtime.history.redo().status).toBe('committed');
+    const beforeRejected = runtime.snapshot();
+    expect(
+      runtime.update(d => {
+        d.n = 99;
+        d.ordered.replace('missing', { n: 0, title: 'missing' });
+      })
+    ).toMatchObject({ status: 'rejected', issues: [{ code: 'missing-entity' }] });
+    expect(runtime.snapshot()).toEqual(beforeRejected);
+
+    runtime.update(d => d.ordered.replace({ ids: ['c'], byId: { c: { n: 3, title: 'whole' } } }));
+    expect(runtime.snapshot().ordered).toEqual({
+      ids: ['c'],
+      byId: { c: { n: 3, title: 'whole' } },
+    });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot()).toEqual(beforeRejected);
   });
   it('rolls back a duplicate table create after preceding writes and validates anchors', () => {
     const runtime = setup();
@@ -352,7 +427,7 @@ describe('structural transitions', () => {
           d.content.rows.remove('a');
           d.content.rows.get('b')!.n = 9;
         }
-        assign(d, 'content', value.content);
+        replace(d, 'content', value.content);
       }).status
     ).toBe('unchanged');
     runtime.update(d => {
@@ -394,7 +469,7 @@ describe('structural transitions', () => {
       }).status
     ).toBe('unchanged');
     runtime.update(d => {
-      d.rows.set('a', { id: 'a', n: 3 });
+      d.rows.replace('a', { id: 'a', n: 3 });
       d.rows.move('b', { at: 'start' });
       d.rows.insert({ id: 'c', n: 4 });
     });
@@ -402,7 +477,7 @@ describe('structural transitions', () => {
     expect(runtime.history.undo().status).toBe('committed');
     expect(runtime.snapshot()).toEqual(initial);
     expect(runtime.history.redo().status).toBe('committed');
-    expect(runtime.update(d => d.rows.set('a', { id: 'x', n: 1 })).status).toBe('rejected');
+    expect(runtime.update(d => d.rows.replace('a', { id: 'x', n: 1 })).status).toBe('rejected');
     const before = runtime.snapshot();
     expect(
       runtime.update(d => {
@@ -412,7 +487,7 @@ describe('structural transitions', () => {
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual(before);
     runtime.update(d => {
-      d.rows.set('a', { id: 'a', n: 8 });
+      d.rows.replace('a', { id: 'a', n: 8 });
       d.rows.replace(initial.rows);
     });
     runtime.history.undo();
@@ -436,7 +511,7 @@ describe('structural transitions', () => {
     ).toBe('unchanged');
     expect(
       runtime.update(d => {
-        d.outline.set('a', 'changed');
+        d.outline.replace('a', 'changed');
         d.outline.move('a', { parentId: 'c' });
       }).status
     ).toBe('rejected');
@@ -445,7 +520,7 @@ describe('structural transitions', () => {
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual(initial);
     runtime.update(d => {
-      d.outline.set('a', 'temporary');
+      d.outline.replace('a', 'temporary');
       d.outline.replace({ nodes: {} });
     });
     runtime.history.undo();
@@ -465,9 +540,9 @@ describe('subscriptions and ownership', () => {
     runtime.subscribe(p => p.rows.item('a').title, title);
     runtime.subscribe(p => p.rows.item('a').n, n);
     runtime.update(d => {
-      d.rows.a!.n = 2;
-      delete d.rows.a;
-      d.rows.a = { n: 3, title: 'A' };
+      d.rows.get('a')!.n = 2;
+      d.rows.remove('a');
+      d.rows.put('a', { n: 3, title: 'A' });
     });
     expect(title).not.toHaveBeenCalled();
     expect(n).toHaveBeenCalledTimes(1);
@@ -481,7 +556,7 @@ describe('subscriptions and ownership', () => {
     runtime.subscribe([p => p.rows, p => p.rows.item('a').n], both);
     runtime.update(d => {
       d.n++;
-      d.rows.a!.n++;
+      d.rows.get('a')!.n++;
     });
     runtime.update(d => d.n++);
     expect(pick).toHaveBeenCalledTimes(1);

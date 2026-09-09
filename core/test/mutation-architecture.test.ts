@@ -78,11 +78,11 @@ describe('grouped mutation architecture', () => {
     const schema = object({ values: map(field<number>()) });
     const runtime = createDocument({ schema, initial: { values: { a: 0 } }, history: false });
     runtime.update(d => {
-      d.values.a = 0;
+      d.values.put('a', 0);
     });
     const profile = startProfile();
     runtime.update(d => {
-      for (let i = 0; i < 100000; i++) d.values.a = i + 1;
+      for (let i = 0; i < 100000; i++) d.values.put('a', i + 1);
     });
     const counters = profile.stop();
     expect(counters.access).toMatchObject({ addresses: 1, resolutions: 1 });
@@ -196,7 +196,7 @@ describe('grouped mutation architecture', () => {
       const profile = startProfile();
       const result = runtime.update(d => {
         for (let i = 0; i < count; i++) {
-          const row = d.rows[String(i)]!;
+          const row = d.rows.get(String(i))!;
           row.x++;
           row.y++;
         }
@@ -231,14 +231,14 @@ describe('grouped mutation architecture', () => {
     runtime.subscribe(p => p.b, listener);
     const result = runtime.update(d => {
       d.a++;
-      d.rows.x = { n: 1 };
+      d.rows.put('x', { n: 1 });
     });
     if (result.status !== 'committed') throw new Error('commit');
     expect(result.commit.impact.kind).toBe('incremental');
     expect(listener).not.toHaveBeenCalled();
     const saved = structuredClone(result.commit.changes);
     runtime.update(d => {
-      d.rows.x!.n++;
+      d.rows.get('x')!.n++;
     });
     expect(result.commit.changes).toEqual(saved);
     runtime.history.undo();
@@ -258,12 +258,12 @@ describe('grouped mutation architecture', () => {
     const runtime = createDocument({ schema, initial });
     expect(
       runtime.update(d => {
-        d.rows.a!.x = 10;
-        d.rows.a!.y = 20;
-        d.rows.b!.x = 30;
-        delete d.rows.a;
-        d.rows.a = { x: 40, y: 50 };
-        d.rows.a.x = 60;
+        d.rows.get('a')!.x = 10;
+        d.rows.get('a')!.y = 20;
+        d.rows.get('b')!.x = 30;
+        d.rows.remove('a');
+        d.rows.put('a', { x: 40, y: 50 });
+        d.rows.get('a')!.x = 60;
         Reflect.set(d, 'z', 'bad');
       }).status
     ).toBe('rejected');

@@ -142,7 +142,7 @@ describe('projection source and value', () => {
     mapped.subscribe(() => seen.push(summary.current()));
     count.subscribe(() => seen.push(summary.current()));
     runtime.update(tx => {
-      tx.items.create({ id: 'c', value: { value: 3, group: 'x' } });
+      tx.items.create('c', { value: 3, group: 'x' });
       tx.items.get('a')!.value = 10;
     });
     expect(summary.current()).toBe('3:10:one');
@@ -233,7 +233,7 @@ describe('projection collection publication', () => {
     expect(item.current()).toBeUndefined();
     expect(item.revision()).toBe(1);
     stop();
-    runtime.update(d => d.items.create({ id: 'a', value: { value: 4, group: 'x' } }));
+    runtime.update(d => d.items.create('a', { value: 4, group: 'x' }));
     expect(mapped.item('a')).toBe(item);
     expect(item.current()).toBe(4);
     expect(item.revision()).toBe(2);
@@ -354,8 +354,8 @@ describe('projection collection publication', () => {
     const recovered = vi.fn();
     unchangedItem.subscribe(recovered);
     const result = runtime.update(tx => {
-      tx.items.create({ id: 'c', value: { value: 3, group: 'z' } });
-      tx.items.create({ id: 'd', value: { value: 4, group: 'z' } });
+      tx.items.create('c', { value: 3, group: 'z' });
+      tx.items.create('d', { value: 4, group: 'z' });
     });
     expect(result.status).toBe('committed');
     expect(errors).toHaveLength(2);

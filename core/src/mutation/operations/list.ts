@@ -23,7 +23,7 @@ export function insert(
   anchor.insert(items, anchor.index(keys, position), value);
   session.invalidate();
 }
-export function set(
+export function replace(
   session: MutationSession,
   container: ResolvedContainer,
   id: string,

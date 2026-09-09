@@ -11,7 +11,7 @@ const model = object({
 });
 ```
 
-position.x 细粒度赋值；stroke 整体替换；rows.set(key, value) 按稳定键替换项。
+position.x 细粒度赋值；stroke 整体替换；rows.replace(key, value) 按稳定键替换项。
 
 ## 含集合的整体替换
 
@@ -21,13 +21,13 @@ const model = object({
 });
 const document = createDocument({ schema: model, initial: { entries: {} } });
 document.update(draft => {
-  assign(draft.entries, 'a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
-  draft.entries.a!.rows.get('x')!.title = 'Updated';
+  draft.entries.put('a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
+  draft.entries.get('a')!.rows.get('x')!.title = 'Updated';
 });
 ```
 
-TypeScript 映射属性不能分别指定读写类型。assign 校验对应 Infer 数据，
-经同一 mutation session 修改。
+map 条目使用 put。Draft 类型含集合方法的 object/variant 成员使用顶层 replace；
+集合整体替换使用集合自身的 replace(next)，并经同一 mutation session 修改。
 
 ## 领域键
 
@@ -45,7 +45,7 @@ const model = object({ people: map(object({ name: field(text) }), { key: personI
 const initial = parse(model, { people: { 'person:1': { name: 'Ada' } } });
 ```
 
-品牌类型贯穿索引、table 方法、符号路径和 collection impact。
+品牌类型贯穿 map/table 方法、符号路径和 collection impact。
 
 ## 顺序、History 与重放
 

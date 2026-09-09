@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument, field, list, map, object, optional, table, variant } from '../src';
+import {
+  createDocument,
+  field,
+  list,
+  map,
+  object,
+  optional,
+  replace,
+  table,
+  variant,
+} from '../src';
 import { startProfile } from '../src/profile';
 import { decodeChanges } from '../src/mutation/changes';
 import { jsonChanges } from '../src/local-sync/json';
@@ -124,7 +134,7 @@ describe('mutation scaling and ownership', () => {
       runtime.update(d => {
         for (let i = 0; i < count; i++) {
           const id = String(i);
-          d.rows.set(id, { id, n: d.rows.get(id)!.n + 1 });
+          d.rows.replace(id, { id, n: d.rows.get(id)!.n + 1 });
         }
       }).status
     ).toBe('committed');
@@ -157,7 +167,7 @@ describe('mutation scaling and ownership', () => {
     const mutate = (d: Parameters<Parameters<typeof runtime.update>[0]>[0]) => {
       expect(d.rows.get('b')!.n).toBe(2);
       d.rows.move('c', { at: 'start' });
-      d.rows.set('b', { id: 'b', n: 20 });
+      d.rows.replace('b', { id: 'b', n: 20 });
       d.rows.remove('a');
       d.rows.insert({ id: 'd', n: 4 }, { before: 'b' });
       expect(d.rows.get('b')!.n).toBe(20);
@@ -208,8 +218,8 @@ describe('mutation scaling and ownership', () => {
         runtime.update(d => {
           if (first) d.order.move('a');
           for (let i = 0; i < count; i++) {
-            d.rows[String(i)]!.x++;
-            d.rows[String(i)]!.y++;
+            d.rows.get(String(i))!.x++;
+            d.rows.get(String(i))!.y++;
           }
           if (!first) d.order.move('a');
         }).status
@@ -235,12 +245,13 @@ describe('mutation scaling and ownership', () => {
     const profile = startProfile();
     expect(
       runtime.update(d => {
-        d.rows.one!.a!.x = 10;
-        d.rows.one!.a!.y = 20;
-        d.rows.one!.z = 30;
-        d.rows.two!.z = 60;
-        d.rows.one!.a = { x: 100, y: 200 };
-        d.rows.one!.a.x = 101;
+        const one = d.rows.get('one')!;
+        one.a!.put('x', 10);
+        one.a!.put('y', 20);
+        one.z = 30;
+        d.rows.get('two')!.z = 60;
+        replace(one, 'a', { x: 100, y: 200 });
+        one.a!.put('x', 101);
       }).status
     ).toBe('committed');
     expect(profile.stop().recorder.indexedGroups).toBe(3);

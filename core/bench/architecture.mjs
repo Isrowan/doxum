@@ -112,7 +112,7 @@ function setup(name, count, changed, listeners) {
         runtime.update(d => {
           frame++;
           for (let i = 0; i < changed; i++) {
-            if (isTree) d.rows.set('0', frame * changed + i);
+            if (isTree) d.rows.replace('0', frame * changed + i);
             else {
               d.rows.move('0');
               d.rows.move('0', { at: 'start' });
@@ -207,7 +207,7 @@ function setup(name, count, changed, listeners) {
             )
           : runtime.update(d => {
               frame++;
-              for (const id of ids) d.rows.set(id, { id, n: frame });
+              for (const id of ids) d.rows.replace(id, { id, n: frame });
             }),
       verify: () => {
         assert.equal(runtime.revision(), warmup + measured);
@@ -257,8 +257,8 @@ function setup(name, count, changed, listeners) {
     const changes = [1, 0].map(n => {
       const result = producer.update(d => {
         for (let i = 0; i < changed; i++) {
-          d.entities[ids[i]].position.x = n;
-          d.entities[ids[i]].position.y = n;
+          d.entities.get(ids[i]).position.x = n;
+          d.entities.get(ids[i]).position.y = n;
         }
       });
       assert.equal(result.status, 'committed');
@@ -270,15 +270,16 @@ function setup(name, count, changed, listeners) {
     tick = () =>
       runtime.update(d => {
         if (name === 'repeated' || name === 'unchanged') {
-          const p = d.entities['0'].position;
+          const p = d.entities.get('0').position;
           for (let i = 0; i < changed; i++) p.x = name === 'unchanged' ? p.x : p.x + 1;
         } else {
           for (let i = 0; i < changed; i++) {
             const id = ids[(frame * changed + i) % count];
             if (name === 'replacement')
-              d.entities[id] = { position: { x: frame + 1, y: frame + 1 } };
+              d.entities.put(id, { position: { x: frame + 1, y: frame + 1 } });
             else {
-              const p = name === 'deep' ? d.entities[id].position.a.b : d.entities[id].position;
+              const entity = d.entities.get(id);
+              const p = name === 'deep' ? entity.position.a.b : entity.position;
               p.x++;
               if (name !== 'single-field') p.y += 2;
             }
@@ -314,7 +315,9 @@ function setup(name, count, changed, listeners) {
     return {
       tick: () =>
         doc.update(d =>
-          name === 'list-order' ? d.rows.move(ids[n++ % count]) : d.outline.set(ids[n++ % count], n)
+          name === 'list-order'
+            ? d.rows.move(ids[n++ % count])
+            : d.outline.replace(ids[n++ % count], n)
         ),
       verify: () => assert.equal(doc.revision(), warmup + measured),
       dispose: () => doc.dispose(),

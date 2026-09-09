@@ -20,12 +20,12 @@ describe('bounded mutation work', () => {
       initial: { outline: { rootId: 'r', nodes: { r: { children: [], value: 0 } } } },
     });
     runtime.update(d => {
-      const set = d.outline.set;
-      set('r', 1);
+      const replace = d.outline.replace;
+      replace('r', 1);
       const profile = startProfile();
       for (let i = 1; i <= 1000; i++) {
-        set('r', i);
-        set('r', i);
+        replace('r', i);
+        replace('r', i);
       }
       const counters = profile.stop();
       expect(counters.access.resolutions).toBe(0);
@@ -75,7 +75,7 @@ describe('bounded mutation work', () => {
     const result = runtime.update(d => {
       let sum = 0;
       for (const id of ids) {
-        const p = d.rows[id]!.position;
+        const p = d.rows.get(id)!.position;
         sum += p.x + p.y;
       }
       return sum;
@@ -87,7 +87,7 @@ describe('bounded mutation work', () => {
     const writes = startProfile();
     const changed = runtime.update(d => {
       for (const id of ids) {
-        const p = d.rows[id]!.position;
+        const p = d.rows.get(id)!.position;
         p.x++;
         p.y += 2;
       }
@@ -119,14 +119,14 @@ describe('bounded mutation work', () => {
     const runtime = createDocument({ schema, initial });
     const work = startProfile();
     const result = runtime.update(d => {
-      const row = d.rows.a!,
+      const row = d.rows.get('a')!,
         position = row.position;
       position.x = 3;
-      d.rows.b = { position: { x: 5, y: 6 } };
+      d.rows.put('b', { position: { x: 5, y: 6 } });
       position.y = position.x + 1;
       expect(row.position).toBe(position);
-      delete d.rows.a;
-      d.rows.a = { position: { x: 8, y: 9 } };
+      d.rows.remove('a');
+      d.rows.put('a', { position: { x: 8, y: 9 } });
       position.x = 10;
       expect(row.position).toBe(position);
     });
@@ -193,7 +193,7 @@ describe('bounded mutation work', () => {
     for (let i = 0; i < 1000; i++) runtime.subscribe(p => p.rows.item(String(i)).n, listener);
     const profile = startProfile();
     const result = runtime.update(d => {
-      d.rows['2000']!.n++;
+      d.rows.get('2000')!.n++;
     });
     const counters = profile.stop();
     expect(validator).toHaveBeenCalledTimes(1);
@@ -240,7 +240,7 @@ describe('bounded mutation work', () => {
       initial = { outline: { rootId: '0', nodes } },
       runtime = createDocument({ schema, initial });
     const profile = startProfile();
-    runtime.update(d => d.outline.set('9999', 10000));
+    runtime.update(d => d.outline.replace('9999', 10000));
     expect(profile.stop().recorder.treeNodes).toBe(1);
     runtime.history.undo();
     runtime.update(d => d.outline.remove('1'));
@@ -288,7 +288,7 @@ describe('bounded mutation work', () => {
     );
     const stable = store.get(view).get('1'),
       profile = startProfile();
-    runtime.update(d => d.rows['2']!.n++);
+    runtime.update(d => d.rows.get('2')!.n++);
     const counters = profile.stop();
     expect(store.get(view).get('1')).toBe(stable);
     expect(counters.collectionView).toMatchObject({
@@ -322,8 +322,8 @@ describe('bounded mutation work', () => {
       runtime.subscribe(p => p.rows.item(id).n, listener);
       return listener;
     });
-    ids.forEach(id => runtime.update(d => d.rows[id]!.n++));
+    ids.forEach(id => runtime.update(d => d.rows.get(id)!.n++));
     listeners.forEach(listener => expect(listener).toHaveBeenCalledTimes(1));
-    expect(select(runtime, d => ids.map(id => d.rows[id]!.n))).toEqual([1, 1, 1, 1, 1]);
+    expect(select(runtime, d => ids.map(id => d.rows.get(id)!.n))).toEqual([1, 1, 1, 1, 1]);
   });
 });

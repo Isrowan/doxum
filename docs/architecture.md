@@ -21,7 +21,7 @@ resolve through their current parents, sharing the renewed parent resolution.
 reuse a `ResolvedContainer` for the current session generation and call
 `assignMember`/`removeMember`. They allocate no per-write address or resolved-member
 wrapper. Address replay resolves a group container and uses the same write funnel;
-`assign` enters the ordinary proxy assignment. No access or resolved
+`replace` enters the ordinary proxy assignment. No access or resolved
 canonical location is reused across transactions.
 Session is the only writable-container construction boundary: `resolveContainer`
 walks a logical address, while `bind` accepts the current schema/value already
@@ -54,8 +54,8 @@ immutable member layouts. `FixedLayout` contains descriptors with mandatory slot
 dynamic layouts contain a shared collection-entry descriptor. `ResolvedContainer`
 carries one discriminated layout rather than independently optional members and entry
 fields. Field access looks up its compiled descriptor and reads the current parent.
-Dynamic map keys and ordered collections retain their
-runtime lookup path, while their statically known value objects still use the
+Dynamic map keys use explicit `get/has/ids/put/remove/replace` methods, and ordered
+collections retain their runtime lookup path, while their statically known value objects use the
 compiled descriptors. Compilation is schema-derived and contains no document
 instance state.
 
@@ -109,16 +109,17 @@ structural correctness. Draft is never used during seal or observer notification
 
 `mutation/session.ts` owns resolution, validation, the common member-write kernel,
 generation and recorder lifetime. Complete operations
-are grouped under `mutation/operations/`: `table` owns create/remove, `list` owns
-insert/set/remove, `order` owns the shared move, `tree` owns tree commands, and
-`replay` owns applying complete ChangeSet groups. Generic assignment and replacement
+are grouped under `mutation/operations/`: `map` owns put/remove, `table` owns
+create/remove/member replacement, `list` owns insert/remove/member replacement,
+`order` owns the shared move, `tree` owns tree commands, and `replay` owns applying
+complete ChangeSet groups. Generic assignment and whole-container replacement
 remain session primitives. These modules take the existing session, own no state,
 and are not public exports. There are no forwarding methods left on session.
 `anchor.ts` owns ordered-key semantics; `tree.ts` owns topology validation and
 read-only traversal. Tree writes live in operations/tree and capture touched nodes directly, without session or capture callbacks. ResolvedTreeContainer carries a real tree schema and value; it has no member layout. Ordinary members replay cannot address tree topology.
 A bulk operation resolves its container once and reuses its member layout and
 the command-local `writeMember` entry. Ordinary retained member handles are refreshed
-by assign/remove; bulk commands retain their local storage until the command ends.
+by replace/remove; bulk commands retain their local storage until the command ends.
 The private located kernel receives already computed definitions and indexes.
 `ResolvedContainer` includes both the container value and its member storage
 (for a table, the latter is `byId`). `mutation/state.ts` owns installation of validated

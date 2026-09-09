@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  assign,
+  replace,
   createDocument,
   createProjectionStore,
   field,
@@ -41,7 +41,7 @@ describe('shared immutable payload ownership', () => {
     const runtime = createDocument({ schema, initial: { rows: { a: before } } });
     visits = 0;
     const result = runtime.update(d => {
-      d.rows.a = after;
+      d.rows.put('a', after);
     });
     expect(result.status).toBe('committed');
     if (result.status !== 'committed') throw new Error('Expected commit');
@@ -96,8 +96,8 @@ describe('shared immutable payload ownership', () => {
     const input = { n: 1, payload };
     const item = { id: 'a', payload };
     const result = runtime.update(d => {
-      d.rows.a = input;
-      d.ordered.create({ id: 'a', value: input });
+      d.rows.put('a', input);
+      d.ordered.create('a', input);
       d.items.insert(item);
       d.outline.insert('root', payload);
     });
@@ -108,7 +108,7 @@ describe('shared immutable payload ownership', () => {
     const mirror = createDocument({ schema, initial });
     mirror.apply(changes, { expectedRevision: 0 });
     runtime.update(d => {
-      d.rows.a!.n = 2;
+      d.rows.get('a')!.n = 2;
       d.ordered.get('a')!.n = 3;
       d.items.insert({ id: 'b', payload });
       d.outline.insert('child', payload, { parentId: 'root' });
@@ -128,7 +128,7 @@ describe('shared immutable payload ownership', () => {
       runtime.history.redo();
     }
     mirror.update(d => {
-      d.rows.a!.n = 9;
+      d.rows.get('a')!.n = 9;
       d.outline.insert('other', payload, { parentId: 'root' });
     });
     expect(JSON.stringify(changes)).toBe(serialized);
@@ -146,10 +146,10 @@ describe('shared immutable payload ownership', () => {
     runtime.subscribe(p => p.rows.item('a').payload, listener);
     const group = runtime.history.group();
     runtime.update(d => {
-      d.rows.a!.payload = after;
+      d.rows.get('a')!.payload = after;
     });
     runtime.update(d => {
-      d.rows.a!.payload = before;
+      d.rows.get('a')!.payload = before;
     });
     group.end();
     listener.mockClear();
@@ -157,16 +157,16 @@ describe('shared immutable payload ownership', () => {
     expect(listener).not.toHaveBeenCalled();
     expect(
       runtime.update(d => {
-        d.rows.a!.payload = after;
-        delete d.rows.a;
-        d.rows.a = { payload: before, n: 0 };
+        d.rows.get('a')!.payload = after;
+        d.rows.remove('a');
+        d.rows.put('a', { payload: before, n: 0 });
       }).status
     ).toBe('unchanged');
     expect(listener).not.toHaveBeenCalled();
     runtime.update(d => {
-      d.rows.a!.payload = after;
-      delete d.rows.a;
-      d.rows.a = { payload: before, n: 1 };
+      d.rows.get('a')!.payload = after;
+      d.rows.remove('a');
+      d.rows.put('a', { payload: before, n: 1 });
     });
     expect(listener).not.toHaveBeenCalled();
     runtime.history.undo();
@@ -226,7 +226,7 @@ describe('shared immutable payload ownership', () => {
     const runtime = createDocument({ schema, initial });
     const group = runtime.history.group();
     runtime.update(d => {
-      d.rows.a!.n = 1;
+      d.rows.get('a')!.n = 1;
     });
     const reset = runtime.replace({ rows: { a: { payload, n: 2 } } });
     group.end();
@@ -238,8 +238,8 @@ describe('shared immutable payload ownership', () => {
     runtime.history.redo();
     expect(
       runtime.update(d => {
-        d.rows.a!.n = 3;
-        assign(d.rows, 'a', { payload, n: 4 });
+        d.rows.get('a')!.n = 3;
+        d.rows.put('a', { payload, n: 4 });
         throw new TransactionRejected({ code: 'abort', message: 'abort' });
       }).status
     ).toBe('rejected');
@@ -267,7 +267,7 @@ describe('shared immutable payload ownership', () => {
     );
     expect(store.get(view).get('a')).toBe(a);
     runtime.update(d => {
-      d.rows.a = next;
+      d.rows.put('a', next);
     });
     expect(store.get(view).get('a')).toBe(next);
     expect(store.get(view).get('b')).toBe(b);

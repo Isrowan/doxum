@@ -27,7 +27,7 @@ describe('entity frames and subscription matching', () => {
         const result = runtime.update(draft => {
           for (let i = 0; i < changed; i++) {
             const id = ids[(i + offset) % count];
-            const row = draft.rows[id]!;
+            const row = draft.rows.get(id)!;
             row.x++;
             row.y += 2;
           }
@@ -78,7 +78,7 @@ describe('nested entity frames', () => {
       () => {
         const result = runtime.update(draft => {
           for (const id of ids) {
-            const position = draft.entities[id]!.position;
+            const position = draft.entities.get(id)!.position;
             position.x = mode === 'unchanged' ? position.x : position.x + 1;
             position.y = mode === 'unchanged' ? position.y : position.y + 2;
           }

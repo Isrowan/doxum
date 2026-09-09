@@ -33,7 +33,7 @@ when a change touches addressing, mutation, impact, notifications, or views.
   new operation and test rejected batches after partial work.
 - `runtime.ts` owns the shared authorize/execute/rollback/seal/publish lifecycle.
   Publication is outside rollback handling. `mutation/operations/` groups complete
-  table, list, order, tree and replay commands by domain; these reuse the existing
+  map, table, list, order, tree and replay commands by domain; these reuse the existing
   session's write kernel and own no canonical state. Do not add session forwarding
   methods or another operation representation.
 - Every committed ChangeSet needs correct before/after data and an exact impact.
@@ -77,7 +77,7 @@ when a change touches addressing, mutation, impact, notifications, or views.
   borrowed for synchronous callbacks and must not escape; public reader lifetimes
   retain explicit checks where required. Atomic field interiors are readonly under
   the ownership contract.
-  `assign` accepts plain Infer replacements through the same mutation session.
+  `replace` accepts plain Infer replacements through the same mutation session.
   Session constructs writable containers: resolve an address or bind current facts
   already resolved by scope. Trees use ResolvedTreeContainer without member layout;
   ordinary member replay must never write tree topology. Tree operations capture

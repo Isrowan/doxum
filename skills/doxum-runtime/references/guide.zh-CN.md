@@ -13,12 +13,12 @@ const document = createDocument({
   initial: { tasks: { a: { title: 'Write', done: false } } },
 });
 document.update(draft => {
-  const task = draft.tasks.a;
+  const task = draft.tasks.get('a');
   if (task) task.done = !task.done;
-  draft.tasks.b = { title: 'Review', done: false };
+  draft.tasks.put('b', { title: 'Review', done: false });
   return { warnings: [] };
 });
-const done = select(document, state => state.tasks.a?.done);
+const done = select(document, state => state.tasks.get('a')?.done);
 const tasks = select(document, state => snapshot(state.tasks));
 document.subscribe(
   path => path.tasks.item('a').done,
@@ -37,25 +37,28 @@ object/variant 结构只接受 schema 声明的自身属性及 variant 判别字
 snapshot 只复制 schema 结构；snapshot(rawPayload) 返回原始只读引用。
 发布数据不做运行时冻结，不再支持字段 copier。需要可修改副本或序列化时由应用边界显式处理。
 
-Infer 保留 optional 属性和扁平 variant 联合。Read/Draft 带集合方法；
-含 table/list/tree 数据的整体替换使用 assign(scope, key, inferValue)。
+Infer 保留 optional 属性和扁平 variant 联合。Read/Draft 带集合方法。map 使用显式方法；
+table/list/tree 的 replace 同时支持成员和整体替换。含集合数据的 object/variant 成员
+使用 `replace(parent, key, inferValue)` 传入普通 Infer 数据。
 
 ## 容器与校验
 
-| 声明                             | 数据          | Draft 方法                                                    |
-| -------------------------------- | ------------- | ------------------------------------------------------------- |
-| map(valueSchema, { key }?)       | record        | 索引、赋值、delete                                            |
-| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move                                |
-| list(field, { keyOf })           | 普通数组      | get/has/ids/insert/set/remove/move/replace                    |
-| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/set/remove/move/replace |
+| 声明                             | 数据          | Draft 方法                                                |
+| -------------------------------- | ------------- | --------------------------------------------------------- |
+| map(valueSchema, { key }?)       | record        | get/has/ids/put/remove/replace                            |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/replace                    |
+| list(field, { keyOf })           | 普通数组      | get/has/ids/insert/remove/move/replace                    |
+| tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/remove/move/replace |
 
-Read 只暴露读取方法。map 支持 field/object/variant。list 替换项必须保持寻址键。
+Read 只暴露读取方法。map 支持 field/object/variant；put 是 upsert，remove 缺失键是 no-op。
+table/list/tree 的 `replace(id, value)` 只替换已存在成员，保持 table/list 顺序，且 tree
+只改变 payload；`replace(value)` 替换整个集合。list 替换项必须保持寻址键。
 简单数组与笔画可作为一个原子 field。optional 支持 field/variant/map/list/tree，
 缺失与存在的 undefined 不同。variant tag 只读，通过整体替换切换分支。
 
 校验器是纯同步函数或 Standard Schema v1，直接接收原始引用且不得修改它。
 成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。
-parse(model, unknown) 复制校验后的结构并共享只读 payload；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 访问、
+parse(model, unknown) 复制校验后的结构并共享只读 payload；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 方法、
 符号路径和 impact。路径回调描述地址，包括缺失键，订阅注册时解析。
 React useDocumentSelector 追踪实际读取，并在选择分支改变时更新依赖。
 

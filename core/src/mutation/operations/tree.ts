@@ -41,7 +41,7 @@ export const insert = (
   else tree.rootId = id;
   session.invalidate();
 };
-export const set = (
+export const replace = (
   session: MutationSession,
   container: ResolvedTreeContainer,
   id: string,

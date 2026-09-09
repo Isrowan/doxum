@@ -28,6 +28,7 @@ import { copyValue } from '../schema-value';
 import type { DependencyTracker } from './dependency';
 import type { CanonicalState } from '../mutation/state';
 import type { MutationSession } from '../mutation/session';
+import * as mapOperations from '../mutation/operations/map';
 import * as tableOperations from '../mutation/operations/table';
 import * as listOperations from '../mutation/operations/list';
 import * as treeOperations from '../mutation/operations/tree';
@@ -37,24 +38,41 @@ import * as anchor from '../mutation/anchor';
 import { profile } from '../profile';
 
 declare const scopeValue: unique symbol;
-type Scoped<N extends DocumentNode> = { readonly [scopeValue]?: Infer<N> };
+type Scoped<N extends DocumentNode, W extends boolean, V = Infer<N>> = {
+  readonly [scopeValue]?: readonly [node: N, writable: W, value: V];
+};
 type ShapeAccess<S extends ObjectShape, W extends boolean> = W extends true
   ? { -readonly [K in keyof S]: Access<S[K], W> }
   : { readonly [K in keyof S]: Access<S[K], W> };
+type MapAccess<K extends string, N extends ValueSchemaNode, W extends boolean> = {
+  get(id: K): Access<N, W> | undefined;
+  has(id: K): boolean;
+  ids(): readonly K[];
+} & (W extends true
+  ? {
+      put(id: K, value: Infer<N>): void;
+      remove(id: K): void;
+      replace(value: Readonly<Record<K, Infer<N>>>): void;
+    }
+  : {});
 type TableAccess<K extends string, N extends ValueSchemaNode, W extends boolean> = {
   get(id: K): Access<N, W> | undefined;
   has(id: K): boolean;
   ids(): readonly K[];
 } & (W extends true
   ? {
+      create(id: K, value: Infer<N>, anchor?: DocumentAnchor<K>): void;
       create(
-        entries:
-          | { readonly id: K; readonly value: Infer<N> }
-          | readonly { readonly id: K; readonly value: Infer<N> }[],
+        entries: readonly { readonly id: K; readonly value: Infer<N> }[],
         anchor?: DocumentAnchor<K>
       ): void;
       remove(ids: K | readonly K[]): void;
       move(id: K, anchor?: DocumentAnchor<K>): void;
+      replace(value: {
+        readonly ids: readonly K[];
+        readonly byId: Readonly<Record<K, Infer<N>>>;
+      }): void;
+      replace(id: K, value: Infer<N>): void;
     }
   : {});
 type ListAccess<T, W extends boolean> = {
@@ -64,10 +82,10 @@ type ListAccess<T, W extends boolean> = {
 } & (W extends true
   ? {
       insert(value: ReadonlyValue<T>, anchor?: DocumentAnchor): void;
-      set(key: string, value: ReadonlyValue<T>): void;
       remove(key: string): void;
       move(key: string, anchor?: DocumentAnchor): void;
       replace(value: readonly ReadonlyValue<T>[]): void;
+      replace(key: string, value: ReadonlyValue<T>): void;
     }
   : {});
 type TreeAccess<T, W extends boolean> = {
@@ -79,41 +97,42 @@ type TreeAccess<T, W extends boolean> = {
 } & (W extends true
   ? {
       insert(id: string, value: ReadonlyValue<T>, position?: tree.TreePosition): void;
-      set(id: string, value: ReadonlyValue<T>): void;
       move(id: string, position?: tree.TreePosition): void;
       remove(id: string): void;
       replace(value: DocumentTreeValue<T>): void;
+      replace(id: string, value: ReadonlyValue<T>): void;
     }
   : {});
 type NodeAccess<N extends DocumentNode, W extends boolean> =
   N extends FieldNode<infer T, boolean>
     ? ReadonlyValue<T>
     : N extends ObjectNode<infer S>
-      ? ShapeAccess<S, W> & Scoped<N>
+      ? ShapeAccess<S, W> & Scoped<N, W>
       : N extends VariantNode<infer Tag, infer V>
         ? {
             [K in keyof V & string]: ShapeAccess<V[K]['shape'], W> & {
               readonly [P in Tag]: K;
-            } & Scoped<N>;
+            } & Scoped<N, W, Extract<Infer<N>, Record<Tag, K>>>;
           }[keyof V & string]
         : N extends MapNode<infer V, infer K>
-          ? (W extends true
-              ? { [P in K]: Access<V, W> | undefined }
-              : { readonly [P in K]: Access<V, W> | undefined }) &
-              Scoped<N>
+          ? MapAccess<K, V, W> & Scoped<N, W>
           : N extends TableNode<infer V, infer K>
-            ? TableAccess<K, V, W> & Scoped<N>
+            ? TableAccess<K, V, W> & Scoped<N, W>
             : N extends ListNode<infer T>
-              ? ListAccess<T, W> & Scoped<N>
+              ? ListAccess<T, W> & Scoped<N, W>
               : N extends TreeNode<infer T>
-                ? TreeAccess<T, W> & Scoped<N>
+                ? TreeAccess<T, W> & Scoped<N, W>
                 : never;
 type Access<N extends DocumentNode, W extends boolean> = N extends { readonly optional: true }
   ? NodeAccess<N, W> | undefined
   : NodeAccess<N, W>;
 export type Read<N extends DocumentNode> = Access<N, false>;
 export type Draft<N extends DocumentNode> = Access<N, true>;
-type Snapshot<T> = T extends { readonly [scopeValue]?: infer V } ? V : ReadonlyValue<T>;
+type Snapshot<T> = T extends {
+  readonly [scopeValue]?: readonly [DocumentNode, boolean, infer V];
+}
+  ? V
+  : ReadonlyValue<T>;
 type Target = {
   at?: DocumentAddress;
   parent?: Target;
@@ -167,14 +186,21 @@ export const snapshot = <T>(value: T): Snapshot<T> => {
   if (!resolved.node) throw new Error('The selected schema address no longer exists.');
   return copyValue(resolved.node, resolved.value) as Snapshot<T>;
 };
-/** TypeScript cannot express asymmetric index signatures for nested collection tools. */
-export const assign = <T extends object, K extends keyof Snapshot<T>>(
+/** Replace a member with its plain Infer value through the owning draft session. */
+type ReplaceParentAccess = {
+  readonly [scopeValue]?: readonly [
+    Extract<DocumentNode, { readonly kind: 'object' | 'variant' }>,
+    true,
+    unknown,
+  ];
+};
+export const replace = <T extends object & ReplaceParentAccess, K extends keyof Snapshot<T>>(
   container: T,
   key: K,
   value: NoInfer<Snapshot<T>[K]>
 ): void => {
   const location = locationOf(container);
-  if (!location) throw new TypeError('assign requires scoped document access.');
+  if (!location) throw new TypeError('replace requires scoped document access.');
   if (typeof key !== 'string') throw new TypeError('Document keys must be strings.');
   Reflect.set(container, key, value);
 };
@@ -299,6 +325,52 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       return target.container;
     return (target.container = session.bindTree(addressOf(target), target.node, target.value));
   };
+  const replaceCollection = (target: Target, node: DocumentNode, value: unknown) => {
+    const session = mutable();
+    collectionValue(target, node);
+    session.replace(addressOf(target), value);
+  };
+  const mapMethod = (
+    target: Target,
+    property: string,
+    node: Extract<DocumentNode, { kind: 'map' }>
+  ): unknown => {
+    if (property === 'ids')
+      return () => {
+        const current = collectionValue(target, node) as Record<string, unknown>;
+        if (context.dependencies) collect(context, addressOf(target), 'collection');
+        return Object.keys(current);
+      };
+    if (property === 'has')
+      return (id: string) => {
+        const current = collectionValue(target, node) as Record<string, unknown>;
+        if (context.dependencies) collect(context, addressOf(target), 'collection', id);
+        return Object.hasOwn(current, id);
+      };
+    if (property === 'get')
+      return (id: string) => {
+        const current = collectionValue(target, node) as Record<string, unknown>;
+        if (context.dependencies) collect(context, addressOf(target), 'collection', id);
+        if (!Object.hasOwn(current, id)) return undefined;
+        if (node.value.kind === 'field') {
+          if (context.dependencies) collect(context, childAt(target, id));
+          return current[id];
+        }
+        return childAccess(target, id, node.value, current[id]);
+      };
+    if (property === 'put')
+      return (id: string, value: unknown) => {
+        const writable = writableCollection(target, node);
+        mapOperations.put(context.session!, writable, id, value);
+      };
+    if (property === 'remove')
+      return (id: string) => {
+        const writable = writableCollection(target, node);
+        mapOperations.remove(context.session!, writable, id);
+      };
+    if (property === 'replace') return (value: unknown) => replaceCollection(target, node, value);
+    return undefined;
+  };
   const orderedMethod = (
     target: Target,
     property: string,
@@ -348,21 +420,29 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
   ): unknown => {
     if (property === 'create')
       return (
-        input: { id: string; value: unknown } | readonly { id: string; value: unknown }[],
+        input: string | readonly { id: string; value: unknown }[],
+        valueOrPosition?: unknown,
         position?: DocumentAnchor
       ) => {
         const writable = writableCollection(target, node);
         tableOperations.create(
           context.session!,
           writable,
-          Array.isArray(input) ? input : [input as { id: string; value: unknown }],
-          position
+          Array.isArray(input) ? input : [{ id: input as string, value: valueOrPosition }],
+          Array.isArray(input) ? (valueOrPosition as DocumentAnchor | undefined) : position
         );
       };
     if (property === 'remove')
       return (ids: string | readonly string[]) => {
         const writable = writableCollection(target, node);
         tableOperations.remove(context.session!, writable, typeof ids === 'string' ? [ids] : ids);
+      };
+    if (property === 'replace')
+      return (...args: [unknown, unknown?]) => {
+        const [valueOrId, value] = args;
+        if (args.length === 1) return replaceCollection(target, node, valueOrId);
+        const writable = writableCollection(target, node);
+        tableOperations.replace(context.session!, writable, valueOrId as string, value);
       };
     return orderedMethod(target, property, node);
   };
@@ -371,7 +451,6 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     property: string,
     node: Extract<DocumentNode, { kind: 'list' }>
   ): unknown => {
-    const at = addressOf(target);
     if (property === 'insert')
       return (value: unknown, position?: DocumentAnchor) => {
         const writable = writableCollection(target, node);
@@ -382,16 +461,12 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         const writable = writableCollection(target, node);
         listOperations.remove(context.session!, writable, id);
       };
-    if (property === 'set')
-      return (id: string, value: unknown) => {
-        const writable = writableCollection(target, node);
-        listOperations.set(context.session!, writable, id, value);
-      };
     if (property === 'replace')
-      return (value: unknown) => {
-        const session = mutable();
-        collectionValue(target, node);
-        session.replace(at, value);
+      return (...args: [unknown, unknown?]) => {
+        const [valueOrId, value] = args;
+        if (args.length === 1) return replaceCollection(target, node, valueOrId);
+        const writable = writableCollection(target, node);
+        listOperations.replace(context.session!, writable, valueOrId as string, value);
       };
     return orderedMethod(target, property, node);
   };
@@ -406,11 +481,6 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         const writable = writableTree(target, node);
         treeOperations.insert(context.session!, writable, id, value, position);
       };
-    if (property === 'set')
-      return (id: string, value: unknown) => {
-        const writable = writableTree(target, node);
-        treeOperations.set(context.session!, writable, id, value);
-      };
     if (property === 'remove')
       return (id: string) => {
         const writable = writableTree(target, node);
@@ -422,10 +492,11 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         treeOperations.move(context.session!, writable, id, position);
       };
     if (property === 'replace')
-      return (value: unknown) => {
-        const session = mutable();
-        collectionValue(target, node);
-        session.replace(at, value);
+      return (...args: [unknown, unknown?]) => {
+        const [valueOrId, value] = args;
+        if (args.length === 1) return replaceCollection(target, node, valueOrId);
+        const writable = writableTree(target, node);
+        treeOperations.replace(context.session!, writable, valueOrId as string, value);
       };
     const current = () => {
       collect(context, at);
@@ -451,20 +522,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       const { node, value } = resolve(context, target);
       if (!node || value === undefined) return undefined;
       if (typeof property !== 'string') return undefined;
-      if (node.kind === 'map') {
-        if (context.dependencies) collect(context, addressOf(target), 'collection', property);
-        if (!Object.hasOwn(value as object, property)) return undefined;
-        if (node.value.kind === 'field') {
-          if (context.dependencies) collect(context, childAt(target, property));
-          return (value as Record<string, unknown>)[property];
-        }
-        return childAccess(
-          target,
-          property,
-          node.value,
-          (value as Record<string, unknown>)[property]
-        );
-      }
+      if (node.kind === 'map') return mapMethod(target, property, node);
       if (node.kind === 'table') return tableMethod(target, property, node);
       if (node.kind === 'list') return listMethod(target, property, node);
       if (node.kind === 'tree') return treeMethod(target, property, node);
@@ -491,7 +549,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       if (
         typeof property !== 'string' ||
         !node ||
-        (node.kind !== 'object' && node.kind !== 'variant' && node.kind !== 'map')
+        (node.kind !== 'object' && node.kind !== 'variant')
       )
         throw new TypeError('Invalid structural assignment.');
       if (node.kind === 'variant' && node.tag === property)
@@ -502,7 +560,11 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     deleteProperty: (target, property) => {
       const session = mutable(),
         { node } = resolve(context, target);
-      if (typeof property !== 'string' || (node?.kind === 'variant' && node.tag === property))
+      if (
+        typeof property !== 'string' ||
+        node?.kind === 'map' ||
+        (node?.kind === 'variant' && node.tag === property)
+      )
         throw new TypeError('Invalid structural deletion.');
       session.removeMember(writableContainer(target, session), property);
       return true;
@@ -510,21 +572,19 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     has: (target, property) => {
       const { node, value } = resolve(context, target);
       if (typeof property !== 'string') return false;
-      collect(
-        context,
-        addressOf(target),
-        node?.kind === 'map' ? 'collection' : 'value',
-        node?.kind === 'map' ? property : undefined
-      );
+      if (node?.kind === 'map') return false;
+      collect(context, addressOf(target));
       return value !== undefined && Object.hasOwn(value as object, property);
     },
     ownKeys: target => {
-      const { value } = resolve(context, target);
-      if (context.dependencies) collect(context, addressOf(target), 'collection');
+      const { node, value } = resolve(context, target);
+      if (node?.kind === 'map') return [];
+      if (context.dependencies) collect(context, addressOf(target));
       return value && typeof value === 'object' ? Object.keys(value) : [];
     },
     getOwnPropertyDescriptor: (target, property) => {
-      const { value } = resolve(context, target);
+      const { node, value } = resolve(context, target);
+      if (node?.kind === 'map') return undefined;
       return value && Object.hasOwn(value as object, property)
         ? { enumerable: true, configurable: true }
         : undefined;
@@ -569,8 +629,5 @@ export const collectionAccess = (
         return [];
       },
     };
-  const node = locations.get(value as object)!.target.node;
-  if (node?.kind === 'table') return value as CollectionAccess<string, ValueSchemaNode>;
-  const map = value as Record<string, Read<ValueSchemaNode>>;
-  return { get: id => map[id], has: id => id in map, ids: () => Object.keys(map) };
+  return value as CollectionAccess<string, ValueSchemaNode>;
 };

@@ -145,7 +145,7 @@ describe('local sync', () => {
       documentId: 'groups',
     });
     const result = leaderRuntime.update(d => {
-      d.tasks.create({ id: 'b', value: { title: 'B', complete: false } }, { at: 'start' });
+      d.tasks.create('b', { title: 'B', complete: false }, { at: 'start' });
       d.tasks.get('a')!.complete = true;
     });
     if (result.status !== 'committed') throw new Error('commit');
@@ -450,7 +450,7 @@ describe('local sync', () => {
     });
     expect(
       leader.update(d => {
-        for (let i = 0; i < 1500; i++) d.values[String(i)] = i;
+        for (let i = 0; i < 1500; i++) d.values.put(String(i), i);
       }).status
     ).toBe('committed');
     await sync.flush();
@@ -474,7 +474,7 @@ describe('local sync', () => {
     expect(reopened.snapshot()).toEqual(leader.snapshot());
     expect(
       reopened.update(d => {
-        d.values['0'] = -1;
+        d.values.put('0', -1);
       }).status
     ).toBe('committed');
     await reopenedSync.flush();

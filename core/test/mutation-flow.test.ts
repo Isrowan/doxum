@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assign, createDocument, field, list, map, object, table, tree, variant } from '../src';
+import { replace, createDocument, field, list, map, object, table, tree, variant } from '../src';
 import { jsonChanges } from '../src/local-sync/json';
 import { startProfile } from '../src/profile';
 import { track, subscribeDependencies } from '../src/integration';
@@ -16,7 +16,7 @@ describe('complete container changes', () => {
   it('publishes one member/order group with exact impact and reversible local before values', () => {
     const source = createDocument({ schema, initial });
     const result = source.update(d => {
-      d.rows.create({ id: 'c', value: { n: 3 } }, { at: 'start' });
+      d.rows.create('c', { n: 3 }, { at: 'start' });
       d.rows.move('b', { at: 'start' });
       d.rows.get('a')!.n = 4;
     });
@@ -179,12 +179,12 @@ describe('collection access lifetime', () => {
     subscribeDependencies(runtime, listRead.targets, listListener);
     runtime.update(d => {
       d.rows.get('a')!.n = 2;
-      d.items.set('a', { id: 'a' });
+      d.items.replace('a', { id: 'a' });
     });
     expect(tableListener).not.toHaveBeenCalled();
     expect(listListener).not.toHaveBeenCalled();
     runtime.update(d => {
-      d.rows.create({ id: 'missing', value: { n: 3 } });
+      d.rows.create('missing', { n: 3 });
       d.items.insert({ id: 'missing' });
     });
     expect(tableListener).toHaveBeenCalledTimes(1);
@@ -212,18 +212,18 @@ describe('collection access lifetime', () => {
         ];
         const create = rows.create,
           insert = items.insert,
-          set = outline.set;
+          replaceNode = outline.replace;
         const writes = [
-          () => create({ id: 'b', value: { n: 2 } }),
+          () => create('b', { n: 2 }),
           () => insert({ id: 'b' }),
-          () => set('a', 2),
+          () => replaceNode('a', 2),
         ];
         expired.push(...reads, ...writes);
-        assign(d, 'choice', { kind: 'b', ...values });
+        replace(d, 'choice', { kind: 'b', ...values });
         for (const call of expired) expect(call).toThrow('replaced schema branch');
-        d.choice.rows.create({ id: 'b', value: { n: 2 } });
+        d.choice.rows.create('b', { n: 2 });
         d.choice.items.insert({ id: 'b' });
-        d.choice.outline.set('a', 2);
+        d.choice.outline.replace('a', 2);
       }).status
     ).toBe('committed');
     expect(runtime.history.undo().status).toBe('committed');
@@ -232,8 +232,8 @@ describe('collection access lifetime', () => {
       runtime.update(d => {
         const create = d.choice.rows.create;
         d.choice.rows.get('a')!.n = 10;
-        assign(d, 'choice', { kind: 'b', ...values });
-        create({ id: 'b', value: { n: 2 } });
+        replace(d, 'choice', { kind: 'b', ...values });
+        create('b', { n: 2 });
       })
     ).toThrow('replaced schema branch');
     expect(runtime.snapshot()).toEqual(initial);
@@ -245,17 +245,17 @@ describe('collection access lifetime', () => {
     const runtime = createDocument({ schema, initial });
     const update = () =>
       runtime.update(d => {
-        const { rows, items, outline } = d.entries.a!;
+        const { rows, items, outline } = d.entries.get('a')!;
         const create = rows.create,
           insert = items.insert,
-          set = outline.set;
-        create({ id: 'b', value: { n: 2 } });
+          replaceNode = outline.replace;
+        create('b', { n: 2 });
         insert({ id: 'b' });
-        set('a', 2);
-        assign(d.entries, 'a', values);
-        create({ id: 'c', value: { n: 3 } });
+        replaceNode('a', 2);
+        d.entries.put('a', values);
+        create('c', { n: 3 });
         insert({ id: 'c' });
-        set('a', 3);
+        replaceNode('a', 3);
       });
     expect(update().status).toBe('committed');
     expect(runtime.snapshot().entries.a!.rows.ids).toEqual(['a', 'c']);
@@ -264,10 +264,10 @@ describe('collection access lifetime', () => {
     const error = new Error('abort after replacement');
     expect(() =>
       runtime.update(d => {
-        d.entries.a!.items.insert({ id: 'b' });
-        d.entries.a!.rows.create({ id: 'b', value: { n: 2 } });
-        d.entries.a!.outline.set('a', 2);
-        assign(d.entries, 'a', values);
+        d.entries.get('a')!.items.insert({ id: 'b' });
+        d.entries.get('a')!.rows.create('b', { n: 2 });
+        d.entries.get('a')!.outline.replace('a', 2);
+        d.entries.put('a', values);
         throw error;
       })
     ).toThrow(error);

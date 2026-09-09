@@ -23,10 +23,10 @@ const document = createDocument({
 });
 
 document.update(draft => {
-  const task = draft.tasks.a;
+  const task = draft.tasks.get('a');
   if (task) task.done = true;
-  draft.tasks.b = { title: 'Review', done: false };
-  delete draft.tasks.a;
+  draft.tasks.put('b', { title: 'Review', done: false });
+  draft.tasks.remove('a');
   return { warnings: [] };
 });
 ```
@@ -97,11 +97,14 @@ capabilities while retaining selection, subscription and projection support.
 
 ## Containers And Parsing
 
-- `map(field(...))`, `map(object(...))`, `map(variant(...))` use key indexing,
-  assignment and deletion. Absent differs from present `undefined`.
-- `table(object(...))` retains `{ ids, byId }` data and `get/has/ids/create/remove/move`.
-- `list(field(...), { keyOf })` retains a plain array and `get/has/ids/insert/set/remove/move/replace`.
-- `tree(field(...))` retains `{ rootId?, nodes }` and explicit topology methods.
+- `map(field(...))`, `map(object(...))`, `map(variant(...))` expose
+  `get/has/ids/put/remove/replace`. `put` is an upsert; removing a missing key is a no-op.
+- `table(object(...))` retains `{ ids, byId }` data and exposes
+  `get/has/ids/create/remove/move/replace`.
+- `list(field(...), { keyOf })` retains a plain array and exposes
+  `get/has/ids/insert/remove/move/replace`.
+- `tree(field(...))` retains `{ rootId?, nodes }` and exposes topology reads plus
+  `insert/remove/move/replace`.
 - `variant(tag, branches)` has a readonly discriminant and whole-value branch replacement.
 - `optional(node)` permits absence for fields, variants, maps, lists and trees.
 
@@ -113,22 +116,35 @@ Doxum; it does not detect validator mutation or conversion. `parse(model, unknow
 validates and copies schema structure while sharing readonly payloads. Strict parsing
 requires validators for atomic fields; typed in-memory fields can omit them.
 
-For replacements containing nested collection tools, use `assign(scope, key, value)`:
+Collection `replace` has two forms: `replace(id, value)` replaces one existing
+table/list/tree member without changing order or topology, while `replace(value)`
+replaces the entire map/table/list/tree. Use top-level `replace(parent, key, value)`
+when replacing an object or variant member whose draft type exposes collection tools:
 
 ```ts
-import { assign, table } from 'doxum';
-const boardModel = object({ entries: map(object({ rows: table(task) })) });
-const board = createDocument({ schema: boardModel, initial: { entries: {} } });
+import { replace, table, variant } from 'doxum';
+const boardModel = object({
+  entries: map(object({ rows: table(task) })),
+  view: variant('kind', {
+    empty: object({}),
+    tasks: object({ rows: table(task) }),
+  }),
+});
+const board = createDocument({
+  schema: boardModel,
+  initial: { entries: {}, view: { kind: 'empty' } },
+});
 board.update(draft => {
-  assign(draft.entries, 'a', { rows: { ids: [], byId: {} } });
+  draft.entries.put('a', { rows: { ids: [], byId: {} } });
+  replace(draft, 'view', { kind: 'tasks', rows: { ids: [], byId: {} } });
 });
 ```
 
-TypeScript cannot give a mapped property a draft read type and a different plain
-data assignment type. `assign` checks the key and its `Infer` value and calls the
-same transaction write path. It is useful for complex map entries, variant
-replacement and initializing optional lists/trees. Ordinary assignments remain
-the common case. See [value boundaries](docs/value-boundaries.md).
+Top-level `replace` checks the parent key and its plain `Infer` value, then enters the
+same transaction write path. It is useful for variant replacement and initializing
+optional collections. Map entries use `put`; collection-wide replacements use the
+collection's own `replace`. Ordinary field and object-member assignments remain the
+common case. See [value boundaries](docs/value-boundaries.md).
 
 ## Changes And History
 
