@@ -234,6 +234,9 @@ Pure computations receive current values. Advanced processors use tagged specs:
 `project({ kind: 'collection', sources, build })`.
 Document collection events provide scoped `read.get/has/ids`, final candidate
 keys, order dirtiness, commits and reset state.
+Ordinary mappers intentionally model only one-source, same-key transforms.
+Cross-collection relationships use an advanced collection processor with explicit,
+application-owned dependency indexes; processor reads are not tracked automatically.
 
 Processors settle before external listeners. `store.batch` defers graph
 settlement and projection notifications, but document commits/listeners remain

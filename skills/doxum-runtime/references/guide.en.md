@@ -91,6 +91,11 @@ Use `project(document, path => path.tasks, mapper)` for incremental mapping.
 Pure values use `project(sources, compute)`; stateful algorithms use tagged value
 or collection specs. Definitions are lazy and are materialized by a
 `createProjectionStore({ onError })` instance. Sources remain explicit.
+Ordinary mappers only model one-source, same-key transforms. Cross-collection or
+cross-key dependencies use an advanced collection processor with an application-owned
+reverse dependency index; core does not track reads performed by processors. See the
+[projection reference](projections.en.md) for event shapes, lifecycle, writer semantics,
+join indexing, batching, and fault recovery.
 `input` and `project(readable)` connect external boundary values. Dispose the store
 with the owning service. `store.batch` defers projection settlement/listeners, not document commits/listeners. Reads
 inside a batch see the last publication; no cross-document rollback is provided.

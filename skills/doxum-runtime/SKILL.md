@@ -7,6 +7,9 @@ description: 'Use doxum and doxum/react for schemas, scoped draft updates, Chang
 
 Read the [English guide](references/guide.en.md) or [中文指南](references/guide.zh-CN.md).
 For examples read [patterns](references/patterns.en.md) or [中文模式](references/patterns.zh-CN.md).
+For any projection design or implementation, especially custom processors or
+cross-collection dependencies, read the [projection reference](references/projections.en.md)
+or [中文 Projection 参考](references/projections.zh-CN.md).
 Before runtime changes read [invariants](references/invariants.en.md) or
 [中文不变量](references/invariants.zh-CN.md).
 
@@ -26,7 +29,11 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   kinds, optional before/after order in the same group, and a separate root reset.
   Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
 - Paths belong in subscription, impact and collection source callbacks.
-- Projection dependencies are explicit; React selectors track actual reads.
+- Projection definitions are lazy; one ProjectionStore owns each materialized graph.
+  Use ordinary mappers only for one-source, same-key transforms. Advanced processors
+  declare every source, own any forward/reverse dependency indexes, derive from final
+  batched source state, and rebuild on resets that invalidate those indexes. Core
+  projections never track reads automatically; React selectors do.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters use integration capabilities.
 - Local sync owns browser persistence/leadership. Network conflict policy and

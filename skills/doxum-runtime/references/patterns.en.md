@@ -101,4 +101,7 @@ Use `useProjection` with a store for projection definitions; use `useReadable`
 for history and other existing Readable values. Custom collection processors stage
 writer.set/remove/order/replace and use scoped previous/next reads. Candidates span
 the complete batch; derive output from final state. Processor dependencies remain
-explicit even though React selectors track actual reads.
+explicit even though React selectors track actual reads. Use a mapper only when a
+source key affects the same output key. For cross-collection joins, declare every
+source and maintain the domain's reverse dependency index as described in the
+[projection reference](projections.en.md).

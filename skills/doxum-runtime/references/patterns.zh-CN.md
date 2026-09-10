@@ -100,4 +100,6 @@ store.get(scaled);
 使用 `useReadable` 或 `useHistory`。自定义集合 processor 通过
 writer.set/remove/order/replace 暂存输出，
 previous/next 读取只在作用域内有效。candidates 汇总整个 batch，以最终状态派生输出。
-React 追踪实际读取，但 processor 依赖仍显式声明。
+React 追踪实际读取，但 processor 依赖仍显式声明。只有 source 键影响同名输出键时
+才使用 mapper。跨集合 join 应声明全部 source，并按
+[Projection 参考](projections.zh-CN.md)维护领域反向依赖索引。
