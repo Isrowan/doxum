@@ -7,6 +7,7 @@ import type {
   OperationResult,
   Readable,
   ProjectionStore,
+  CollectionProjection,
   ValueProjection,
   InputProjection,
 } from 'doxum';
@@ -33,6 +34,36 @@ export function useProjection<T>(projection: ValueProjection<T>, store?: Project
     [owner, projection]
   );
   return useSyncExternalStore(subscribe, read, read);
+}
+
+type ProjectionItemSnapshot<T> = {
+  readonly value: T | undefined;
+  readonly revision: number;
+};
+
+export function useProjectionItem<K extends string, V>(
+  projection: CollectionProjection<K, V>,
+  key: K,
+  store?: ProjectionStore
+): V | undefined {
+  const context = useContext(ProjectionContext);
+  const owner = store ?? context;
+  if (!owner) throw new Error('ProjectionStore is required.');
+  const item = useMemo(() => owner.item(projection, key), [key, owner, projection]);
+  const read = useMemo(() => {
+    let previousRevision = -1;
+    let snapshot: ProjectionItemSnapshot<V> | undefined;
+    return (): ProjectionItemSnapshot<V> => {
+      const value = item.current();
+      const revision = item.revision();
+      if (snapshot && revision === previousRevision) return snapshot;
+      previousRevision = revision;
+      snapshot = { value, revision };
+      return snapshot;
+    };
+  }, [item]);
+  const subscribe = useCallback((listener: () => void) => item.subscribe(listener), [item]);
+  return useSyncExternalStore(subscribe, read, read).value;
 }
 
 export function useSetProjection<T>(

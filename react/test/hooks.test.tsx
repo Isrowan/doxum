@@ -10,8 +10,15 @@ import {
   project,
   table,
   snapshot,
+  type AdvancedCollectionSpec,
 } from 'doxum';
-import { ProjectionProvider, useDocumentSelector, useProjection, useReadable } from '../src';
+import {
+  ProjectionProvider,
+  useDocumentSelector,
+  useProjection,
+  useProjectionItem,
+  useReadable,
+} from '../src';
 import { renderToString } from 'react-dom/server';
 const documentSchema = object({
   title: field<string>(),
@@ -186,11 +193,10 @@ describe('doxum/react', () => {
       path => path.rows,
       (_id, row) => row.label
     );
-    const rowA = project({ rows }, ({ rows }) => rows.get('a'));
     let renders = 0;
     function Probe() {
       renders++;
-      return text(useProjection(rowA));
+      return text(useProjectionItem(rows, 'a'));
     }
     const app = () =>
       React.createElement(ProjectionProvider, { value: store }, React.createElement(Probe));
@@ -218,6 +224,60 @@ describe('doxum/react', () => {
     expect(renders).toBe(baseline + 1);
     store.dispose();
     runtime.dispose();
+  });
+  it('switches keyed projection subscriptions and observes present undefined membership', () => {
+    const store = createProjectionStore({
+      onError: error => {
+        throw error;
+      },
+    });
+    const source = input(0);
+    const rows = project({
+      kind: 'collection',
+      sources: { source },
+      build: ({ writer }) => {
+        writer.set('a', 1);
+        return {
+          update: ({ sources, writer }) => {
+            if (sources.source.value === 1) writer.set('b', undefined);
+            else if (sources.source.value === 2) writer.set('a', 2);
+            else if (sources.source.value === 3) writer.order(['b', 'a']);
+            else if (sources.source.value === 4) writer.remove('b');
+            else if (sources.source.value === 5) writer.set('a', 5);
+          },
+        };
+      },
+    } satisfies AdvancedCollectionSpec<{ source: typeof source }, string, number | undefined>);
+    let renders = 0;
+    function Probe({ id }: { id: string }) {
+      renders++;
+      const value = useProjectionItem(rows, id, store);
+      return text(value === undefined ? 'empty' : value);
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Probe, { id: 'b' }));
+    });
+    const initial = renders;
+    act(() => store.set(source, 1));
+    expect(valueOf(renderer)).toBe('empty');
+    expect(renders).toBe(initial + 1);
+    act(() => store.set(source, 2));
+    expect(renders).toBe(initial + 1);
+    act(() => store.set(source, 3));
+    expect(renders).toBe(initial + 1);
+    act(() => {
+      renderer.update(React.createElement(Probe, { id: 'a' }));
+    });
+    expect(valueOf(renderer)).toBe('2');
+    const switched = renders;
+    act(() => store.set(source, 4));
+    expect(renders).toBe(switched);
+    act(() => store.set(source, 5));
+    expect(valueOf(renderer)).toBe('5');
+    expect(renders).toBe(switched + 1);
+    act(() => renderer.unmount());
+    store.dispose();
   });
   it('tracks selector dependencies and ignores unrelated commits', () => {
     const runtime = createDocument({

@@ -33,7 +33,9 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   Use ordinary mappers only for one-source, same-key transforms. Advanced processors
   declare every source, own any forward/reverse dependency indexes, derive from final
   batched source state, and rebuild on resets that invalidate those indexes. Core
-  projections never track reads automatically; React selectors do.
+  projections never track reads automatically; React selectors do. Observe one
+  materialized collection key with store.item or useProjectionItem instead of a
+  whole-collection value projection.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters use integration capabilities.
 - Local sync owns browser persistence/leadership. Network conflict policy and

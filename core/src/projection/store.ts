@@ -6,6 +6,7 @@ import type {
   ProjectionEngine,
   MaterializedValue,
 } from './contract';
+import type { Readable } from './readable';
 import {
   definitionOf,
   type CollectionProjection,
@@ -20,6 +21,10 @@ type Materialized = MaterializedValue<unknown> | MaterializedCollection<string, 
 export type ProjectionStore = {
   get<K extends string, V>(projection: CollectionProjection<K, V>): CollectionRead<K, V>;
   get<T>(projection: ValueProjection<T>): T;
+  item<K extends string, V>(
+    projection: CollectionProjection<K, V>,
+    key: K
+  ): Readable<V | undefined>;
   set<T>(projection: InputProjection<T>, value: T): void;
   subscribe<K extends string, V>(
     projection: CollectionProjection<K, V>,
@@ -118,6 +123,12 @@ export const createProjectionStore = (options: {
         return instance.current();
       throw new TypeError('Projection is a source and has no published value.');
     }) as ProjectionStore['get'],
+    item: ((projection, key) => {
+      const instance = materialize(projection);
+      if (!('item' in instance) || typeof instance.item !== 'function')
+        throw new TypeError('Projection is not a materialized collection.');
+      return instance.item(key);
+    }) as ProjectionStore['item'],
     set: (projection, value) => {
       materialize(projection);
       const target = inputs.get(projection);

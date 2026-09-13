@@ -182,6 +182,13 @@ projection 状态或已接受的文档 commit。
 `store.release(projection)` 释放可独立释放的物化结果；仍被已物化下游使用的节点
 不能释放。`store.dispose()` 使整个图失效并解除其全部订阅。
 
+观察一个物化集合项时，`store.item(collection, key)` 返回稳定的
+`Readable<V | undefined>`。它贯穿 add、update、remove 和 recreate；其他键和纯顺序
+变化不会通知它。React 使用 `useProjectionItem(collection, key, store?)`，key 或 store
+变化时替换订阅。hook 内部会观察 membership，即使 absent 与 present 值都读作
+`undefined`。原始文档集合 source 不能作为输入；canonical 文档项使用
+`useDocumentSelector`。
+
 ## 审查清单
 
 - 所有能改变结果的 source 都已声明。
@@ -191,5 +198,6 @@ projection 状态或已接受的文档 commit。
 - build 不依赖旧输出或旧 processor 闭包。
 - 使用 `writer.order` 时提供完整且有效的顺序。
 - 相等结果保留引用；无关变化不产生输出 revision。
+- 单项消费者使用 keyed readable/hook，而不是整个集合的 value projection。
 - update 抛错不会悄悄破坏闭包索引。
 - 测试覆盖无关 commit、动态依赖、稳定引用、reset、batch、恢复和 disposal。

@@ -94,10 +94,12 @@ const zoom = input(1);
 const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
 const store = createProjectionStore({ onError: console.error });
 store.get(scaled);
+const title = store.item(titles, taskId);
 ```
 
 投影定义使用 `useProjection` 和一个 store，document.history 等既有 Readable
-使用 `useReadable` 或 `useHistory`。自定义集合 processor 通过
+使用 `useReadable` 或 `useHistory`。观察一个物化集合键时使用
+`useProjectionItem(titles, taskId)`，它忽略其他键和纯顺序变化。自定义集合 processor 通过
 writer.set/remove/order/replace 暂存输出，
 previous/next 读取只在作用域内有效。candidates 汇总整个 batch，以最终状态派生输出。
 React 追踪实际读取，但 processor 依赖仍显式声明。只有 source 键影响同名输出键时

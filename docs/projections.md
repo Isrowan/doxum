@@ -421,6 +421,52 @@ Processors settle before external projection listeners. Processor dependencies
 are explicit and determine graph order. React selectors may track actual reads,
 but that behavior does not extend to core projection processors.
 
+## Keyed Collection Observation
+
+Use `store.item(collection, key)` when a consumer needs one materialized
+collection entry rather than the whole collection:
+
+```ts
+const title = store.item(titles, taskId);
+title.current();
+const unsubscribe = title.subscribe(() => render(title.current()));
+```
+
+It returns a stable `Readable<V | undefined>` for the store, collection definition,
+and key. Repeated calls return the same handle. The readable follows that logical
+key through absence, addition, update, removal, and recreation. Its revision and
+normal notifications change only when that key's published membership or value
+changes. Changes to other keys and order-only changes do not notify it. Fault
+transitions and recovery conservatively notify every subscribed item so reads
+observe the new status. A reset or rebuild with unchanged published membership and
+value remains silent.
+
+`undefined` remains the public result for both an absent key and a present
+`undefined` value. Membership changes are still revisions and notifications, so
+consumers that care about existence may read `store.get(collection).has(key)`.
+
+In React, use the keyed adapter directly:
+
+```tsx
+import { useProjectionItem } from 'doxum/react';
+
+function TaskTitle({ taskId }: { taskId: string }) {
+  const title = useProjectionItem(titles, taskId);
+  return <span>{title ?? 'Missing'}</span>;
+}
+```
+
+The hook uses the `ProjectionProvider` store unless an explicit store is passed as
+its third argument. Switching the projection, key, or store unsubscribes the old
+item and subscribes the new one. It preserves the distinction between absent and
+present `undefined` internally so membership publications are visible to React,
+while its public return type remains `V | undefined`.
+
+Only a `CollectionProjection` can be observed this way. A raw document collection
+source from `project(document, path)` has no independently published item handles;
+use `useDocumentSelector` for a canonical document item, or map/materialize the
+collection before using `store.item` or `useProjectionItem`.
+
 ## Performance And Correctness Checklist
 
 Before shipping an advanced collection processor, verify:
@@ -438,8 +484,9 @@ Before shipping an advanced collection processor, verify:
 - Tests cover dynamic dependencies, unrelated commits, stable references, reset,
   batching, fault recovery, and disposal.
 
-Use `store.revision(projection)` to inspect a published revision and
-`store.subscribe(projection, listener)` for external observation. Release a
+Use `store.revision(projection)` to inspect a published revision,
+`store.subscribe(projection, listener)` for whole-projection observation, and
+`store.item(collection, key)` for key-local observation. Release a
 materialized leaf early with `store.release(projection)` only when no materialized
 downstream consumer still depends on it. `store.dispose()` invalidates all handles
 and releases all source subscriptions owned by the store.

@@ -197,6 +197,14 @@ never undo published projection state or accepted document commits.
 do not release a node still used by a materialized downstream projection.
 `store.dispose()` invalidates the complete graph and releases its subscriptions.
 
+For one materialized collection entry, `store.item(collection, key)` returns a
+stable `Readable<V | undefined>`. It follows the key through add, update, remove,
+and recreation; other keys and order-only changes do not notify it. React uses
+`useProjectionItem(collection, key, store?)`. Key or store changes replace the
+subscription. The hook internally observes membership even when both absent and
+present values read as `undefined`. Raw document collection sources are not valid
+inputs; use `useDocumentSelector` for canonical document items.
+
 ## Review Checklist
 
 - All result-changing sources are declared.
@@ -206,6 +214,7 @@ do not release a node still used by a materialized downstream projection.
 - Build never depends on prior output or a previous processor closure.
 - `writer.order` is complete and valid whenever used.
 - Equal values preserve references; unrelated changes produce no output revision.
+- Item consumers use keyed readables/hooks instead of whole-collection value projections.
 - A thrown update cannot silently corrupt closure indexes.
 - Tests cover unrelated commits, dynamic dependencies, stable references, reset,
   batch behavior, recovery, and disposal.

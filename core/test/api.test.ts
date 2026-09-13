@@ -193,6 +193,61 @@ describe('projection composition', () => {
     store.release(rows);
     store.dispose();
   });
+  it('exposes stable keyed collection readables with precise membership notifications', () => {
+    const store = createProjectionStore({
+      onError: error => {
+        throw error;
+      },
+    });
+    const source = input(0);
+    const rows = project({
+      kind: 'collection',
+      sources: { source },
+      build: ({ writer }) => {
+        writer.set('a', 1);
+        return {
+          update: ({ sources, writer }) => {
+            if (sources.source.value === 1) writer.set('b', undefined);
+            else if (sources.source.value === 2) writer.set('a', 2);
+            else if (sources.source.value === 3) writer.order(['b', 'a']);
+            else if (sources.source.value === 4) writer.remove('b');
+          },
+        };
+      },
+    } satisfies AdvancedCollectionSpec<{ source: typeof source }, string, number | undefined>);
+
+    const a = store.item(rows, 'a');
+    const b = store.item(rows, 'b');
+    expect(store.item(rows, 'a')).toBe(a);
+    expectTypeOf(a).toEqualTypeOf<Readable<number | undefined>>();
+    expect(a.current()).toBe(1);
+    expect(b.current()).toBeUndefined();
+    const aListener = vi.fn();
+    const bListener = vi.fn();
+    a.subscribe(aListener);
+    b.subscribe(bListener);
+
+    store.set(source, 1);
+    expect(b.current()).toBeUndefined();
+    expect(b.revision()).toBe(1);
+    expect(bListener).toHaveBeenCalledTimes(1);
+    expect(aListener).not.toHaveBeenCalled();
+    store.set(source, 2);
+    expect(a.current()).toBe(2);
+    expect(aListener).toHaveBeenCalledTimes(1);
+    expect(bListener).toHaveBeenCalledTimes(1);
+    store.set(source, 3);
+    expect(aListener).toHaveBeenCalledTimes(1);
+    expect(bListener).toHaveBeenCalledTimes(1);
+    store.set(source, 4);
+    expect(b.current()).toBeUndefined();
+    expect(b.revision()).toBe(2);
+    expect(bListener).toHaveBeenCalledTimes(2);
+
+    store.release(rows);
+    expect(() => a.current()).toThrow('disposed');
+    store.dispose();
+  });
   it('publishes document candidate keys once per batch including net-zero changes and reset', () => {
     const model = object({ title: field<string>(), rows: table(object({ n: field<number>() })) });
     const runtime = createDocument({

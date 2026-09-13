@@ -86,6 +86,9 @@ processor，并由应用维护反向依赖索引；core 不追踪 processor 内�
 `input` 与 `project(readable)` 接入外部边界值。随所属服务 dispose store。
 `store.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
 不提供跨文档回滚。
+观察物化集合的一个键时，使用稳定的 `store.item(collection, key)`
+`Readable<V | undefined>`，React 使用 `useProjectionItem(collection, key)`。
+其他键和纯顺序变化不会通知它；原始 canonical 文档项仍使用 `useDocumentSelector`。
 
 doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入，
 follower 连续重放 durable seq。先可见后异步落盘，flush 等待持久化。

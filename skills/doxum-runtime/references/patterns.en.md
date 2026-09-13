@@ -95,10 +95,13 @@ const zoom = input(1);
 const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
 const store = createProjectionStore({ onError: console.error });
 store.get(scaled);
+const title = store.item(titles, taskId);
 ```
 
 Use `useProjection` with a store for projection definitions; use `useReadable`
-for history and other existing Readable values. Custom collection processors stage
+for history and other existing Readable values. Use
+`useProjectionItem(titles, taskId)` for one materialized collection key; it ignores
+other keys and order-only changes. Custom collection processors stage
 writer.set/remove/order/replace and use scoped previous/next reads. Candidates span
 the complete batch; derive output from final state. Processor dependencies remain
 explicit even though React selectors track actual reads. Use a mapper only when a

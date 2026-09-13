@@ -223,6 +223,7 @@ const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
 const store = createProjectionStore({ onError: console.error });
 store.get(scaled);
 store.set(zoom, 2);
+const title = store.item(titles, taskId); // Stable Readable<string | undefined>.
 ```
 
 Projection declarations are lazy and reusable. A `ProjectionStore` owns
@@ -237,6 +238,10 @@ keys, order dirtiness, commits and reset state.
 Ordinary mappers intentionally model only one-source, same-key transforms.
 Cross-collection relationships use an advanced collection processor with explicit,
 application-owned dependency indexes; processor reads are not tracked automatically.
+For per-key observation, `store.item(collection, key)` returns a stable `Readable`
+that only notifies for that key. React components use
+`useProjectionItem(collection, key)`; unrelated keys and order-only changes do not
+rerender the component.
 
 Processors settle before external listeners. `store.batch` defers graph
 settlement and projection notifications, but document commits/listeners remain

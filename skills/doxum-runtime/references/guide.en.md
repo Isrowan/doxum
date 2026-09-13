@@ -99,6 +99,10 @@ join indexing, batching, and fault recovery.
 `input` and `project(readable)` connect external boundary values. Dispose the store
 with the owning service. `store.batch` defers projection settlement/listeners, not document commits/listeners. Reads
 inside a batch see the last publication; no cross-document rollback is provided.
+For one materialized collection key, use `store.item(collection, key)` as a stable
+`Readable<V | undefined>` or `useProjectionItem(collection, key)` in React. Other
+keys and order-only changes do not notify it. Use `useDocumentSelector` for a raw
+canonical document item.
 
 doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;
 followers replay contiguous durable sequence. Writes become visible before async
