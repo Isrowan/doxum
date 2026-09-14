@@ -284,21 +284,24 @@ reverse commit order; redo reads after in forward order, within one session.
 Local root reset is reversible. Remote commits invalidate local history.
 
 Projection definitions explicitly declare dependencies and are lazy. A single
-`ProjectionRuntime` owns materialization, processor closures, subscriptions,
+`ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
-`get`, `subscribe`, `set`, `batch` and `dispose`. Collection values are immutable
-map-like snapshots, while keyed storage, revisions and transition indexes remain
-private to the runtime.
+`get`, `readable`, `set`, `batch` and `dispose`. Collection values are immutable
+map-like snapshots, while keyed storage, graph revisions and transition indexes
+remain private to the runtime. A readable exposes only its own publication
+revision for store integrations. Selector tracking and equality belong to a runtime-owned
+`Readable`, not to a second subscription protocol.
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
 External events carry boundary metadata and, for collections, a stable previous
 read plus keyed change hint; Runtime contexts and transitions remain internal.
-React's selector overload records collection key reads at the consumer boundary.
-Keyed invalidation prevents an unrelated entry update from executing the selector;
-equality filters the result only after a related update. This tracking does not
-construct processor dependencies, which remain explicit in `derive` and the
-advanced incremental entry point.
+React's selector overload is implemented by `runtime.readable(projection, selector,
+equality)`, so the same runtime-owned readable can be consumed by React or
+imperative code. Keyed invalidation prevents an unrelated entry update from
+executing the selector; equality filters the result only after a related update.
+This tracking does not construct processor dependencies, which remain explicit in
+`derive` and the advanced incremental entry point.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already accepted commit.
 

@@ -74,8 +74,10 @@ other projections.
 const runtime = createProjectionRuntime({ onError: reportProjectionError });
 
 const value = runtime.get(visible);
-const stop = runtime.subscribe(visible, () => {
-  // Re-read with runtime.get inside the listener.
+const selected = runtime.readable(visible, tasks => tasks.get(taskId));
+const stop = selected.subscribe(() => {
+  // Re-read with selected.current inside the listener.
+  selected.current();
 });
 
 runtime.set(filter, 'open');
@@ -92,17 +94,18 @@ runtime.dispose();
 
 The public Runtime deliberately has only five operations:
 
-| Operation                         | Meaning                                         |
-| --------------------------------- | ----------------------------------------------- |
-| `get(projection)`                 | Read the last published value.                  |
-| `subscribe(projection, listener)` | Subscribe to invalidation; re-read with `get`.  |
-| `set(input, value)`               | Write a Runtime-local input.                    |
-| `batch(options?, run)`            | Settle a complete application action once.      |
-| `dispose()`                       | Release all graph nodes and source attachments. |
+| Operation                                    | Meaning                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| `get(projection)`                            | Read the last published value.                                           |
+| `readable(projection, selector?, equality?)` | Create a live readable snapshot; subscribe through `Readable.subscribe`. |
+| `set(input, value)`                          | Write a Runtime-local input.                                             |
+| `batch(options?, run)`                       | Settle a complete application action once.                               |
+| `dispose()`                                  | Release all graph nodes and source attachments.                          |
 
-Revision numbers, rebuild controls, per-item handles and release operations are
-internal publication facts. An opaque `cause` may travel with a batch, while the
-Runtime's batch identity remains private.
+Graph revision numbers, rebuild controls, per-item handles and release operations
+are internal publication facts. A `Readable` exposes only its own publication
+revision for store integrations. An opaque `cause` may travel with a batch, while
+the Runtime's batch identity remains private.
 
 ## Collection values
 
@@ -177,9 +180,9 @@ function TaskList() {
 }
 ```
 
-`ProjectionProvider` supplies a Runtime. `useProjection(projection)` subscribes
-to coarse invalidation. The selector overload records collection reads at the
-React boundary:
+`ProjectionProvider` supplies a Runtime. `useProjection(projection)` consumes
+`runtime.readable(projection)`. The selector overload consumes the same
+runtime-owned readable boundary:
 
 | Selector read                   | Dependency recorded | Unrelated update                   |
 | ------------------------------- | ------------------- | ---------------------------------- |
@@ -189,8 +192,9 @@ React boundary:
 | scalar projection               | scalar projection   | no selector dependency set         |
 
 After a related invalidation, the selector runs synchronously and `equality`
-(default `Object.is`) decides whether React re-renders. Selector tracking is a
-consumer optimization only; processor dependencies remain explicit.
+(default `Object.is`) decides whether the readable publishes a new snapshot and
+React re-renders. Selector tracking is a consumer optimization only; processor
+dependencies remain explicit.
 
 Selectors must be pure and synchronous. They may not retain borrowed readers or
 drafts in asynchronous callbacks.

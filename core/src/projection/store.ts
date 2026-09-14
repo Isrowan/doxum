@@ -23,30 +23,39 @@ type SelectionTracker = {
   all: boolean;
   structure: boolean;
 };
-type RuntimeState = {
-  readonly materialize: (projection: Projection<unknown>) => RuntimeValue;
-  readonly get: <T>(projection: Projection<T>) => T;
+
+type Selection = {
+  readonly keys: ReadonlySet<string>;
+  readonly all: boolean;
+  readonly structure: boolean;
 };
 
 export type ProjectionRuntime = {
   get<T>(projection: Projection<T>): T;
-  subscribe<T>(projection: Projection<T>, listener: () => void): Unsubscribe;
+  readable<T>(projection: Projection<T>): Readable<T>;
+  readable<T, R>(
+    projection: Projection<T>,
+    selector: (value: T) => R,
+    equality?: (previous: R, next: R) => boolean
+  ): Readable<R>;
   set<T>(input: Input<T>, value: T): void;
   batch<T>(run: () => T): T;
   batch<T>(options: BatchOptions, run: () => T): T;
   dispose(): void;
 };
 
-const runtimeStates = new WeakMap<object, RuntimeState>();
 let activeTracker: SelectionTracker | undefined;
 
 const trackKey = (key: string): void => {
   activeTracker?.keys.add(key);
 };
-const trackAll = (structure = false): void => {
+const trackStructure = (): void => {
+  if (!activeTracker) return;
+  activeTracker.structure = true;
+};
+const trackAll = (): void => {
   if (!activeTracker) return;
   activeTracker.all = true;
-  activeTracker.structure ||= structure;
 };
 
 const mapView = <K extends string, V>(read: CollectionRead<K, V>): PublicCollection<K, V> => {
@@ -63,27 +72,27 @@ const mapView = <K extends string, V>(read: CollectionRead<K, V>): PublicCollect
       return source.has(key);
     },
     get size() {
-      trackAll(true);
+      trackStructure();
       return source.size;
     },
     keys: () => {
-      trackAll(true);
+      trackStructure();
       return source.keys();
     },
     values: () => {
-      trackAll(true);
+      trackAll();
       return source.values();
     },
     entries: () => {
-      trackAll(true);
+      trackAll();
       return source.entries();
     },
     forEach: (callback, thisArg) => {
-      trackAll(true);
+      trackAll();
       source.forEach((value, key) => callback.call(thisArg, value, key, view));
     },
     [Symbol.iterator]: () => {
-      trackAll(true);
+      trackAll();
       return source[Symbol.iterator]();
     },
   };
@@ -122,6 +131,35 @@ const mapChange = (
     before.length !== after.length || before.some((key, index) => key !== after[index]);
   if (!added.size && !removed.size && !updated.size && !orderChanged) return undefined;
   return { kind: 'incremental', added, removed, updated, orderChanged };
+};
+
+const sameSelection = (left: Selection, right: Selection): boolean => {
+  if (
+    left.all !== right.all ||
+    left.structure !== right.structure ||
+    left.keys.size !== right.keys.size
+  )
+    return false;
+  for (const key of left.keys) if (!right.keys.has(key)) return false;
+  return true;
+};
+
+const selectionAffects = (
+  selection: Selection,
+  change: CollectionImpact<string> | undefined
+): boolean => {
+  if (!change || change.kind === 'reset') return true;
+  if (
+    selection.all &&
+    (change.added.size || change.removed.size || change.updated.size || change.orderChanged)
+  )
+    return true;
+  if (selection.structure && (change.added.size || change.removed.size || change.orderChanged))
+    return true;
+  for (const key of selection.keys) {
+    if (change.added.has(key) || change.removed.has(key) || change.updated.has(key)) return true;
+  }
+  return false;
 };
 
 const currentValue = (event: unknown): unknown => {
@@ -269,12 +307,136 @@ export const createProjectionRuntime = (options?: {
     return current as T;
   };
 
+  function readable<T>(projection: Projection<T>): Readable<T>;
+  function readable<T, R>(
+    projection: Projection<T>,
+    selector: (value: T) => R,
+    equality?: (previous: R, next: R) => boolean
+  ): Readable<R>;
+  function readable<T, R>(
+    projection: Projection<T>,
+    selector?: (value: T) => R,
+    equality: (previous: R, next: R) => boolean = Object.is
+  ): Readable<T | R> {
+    if (!selector) {
+      return Object.freeze({
+        current: () => get(projection),
+        revision: () => materialize(projection).revision(),
+        subscribe: (listener: () => void) => materialize(projection).subscribe(listener as never),
+      });
+    }
+
+    let initialized = false;
+    let value!: R;
+    let selectedRevision = 0;
+    let sourceRevision = -1;
+    let selection: Selection = Object.freeze({
+      keys: new Set<string>(),
+      all: true,
+      structure: false,
+    });
+    let previousCollection: PublicCollection<string, unknown> | undefined;
+    let unsubscribeSource: Unsubscribe | undefined;
+    const listeners = new Set<() => void>();
+
+    const updateCollectionSnapshot = () => {
+      const current = get(projection);
+      previousCollection = isMapLike(current) ? current : undefined;
+    };
+
+    const evaluate = (): boolean => {
+      const tracker: SelectionTracker = { keys: new Set(), all: false, structure: false };
+      const previousTracker = activeTracker;
+      activeTracker = tracker;
+      let source: T;
+      let next: R;
+      try {
+        source = get(projection);
+        next = selector(source);
+      } finally {
+        activeTracker = previousTracker;
+      }
+      const nextSelection: Selection = Object.freeze({
+        keys: new Set(tracker.keys),
+        all: tracker.all || (isMapLike(source) && tracker.keys.size === 0),
+        structure: tracker.structure,
+      });
+      const changed = !initialized || !equality(value, next);
+      if (changed) {
+        if (initialized) selectedRevision++;
+        value = next;
+      }
+      selection = nextSelection;
+      initialized = true;
+      sourceRevision = materialize(projection).revision();
+      updateCollectionSnapshot();
+      return changed;
+    };
+
+    const ensureCurrent = (): R => {
+      const revision = materialize(projection).revision();
+      if (!initialized || (!unsubscribeSource && sourceRevision !== revision)) evaluate();
+      return value;
+    };
+
+    const onProjectionChange = (incoming?: CollectionImpact<string>) => {
+      let change = incoming;
+      if (!change && previousCollection) {
+        const current = get(projection);
+        if (isMapLike(current)) {
+          change = mapChange(previousCollection, current);
+          previousCollection = current;
+          if (!change) {
+            sourceRevision = materialize(projection).revision();
+            return;
+          }
+        } else previousCollection = undefined;
+      }
+      if (!selectionAffects(selection, change)) {
+        sourceRevision = materialize(projection).revision();
+        updateCollectionSnapshot();
+        return;
+      }
+      const previousSelection = selection;
+      const changed = evaluate();
+      if (unsubscribeSource && !sameSelection(previousSelection, selection)) {
+        unsubscribeSource();
+        unsubscribeSource = materialize(projection).subscribe(onProjectionChange as never);
+      }
+      if (changed) Array.from(listeners).forEach(listener => listener());
+    };
+
+    const installSource = () => {
+      if (!unsubscribeSource) {
+        unsubscribeSource = materialize(projection).subscribe(onProjectionChange as never);
+      }
+    };
+
+    const handle: Readable<R> = {
+      current: ensureCurrent,
+      revision: () => {
+        ensureCurrent();
+        return selectedRevision;
+      },
+      subscribe: listener => {
+        ensureCurrent();
+        listeners.add(listener);
+        installSource();
+        return () => {
+          listeners.delete(listener);
+          if (!listeners.size && unsubscribeSource) {
+            unsubscribeSource();
+            unsubscribeSource = undefined;
+          }
+        };
+      },
+    };
+    return Object.freeze(handle);
+  }
+
   const store: ProjectionRuntime = {
     get,
-    subscribe: ((projection: Projection<unknown>, listener: () => void) => {
-      const instance = materialize(projection);
-      return instance.subscribe(listener as never);
-    }) as ProjectionRuntime['subscribe'],
+    readable,
     set: ((input: Input<unknown>, value: unknown) => {
       materialize(input);
       const target = inputs.get(input);
@@ -284,78 +446,5 @@ export const createProjectionRuntime = (options?: {
     batch: runtime.batch,
     dispose: runtime.dispose,
   };
-  runtimeStates.set(store, { materialize, get });
   return Object.freeze(store);
-};
-
-export type ProjectionSelection = {
-  readonly keys: ReadonlySet<string>;
-  readonly all: boolean;
-  readonly structure: boolean;
-};
-
-export const trackProjection = <T, R>(
-  owner: ProjectionRuntime,
-  projection: Projection<T>,
-  selector: (value: T) => R
-): { readonly value: R; readonly selection: ProjectionSelection } => {
-  const state = runtimeStates.get(owner);
-  if (!state) throw new TypeError('Unknown projection runtime.');
-  const tracker: SelectionTracker = { keys: new Set(), all: false, structure: false };
-  const previous = activeTracker;
-  activeTracker = tracker;
-  try {
-    const value = selector(state.get(projection));
-    return {
-      value,
-      selection: Object.freeze({
-        keys: new Set(tracker.keys),
-        all: tracker.all,
-        structure: tracker.structure,
-      }),
-    };
-  } finally {
-    activeTracker = previous;
-  }
-};
-
-export const subscribeProjection = (
-  owner: ProjectionRuntime,
-  projection: Projection<unknown>,
-  selection: ProjectionSelection,
-  listener: () => void
-): Unsubscribe => {
-  const state = runtimeStates.get(owner);
-  if (!state) throw new TypeError('Unknown projection runtime.');
-  const instance = state.materialize(projection);
-  let previousCollection: PublicCollection<string, unknown> | undefined;
-  const initialValue = state.get(projection);
-  if (isMapLike(initialValue)) previousCollection = initialValue;
-  return instance.subscribe(((change: CollectionImpact<string> | undefined) => {
-    if (!change && previousCollection) {
-      const current = state.get(projection);
-      if (isMapLike(current)) {
-        change = mapChange(previousCollection, current);
-        previousCollection = current;
-        if (!change) return;
-      } else previousCollection = undefined;
-    }
-    if (!change || change.kind === 'reset') {
-      listener();
-      return;
-    }
-    if (
-      selection.all &&
-      (selection.structure || change.added.size || change.removed.size || change.updated.size)
-    ) {
-      listener();
-      return;
-    }
-    for (const key of selection.keys) {
-      if (change.added.has(key) || change.removed.has(key) || change.updated.has(key)) {
-        listener();
-        return;
-      }
-    }
-  }) as never);
 };

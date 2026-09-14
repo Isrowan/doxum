@@ -31,7 +31,7 @@ describe('projection value boundaries', () => {
     const runtime = createProjectionRuntime();
     const listener = vi.fn();
     runtime.get(result);
-    const stop = runtime.subscribe(result, listener);
+    const stop = runtime.readable(result).subscribe(listener);
     runtime.set(source, { value: 1 });
     expect(listener).not.toHaveBeenCalled();
     stop();

@@ -31,13 +31,15 @@ Runtime 的公开脊柱只有：
 
 ```ts
 runtime.get(projection);
-runtime.subscribe(projection, listener);
+const selected = runtime.readable(projection, value => value.get(id));
+selected.subscribe(listener);
 runtime.set(input, value);
 runtime.batch({ cause }, run);
 runtime.dispose();
 ```
 
-revision、item handle、rebuild、release 都是 Runtime 内部事实，不是应用层操作。
+Runtime graph revision、item handle、rebuild、release 都是内部事实，不是应用层操作；
+只有 `Readable` 自己的 publication revision 为 store 集成保留为公开事实。
 Materialization、keyed storage、故障恢复和释放只有一个 owner。
 
 ## 增量 Processor
@@ -71,8 +73,8 @@ const [mode, setMode] = useInput(filter);
 
 `get`/`has` 记录单 key，`keys` 记录 key/order 结构，`values` 或迭代记录整个
 集合。无关 key 的更新不会执行 selector；相关更新后才执行 selector，并由
-`equality`（默认 `Object.is`）决定是否重渲染。这是消费端优化，不会反向构建
-Projection processor 依赖。
+`equality`（默认 `Object.is`）决定 readable 是否发布。这是消费端优化，不会反向
+构建 Projection processor 依赖。
 
 Processor 先于 listener settle。通知期间禁止写入。listener 错误不会回滚已经
 接受的文档 commit；processor 错误交给 Runtime error callback，并由 Runtime

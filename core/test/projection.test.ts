@@ -8,12 +8,13 @@ import {
   map,
   object,
   observe,
+  ProjectionDisposedError,
   table,
   type ExternalCollectionEvent,
   type ExternalValueEvent,
+  type PublicCollection,
 } from '../src';
 import { incremental } from '../src/projection/advanced';
-import { subscribeProjection, trackProjection } from '../src/integration';
 
 const row = object({ value: field<number>(), label: field<string>() });
 const model = object({ rows: map(row), ordered: table(row) });
@@ -167,8 +168,8 @@ describe('projection runtime', () => {
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
     const listener = vi.fn();
-    const selection = { keys: new Set(['a']), all: false, structure: false } as const;
-    const stop = subscribeProjection(runtime, rows, selection, listener);
+    const selected = runtime.readable(rows, value => value.get('a'));
+    const stop = selected.subscribe(listener);
     document.update(draft => {
       draft.rows.get('b')!.value = 3;
     });
@@ -192,8 +193,8 @@ describe('projection runtime', () => {
     const mapped = derive([source], values => new Map(values));
     const runtime = createProjectionRuntime();
     const listener = vi.fn();
-    const tracked = trackProjection(runtime, mapped, value => value.get('a'));
-    const stop = subscribeProjection(runtime, mapped, tracked.selection, listener);
+    const selected = runtime.readable(mapped, value => value.get('a'));
+    const stop = selected.subscribe(listener);
     runtime.set(
       source,
       new Map([
@@ -212,5 +213,130 @@ describe('projection runtime', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
     runtime.dispose();
+  });
+
+  it('owns selector tracking and equality on runtime readables', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const runtime = createProjectionRuntime();
+    const select = vi.fn((value: PublicCollection<string, { value: number; label: string }>) =>
+      value.get('a')
+    );
+    const selected = runtime.readable(rows, select);
+    const listener = vi.fn();
+
+    expect(selected.current()?.value).toBe(1);
+    expect(select).toHaveBeenCalledTimes(1);
+    const stop = selected.subscribe(listener);
+    document.update(draft => {
+      draft.rows.get('b')!.value = 3;
+    });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(listener).not.toHaveBeenCalled();
+    document.update(draft => {
+      draft.rows.get('a')!.value = 4;
+    });
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(selected.current()?.value).toBe(4);
+    stop();
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('suppresses equal selected snapshots without changing readable revision', () => {
+    const source = input(1);
+    const runtime = createProjectionRuntime();
+    const selected = runtime.readable(
+      source,
+      value => ({ value: value > 0 ? 1 : 1 }),
+      (previous, next) => previous.value === next.value
+    );
+    const listener = vi.fn();
+    expect(selected.current().value).toBe(1);
+    const stop = selected.subscribe(listener);
+    runtime.set(source, 2);
+    expect(selected.current().value).toBe(1);
+    expect(selected.revision()).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+    stop();
+    runtime.dispose();
+  });
+
+  it('tracks a collection returned directly from a selector conservatively', () => {
+    const source = input(new Map([['a', 1]]));
+    const runtime = createProjectionRuntime();
+    const selected = runtime.readable(source, value => value);
+    const listener = vi.fn();
+    expect(selected.current().get('a')).toBe(1);
+    const stop = selected.subscribe(listener);
+    runtime.set(source, new Map([['a', 2]]));
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(selected.current().get('a')).toBe(2);
+    stop();
+    runtime.dispose();
+  });
+
+  it('rebinds dynamic keyed selector dependencies after a branch changes', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const runtime = createProjectionRuntime();
+    const select = vi.fn((value: PublicCollection<string, { value: number; label: string }>) =>
+      value.has('a') ? value.get('a') : value.get('b')
+    );
+    const selected = runtime.readable(rows, select);
+    const listener = vi.fn();
+    expect(selected.current()?.value).toBe(1);
+    const stop = selected.subscribe(listener);
+
+    document.update(draft => {
+      draft.rows.get('b')!.value = 3;
+    });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(listener).not.toHaveBeenCalled();
+
+    document.update(draft => {
+      draft.rows.remove('a');
+    });
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(selected.current()?.value).toBe(3);
+
+    document.update(draft => {
+      draft.rows.get('b')!.value = 4;
+    });
+    expect(select).toHaveBeenCalledTimes(3);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(selected.current()?.value).toBe(4);
+    stop();
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('invalidates readable handles when their runtime is disposed', () => {
+    const source = input(1);
+    const runtime = createProjectionRuntime();
+    const readable = runtime.readable(source, value => value * 2);
+    expect(readable.current()).toBe(2);
+    runtime.dispose();
+    expect(() => readable.current()).toThrow(ProjectionDisposedError);
   });
 });

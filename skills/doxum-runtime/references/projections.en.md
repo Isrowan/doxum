@@ -34,14 +34,16 @@ The Runtime API is intentionally small:
 
 ```ts
 runtime.get(projection);
-runtime.subscribe(projection, listener);
+const selected = runtime.readable(projection, value => value.get(id));
+selected.subscribe(listener);
 runtime.set(input, value);
 runtime.batch({ cause }, run);
 runtime.dispose();
 ```
 
-There is no public revision, item handle, rebuild or release operation. Runtime
-materialization, keyed storage, recovery and disposal are one owner.
+The Runtime exposes no graph revision, item handle, rebuild or release operation;
+only a `Readable`'s own publication revision is public for store integrations.
+Runtime materialization, keyed storage, recovery and disposal are one owner.
 
 ## Incremental processors
 
@@ -76,8 +78,8 @@ const [mode, setMode] = useInput(filter);
 Collection `get`/`has` records one key, `keys` records key/order structure, and
 `values`/iteration records the whole collection. Unrelated key changes do not run
 the selector. After a related update, the selector's equality (default
-`Object.is`) decides whether React re-renders. This tracking exists only at the
-consumer boundary; projection dependencies remain explicit.
+`Object.is`) decides whether the readable publishes. React consumes the same
+`Readable` boundary; projection dependencies remain explicit.
 
 Processors settle before listeners. Writes are forbidden during notification.
 Listener errors do not roll back an accepted document commit; processor errors use

@@ -92,7 +92,7 @@ describe('final projection API', () => {
       throw new Error('observer');
     });
     runtime.get(doubled);
-    const stop = runtime.subscribe(doubled, listener);
+    const stop = runtime.readable(doubled).subscribe(listener);
     runtime.batch({ cause: { action: 'edit' } }, () => {
       runtime.set(value, 2);
       runtime.set(value, 3);

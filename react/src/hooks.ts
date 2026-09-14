@@ -10,15 +10,7 @@ import type {
   Projection,
   Input,
 } from 'doxum';
-import {
-  track,
-  subscribeDependencies,
-  sameTarget,
-  type ImpactTarget,
-  trackProjection,
-  subscribeProjection,
-  type ProjectionSelection,
-} from 'doxum/integration';
+import { track, subscribeDependencies, sameTarget, type ImpactTarget } from 'doxum/integration';
 import {
   createContext,
   useCallback,
@@ -30,20 +22,6 @@ import {
 
 export const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
-
-const sameProjectionSelection = (
-  left: ProjectionSelection,
-  right: ProjectionSelection
-): boolean => {
-  if (
-    left.all !== right.all ||
-    left.structure !== right.structure ||
-    left.keys.size !== right.keys.size
-  )
-    return false;
-  for (const key of left.keys) if (!right.keys.has(key)) return false;
-  return true;
-};
 
 export function useProjection<T>(projection: Projection<T>, runtime?: ProjectionRuntime): T;
 export function useProjection<T, R>(
@@ -75,50 +53,11 @@ export function useProjection<T, R>(
       : undefined) ??
     (selector ? context : typeof selectorOrRuntime === 'object' ? selectorOrRuntime : context);
   if (!owner) throw new Error('ProjectionRuntime is required.');
-  if (!selector) {
-    const read = useCallback(() => owner.get(projection), [owner, projection]);
-    const subscribe = useCallback(
-      (listener: () => void) => owner.subscribe(projection, listener),
-      [owner, projection]
-    );
-    return useSyncExternalStore(subscribe, read, read) as T;
-  }
-  const cache = useRef<{ value: R; selection: ProjectionSelection } | undefined>(undefined);
-  const read = useCallback(() => {
-    const selected = trackProjection(owner, projection, selector);
-    const previous = cache.current;
-    const value =
-      previous && equality(previous.value, selected.value) ? previous.value : selected.value;
-    cache.current = { value, selection: selected.selection };
-    return value;
-  }, [equality, owner, projection, selector]);
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      read();
-      let selection = cache.current?.selection ?? {
-        keys: new Set<string>(),
-        all: true,
-        structure: false,
-      };
-      let unsubscribe = subscribeProjection(owner, projection, selection, onInvalidate);
-      const reinstall = (next: ProjectionSelection) => {
-        if (sameProjectionSelection(selection, next)) return;
-        unsubscribe();
-        selection = next;
-        unsubscribe = subscribeProjection(owner, projection, selection, onInvalidate);
-      };
-      function onInvalidate() {
-        const previous = cache.current?.value;
-        const next = read();
-        const nextSelection = cache.current?.selection;
-        if (nextSelection) reinstall(nextSelection);
-        if (!Object.is(previous, next)) listener();
-      }
-      return () => unsubscribe();
-    },
-    [owner, projection, read]
+  const readable = useMemo(
+    () => (selector ? owner.readable(projection, selector, equality) : owner.readable(projection)),
+    [equality, owner, projection, selector]
   );
-  return useSyncExternalStore(subscribe, read, read);
+  return useReadable(readable as Readable<T | R>);
 }
 
 export function useInput<T>(

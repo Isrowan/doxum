@@ -220,6 +220,8 @@ const visible = derive([tasks, filter], (all, mode) => {
 
 const runtime = createProjectionRuntime({ onError: console.error });
 runtime.get(visible);
+const selected = runtime.readable(visible, tasks => tasks.get('a'));
+const stop = selected.subscribe(() => selected.current());
 runtime.set(filter, 'open');
 runtime.batch({ cause: { action: 'refresh' } }, () => {
   runtime.set(filter, 'all');
@@ -227,12 +229,14 @@ runtime.batch({ cause: { action: 'refresh' } }, () => {
     draft.title = 'Updated';
   });
 });
+stop();
 ```
 
 Projection declarations are lazy and reusable. The only Runtime operations are
-`get`, `subscribe`, `set`, `batch` and `dispose`; materialization, incremental
+`get`, `readable`, `set`, `batch` and `dispose`; materialization, incremental
 state, publication and recovery stay inside the Runtime. Collection values are
-immutable `ReadonlyMap`-like snapshots, so callers do not hold lifecycle handles.
+immutable `ReadonlyMap`-like snapshots, while a `Readable` owns selector
+tracking, equality and subscription lifecycle.
 
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external sources. External sources declare `kind: 'value'` or
