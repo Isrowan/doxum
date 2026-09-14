@@ -104,7 +104,7 @@ read later canonical state to reconstruct a published commit.
 
 ## Lifetimes
 
-Draft, select and track structural access is borrowed for the synchronous callback;
+Draft, read and track structural access is borrowed for the synchronous callback;
 retaining it beyond that callback is undefined behavior. Projection source readers
 retain explicit expiration checks. Within a callback, retained child proxies are
 address accessors, not references to removed canonical objects. Delete/recreate

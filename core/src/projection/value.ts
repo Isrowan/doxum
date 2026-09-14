@@ -1,13 +1,13 @@
-import type { EngineSources, MaterializedValue, EngineValueSpec } from './contract';
+import type { GraphSources, ValueNode, ValueNodeSpec } from './contract';
 import { createNode } from './node';
 import { assertScope, assertSynchronous, type Scheduler } from './scheduler';
 import { profile } from '../profile';
 
-export const createValue = <S extends EngineSources, T>(
+export const createValue = <S extends GraphSources, T>(
   scheduler: Scheduler,
-  spec: EngineValueSpec<S, T>,
+  spec: ValueNodeSpec<S, T>,
   options?: { readonly isEqual?: (a: T, b: T) => boolean }
-): MaterializedValue<T> => {
+): ValueNode<T> => {
   let instance: ReturnType<typeof spec.build> | undefined;
   let value!: T;
   let next!: T;
@@ -16,8 +16,8 @@ export const createValue = <S extends EngineSources, T>(
   let revision = 0;
   let changed = false;
   let reset = false;
-  let batch: import('./contract').ProjectionBatch | undefined;
-  let cause: import('./contract').ProjectionCause | undefined;
+  let batch: import('./contract').BatchContext | undefined;
+  let cause: import('./contract').Cause | undefined;
   const listeners = new Set<() => void>();
   const owner = createNode(scheduler, spec, {
     evaluate: (sources, build) => {
@@ -29,8 +29,8 @@ export const createValue = <S extends EngineSources, T>(
             ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
       ) as
         | {
-            readonly batch?: import('./contract').ProjectionBatch;
-            readonly cause?: import('./contract').ProjectionCause;
+            readonly batch?: import('./contract').BatchContext;
+            readonly cause?: import('./contract').Cause;
           }
         | undefined;
       batch = scheduler.batchContext() ?? metadata?.batch;
@@ -117,7 +117,7 @@ export const createValue = <S extends EngineSources, T>(
     },
     rebuild: owner.rebuild,
     dispose: owner.dispose,
-  }) as MaterializedValue<T>;
+  }) as ValueNode<T>;
   owner.install(handle);
   return handle;
 };

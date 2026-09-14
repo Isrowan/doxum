@@ -19,6 +19,7 @@ export type {
   Infer,
   ReadonlyValue,
   SchemaPath,
+  PathValueOf,
 } from './schema';
 export { parse, ParseError } from './schema-value';
 export type { Validator, ParseIssue } from './schema-value';
@@ -49,41 +50,15 @@ export type {
 } from './runtime/contract';
 export type { MutationIssue, MutationIssueCode } from './mutation/issue';
 export type { Readable } from './projection/readable';
-export { select } from './projection/select';
+export { read } from './projection/select';
 export type { DocumentSelector } from './projection/select';
-export { input, project } from './projection/definition';
+export { input, observe, derive } from './projection/definition';
 export { createProjectionRuntime } from './projection/store';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
   Projection,
-  ValueProjection,
-  InputProjection,
-  CollectionProjection,
-  CollectionSource,
-  DocumentProjection,
-  DocumentCollectionProjection,
-  ProjectionSources,
+  Input,
   ProjectionValues,
-  ProjectionEvents,
-  ValueEvent,
-  DocumentEvent,
-  DocumentCollectionEvent,
-  CollectionEvent,
-  CollectionTransition,
-  AdvancedValueSpec,
-  AdvancedCollectionSpec,
-  AdvancedCollectionProcess,
+  PublicCollection,
 } from './projection/definition';
 export type { ProjectionRuntime } from './projection/store';
-export type {
-  CollectionRead,
-  CollectionInput,
-  ValueInput,
-  CollectionReadable,
-  CollectionEntryTransition,
-  ProjectionValueSource,
-  ProjectionCollectionSource,
-  ProjectionCause,
-  ProjectionBatch,
-  ProjectionBatchOptions,
-} from './projection/contract';

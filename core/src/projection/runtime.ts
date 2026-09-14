@@ -1,14 +1,14 @@
 import type {
-  CollectionInput,
+  CollectionContext,
   CollectionRead,
-  EngineInputs,
-  ProjectionEngine,
-  EngineSource,
-  EngineSources,
-  MaterializedValue,
-  EngineValueSpec,
-  ProjectionCollectionSource,
-  ProjectionValueSource,
+  InputHandles,
+  RuntimeExecutor,
+  GraphSource,
+  GraphSources,
+  ValueNode,
+  ValueNodeSpec,
+  ExternalCollectionSource,
+  ExternalValueSource,
 } from './contract';
 import type { Synchronous } from '../runtime/contract';
 import { assertSynchronous, createScheduler } from './scheduler';
@@ -17,39 +17,29 @@ import { createValue } from './value';
 import { createCollection } from './collection';
 import type { ProjectionError } from './contract';
 import { profile } from '../profile';
-
-const debug = new WeakMap<
-  object,
-  () => { nodes: number; sources: number; subscriptions: number; pending: number }
->();
-export const projectionEngineDebug = (runtime: ProjectionEngine) => {
-  const read = debug.get(runtime);
-  if (!read) throw new Error('Unknown projection engine.');
-  return Object.freeze(read());
-};
-export const createProjectionEngine = (options: {
+export const createRuntimeExecutor = (options: {
   readonly onError: (error: ProjectionError) => void;
-}): ProjectionEngine => {
+}): RuntimeExecutor => {
   const scheduler = createScheduler(options.onError);
   const sources = createSources(scheduler);
-  function value<S extends EngineSources, T>(
+  function value<S extends GraphSources, T>(
     sources: S,
-    compute: (sources: EngineInputs<S>) => Synchronous<T>,
+    compute: (sources: InputHandles<S>) => Synchronous<T>,
     options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): MaterializedValue<T>;
-  function value<S extends EngineSources, T>(
-    spec: EngineValueSpec<S, T>,
+  ): ValueNode<T>;
+  function value<S extends GraphSources, T>(
+    spec: ValueNodeSpec<S, T>,
     options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): MaterializedValue<T>;
-  function value<S extends EngineSources, T>(
-    input: S | EngineValueSpec<S, T>,
+  ): ValueNode<T>;
+  function value<S extends GraphSources, T>(
+    input: S | ValueNodeSpec<S, T>,
     computeOrOptions?:
-      ((sources: EngineInputs<S>) => T) | { readonly isEqual?: (a: T, b: T) => boolean },
+      ((sources: InputHandles<S>) => T) | { readonly isEqual?: (a: T, b: T) => boolean },
     options?: { readonly isEqual?: (a: T, b: T) => boolean }
-  ): MaterializedValue<T> {
+  ): ValueNode<T> {
     if (typeof computeOrOptions !== 'function')
-      return createValue(scheduler, input as EngineValueSpec<S, T>, computeOrOptions);
-    const compute = (input: EngineInputs<S>) => {
+      return createValue(scheduler, input as ValueNodeSpec<S, T>, computeOrOptions);
+    const compute = (input: InputHandles<S>) => {
       const result = computeOrOptions(input);
       assertSynchronous(result);
       return result;
@@ -67,8 +57,8 @@ export const createProjectionEngine = (options: {
     );
   }
   const map = <K extends string, V, R>(
-    source: EngineSource<
-      | CollectionInput<K, V>
+    source: GraphSource<
+      | CollectionContext<K, V>
       | {
           readonly read: CollectionRead<K, V>;
           readonly reset: boolean;
@@ -131,13 +121,13 @@ export const createProjectionEngine = (options: {
       },
     });
   };
-  const runtime: ProjectionEngine = {
+  const runtime: RuntimeExecutor = {
     document: sources.document,
     fromSource: <T, D>(
-      source: ProjectionValueSource<T, D>,
+      source: ExternalValueSource<T, D>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }
     ) => sources.fromSource(source, options),
-    fromCollectionSource: <K extends string, V, D>(source: ProjectionCollectionSource<K, V, D>) =>
+    fromCollectionSource: <K extends string, V, D>(source: ExternalCollectionSource<K, V, D>) =>
       sources.fromCollectionSource(source),
     input: sources.input,
     fromReadable: sources.fromReadable,
@@ -153,6 +143,5 @@ export const createProjectionEngine = (options: {
       }
     },
   };
-  debug.set(runtime, scheduler.debug);
   return Object.freeze(runtime);
 };

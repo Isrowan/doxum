@@ -6,7 +6,7 @@ import {
   list,
   map,
   object,
-  project,
+  observe,
   table,
   tree,
   type Draft,
@@ -44,11 +44,7 @@ for (const [count, changed, subscribers] of [
       throw error;
     },
   });
-  const values = project(
-    runtime,
-    p => p.entities,
-    (_id, entity) => entity.position.x
-  );
+  const values = observe(runtime, p => p.entities);
   store.get(values);
   let measuring = false;
   let writesMs = 0;
@@ -71,7 +67,7 @@ for (const [count, changed, subscribers] of [
   if (
     result.status !== 'committed' ||
     result.commit.changes.changes.length !== changed ||
-    store.get(values).get(ids[0]) !== 11
+    store.get(values).get(ids[0])?.position.x !== 11
   )
     throw new Error('Profile workload failed');
   console.log(JSON.stringify({ count, changed, subscribers, elapsed, counters }));

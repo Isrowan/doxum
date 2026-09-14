@@ -60,10 +60,10 @@ Committed observer failures are returned in `observerErrors` without rollback.
 ## Read And Observe
 
 ```ts
-import { select, snapshot } from 'doxum';
+import { read, snapshot } from 'doxum';
 
-const title = select(document, state => state.title);
-const tasks = select(document, state => snapshot(state.tasks));
+const title = read(document, state => state.title);
+const tasks = read(document, state => snapshot(state.tasks));
 document.subscribe(
   path => path.tasks.item('b').title,
   commit => {
@@ -209,49 +209,49 @@ with `history: false` close the active group.
 ## Projections
 
 ```ts
-import { createProjectionRuntime, input, project } from 'doxum';
+import { createProjectionRuntime, derive, input, observe } from 'doxum';
 
-const titles = project(
-  document,
-  path => path.tasks,
-  (id, task) => `${id}: ${task.title}`
-);
-const count = project({ titles }, ({ titles }) => titles.ids().length);
-const zoom = input(1);
-const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
+const tasks = observe(document, path => path.tasks);
+const filter = input<'all' | 'open'>('all');
+const visible = derive([tasks, filter], (all, mode) => {
+  if (mode === 'all') return all;
+  return new Map([...all].filter(([, task]) => !task.done));
+});
 
-const store = createProjectionRuntime({ onError: console.error });
-store.get(scaled);
-store.set(zoom, 2);
-const title = store.item(titles, taskId); // Stable Readable<string | undefined>.
+const runtime = createProjectionRuntime({ onError: console.error });
+runtime.get(visible);
+runtime.set(filter, 'open');
+runtime.batch({ cause: { action: 'refresh' } }, () => {
+  runtime.set(filter, 'all');
+  document.update(draft => {
+    draft.title = 'Updated';
+  });
+});
 ```
 
-Projection declarations are lazy and reusable. A `ProjectionRuntime` owns
-materialized values, subscriptions, batching, processor state and disposal.
-`project(document, path)` binds a document collection; adding a mapper performs
-incremental keyed mapping. `project(readable)` bridges an external readable.
-Pure computations receive current values. Advanced processors use tagged specs:
-`project({ kind: 'value', sources, build })` and
-`project({ kind: 'collection', sources, build })`.
-Document collection events provide scoped `read.get/has/ids`, final candidate
-keys, order dirtiness, commits and reset state.
-Ordinary mappers intentionally model only one-source, same-key transforms.
-Cross-collection relationships use an advanced collection processor with explicit,
-application-owned dependency indexes; processor reads are not tracked automatically.
-For richer cross-runtime inputs, `project` also accepts a
-`ProjectionValueSource` or `ProjectionCollectionSource`; their events preserve
-local revisions, collection transitions, and optional `cause`/`batch` metadata.
-For collection observation, `store.collection(collection)` exposes stable
-`current`, `ids`, `all`, and `item(key)` readables. `store.item(collection, key)`
-is the direct per-key form and only notifies for that key. React components use
-`useProjectionItem(collection, key)`; unrelated keys and order-only changes do not
-rerender the component.
+Projection declarations are lazy and reusable. The only Runtime operations are
+`get`, `subscribe`, `set`, `batch` and `dispose`; materialization, incremental
+state, publication and recovery stay inside the Runtime. Collection values are
+immutable `ReadonlyMap`-like snapshots, so callers do not hold lifecycle handles.
 
-Processors settle before external listeners. `store.batch` (optionally with a
-`{ cause }` object) defers graph
-settlement and projection notifications, but document commits/listeners remain
-synchronous. Projection readers inside the batch see the last publication.
-Dispose projection stores with their owning service.
+For retained state, reverse indexes and keyed patches, use the isolated advanced
+entry point. Whole-value processors use `incremental(...)`; keyed collection
+processors use `incremental.collection(...)`:
+
+```ts
+import { incremental } from 'doxum/advanced';
+
+const doubled = incremental.collection([tasks], ({ sources, output }) => {
+  for (const [id, task] of sources[0]) output.set(id, task.value * 2);
+});
+```
+
+In React, `useProjection(projection)` reads a value and
+`useProjection(projection, selector, equality?)` tracks keyed reads such as
+`tasks => tasks.get(taskId)`. Unrelated key changes do not execute that selector;
+equality only filters a selector result after a related change. `useInput(input)`
+returns the current value and its Runtime-local setter.
+
 See [projection contracts](docs/projections.md).
 
 ## Local Sync
@@ -293,7 +293,7 @@ baselines from final published order copies. Architecture workloads include orde
 round trips and repeated tree edits to expose costs hidden by commit-only benchmarks.
 
 Builds produce root `dist` ESM/CJS/declarations for `doxum`, `doxum/integration`,
-`doxum/local-sync` and `doxum/react`. Source ownership is described in
+`doxum/local-sync`, `doxum/react` and `doxum/advanced`. Source ownership is described in
 [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 The runtime shares one transaction lifecycle; complete mutation operations are
 organized by domain under `core/src/mutation/operations`, with access, first-touch

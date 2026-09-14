@@ -1,12 +1,12 @@
-import type { EngineInputs, EngineSources } from './contract';
+import type { InputHandles, GraphSources } from './contract';
 import { ProjectionDisposedError } from './contract';
 import type { NodeRecord, Scheduler } from './scheduler';
 
-export const createNode = <S extends EngineSources>(
+export const createNode = <S extends GraphSources>(
   scheduler: Scheduler,
   spec: { name?: string; sources: S },
   behavior: {
-    evaluate(sources: EngineInputs<S>, build: boolean, active: () => boolean): boolean;
+    evaluate(sources: InputHandles<S>, build: boolean, active: () => boolean): boolean;
     context(active: () => boolean): unknown;
     revision(): number;
     reset(): boolean;
@@ -42,7 +42,7 @@ export const createNode = <S extends EngineSources>(
         // Heterogeneous source contexts are typed at the registered capability boundary.
         const inputs = Object.fromEntries(
           entries.map(([key, source]) => [key, source.context(scopeActive)])
-        ) as EngineInputs<S>;
+        ) as InputHandles<S>;
         return behavior.evaluate(inputs, build, scopeActive);
       } finally {
         active = false;

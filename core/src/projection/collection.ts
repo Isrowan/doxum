@@ -2,12 +2,12 @@ import type { CollectionImpact } from '../impact';
 import { profile } from '../profile';
 import type {
   CollectionEntryTransition,
-  CollectionInput,
+  CollectionContext,
   CollectionRead,
-  EngineCollectionSpec,
-  MaterializedCollectionWriter,
-  MaterializedCollection,
-  EngineSources,
+  CollectionNodeSpec,
+  CollectionDraft,
+  CollectionNode,
+  GraphSources,
 } from './contract';
 import type { Readable } from './readable';
 import { createNode } from './node';
@@ -32,10 +32,10 @@ const readonlySet = <T>(values: Iterable<T>): ReadonlySet<T> => {
   return view;
 };
 type Entry<V> = { present: true; value: V } | { present: false };
-export const createCollection = <S extends EngineSources, K extends string, V>(
+export const createCollection = <S extends GraphSources, K extends string, V>(
   scheduler: Scheduler,
-  spec: EngineCollectionSpec<S, K, V>
-): MaterializedCollection<K, V> => {
+  spec: CollectionNodeSpec<S, K, V>
+): CollectionNode<K, V> => {
   const values = new Map<K, V>();
   let ids: readonly K[] = Object.freeze([]);
   let staged = new Map<K, Entry<V>>();
@@ -46,8 +46,8 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
   let reset = false;
   let revision = 0;
   let idsRevision = 0;
-  let batch: import('./contract').ProjectionBatch | undefined;
-  let cause: import('./contract').ProjectionCause | undefined;
+  let batch: import('./contract').BatchContext | undefined;
+  let cause: import('./contract').Cause | undefined;
   let publishedTransitions: readonly CollectionEntryTransition<K, V>[] = Object.freeze([]);
   let all: readonly V[] | undefined;
   type Item = { readable: Readable<V | undefined>; revision: number; listeners?: Set<() => void> };
@@ -87,8 +87,8 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
             ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
       ) as
         | {
-            readonly batch?: import('./contract').ProjectionBatch;
-            readonly cause?: import('./contract').ProjectionCause;
+            readonly batch?: import('./contract').BatchContext;
+            readonly cause?: import('./contract').Cause;
           }
         | undefined;
       batch = scheduler.batchContext() ?? metadata?.batch;
@@ -131,7 +131,7 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
           return next ? Object.freeze(explicitOrder ? explicitOrder.slice() : deriveIds()) : ids;
         },
       });
-      const writer: MaterializedCollectionWriter<K, V> = {
+      const writer: CollectionDraft<K, V> = {
         set: (key, value) => {
           assertScope(active);
           if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
@@ -272,7 +272,7 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
           return ids;
         },
       });
-      const input: CollectionInput<K, V> = {
+      const input: CollectionContext<K, V> = {
         get: key => {
           assertScope(active);
           return getNext(key);
@@ -439,7 +439,7 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
     },
     rebuild: owner.rebuild,
     dispose: owner.dispose,
-  } as MaterializedCollection<K, V>;
+  } as CollectionNode<K, V>;
   projectionHandles.add(handle.ids);
   projectionHandles.add(handle.all);
   collectionHandles.add(handle);

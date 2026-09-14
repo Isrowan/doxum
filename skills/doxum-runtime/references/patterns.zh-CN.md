@@ -84,24 +84,18 @@ document.apply(
 ## 投影与 React
 
 ```ts
-const titles = project(
-  document,
-  path => path.tasks,
-  (_id, task) => task.title
-);
-const total = project({ titles }, ({ titles }) => titles.ids().length);
+const tasks = observe(document, path => path.tasks);
+const titles = derive([tasks], tasks => new Map([...tasks].map(([id, task]) => [id, task.title])));
+const total = derive([titles], titles => titles.size);
 const zoom = input(1);
-const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
-const store = createProjectionRuntime({ onError: console.error });
-store.get(scaled);
-const title = store.item(titles, taskId);
+const scaled = derive([total, zoom], (total, zoom) => total * zoom);
+const runtime = createProjectionRuntime({ onError: console.error });
+runtime.get(scaled);
+const title = runtime.get(tasks).get(taskId);
 ```
 
-投影定义使用 `useProjection` 和一个 store，document.history 等既有 Readable
-使用 `useReadable` 或 `useHistory`。观察一个物化集合键时使用
-`useProjectionItem(titles, taskId)`，它忽略其他键和纯顺序变化。自定义集合 processor 通过
-writer.set/remove/order/replace 暂存输出，
-previous/next 读取只在作用域内有效。candidates 汇总整个 batch，以最终状态派生输出。
-React 追踪实际读取，但 processor 依赖仍显式声明。只有 source 键影响同名输出键时
-才使用 mapper。跨集合 join 应声明全部 source，并按
-[Projection 参考](projections.zh-CN.md)维护领域反向依赖索引。
+React 使用 Runtime 上下文中的 `useProjection` 读取 Projection，单键读取写成
+`useProjection(projection, selector)`；`useInput` 返回值和 setter。高级集合 processor
+从 `doxum/advanced` 引入，在同步 callback 中使用
+`output.set/remove/order/replace` 与 previous/next。Processor 依赖仍显式声明，
+React selector 追踪只属于消费端。

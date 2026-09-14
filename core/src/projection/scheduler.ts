@@ -2,8 +2,8 @@ import type { ObserverError } from '../runtime/contract';
 import {
   ProjectionDisposedError,
   ProjectionError,
-  type ProjectionBatch,
-  type ProjectionBatchOptions,
+  type BatchContext,
+  type BatchOptions,
 } from './contract';
 import { profile } from '../profile';
 
@@ -34,7 +34,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   let disposed = false;
   let depth = 0;
   let batchSequence = 0;
-  let activeBatch: ProjectionBatch | undefined;
+  let activeBatch: BatchContext | undefined;
   let phase: 'idle' | 'compute' | 'notify' = 'idle';
   let sequence = 0;
   const records = new Map<object, SourceRecord>();
@@ -221,10 +221,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     if (failures.length) throw new AggregateError(failures, 'Projection error reporter failed.');
     return result;
   };
-  const batch = <T>(
-    optionsOrCallback: ProjectionBatchOptions | (() => T),
-    maybeCallback?: () => T
-  ): T => {
+  const batch = <T>(optionsOrCallback: BatchOptions | (() => T), maybeCallback?: () => T): T => {
     assertIdle();
     const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
     const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;

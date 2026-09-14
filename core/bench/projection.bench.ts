@@ -5,7 +5,8 @@ import {
   field,
   input,
   object,
-  project,
+  derive,
+  observe,
   table,
 } from '../src';
 const model = object({ rows: table(object({ value: field<number>() })) });
@@ -20,23 +21,12 @@ const store = createProjectionRuntime({
     throw error;
   },
 });
-const rows = project(
-  runtime,
-  path => path.rows,
-  (_id, row) => row.value
-);
+const rows = observe(runtime, path => path.rows);
 const viewport = input(1);
-const summary = project({
-  kind: 'value',
-  sources: { rows, viewport },
-  build: ({ rows, viewport }) => ({
-    value: (rows.get('42') ?? 0) * viewport.value,
-    update: ({ rows, viewport }) => ({
-      kind: 'changed',
-      value: (rows.get('42') ?? 0) * viewport.value,
-    }),
-  }),
-});
+const summary = derive(
+  [rows, viewport],
+  (values, factor) => (values.get('42')?.value ?? 0) * factor
+);
 let revision = 0;
 describe('explicit projection runtime', () => {
   bench('one mapped row in 100k without all', () => {
@@ -52,7 +42,7 @@ describe('explicit projection runtime', () => {
   });
   bench('lazy all after one update', () => {
     runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-    store.get(rows).ids();
+    store.get(rows).keys();
   });
 });
 afterAll(() => {

@@ -7,7 +7,7 @@ export type DocumentSelector<TSchema extends ObjectNode, TResult> = (
   read: Read<TSchema>
 ) => TResult;
 
-export const select = <TSchema extends ObjectNode, TResult>(
+export const read = <TSchema extends ObjectNode, TResult>(
   runtime: DocumentReadable<TSchema>,
   selector: DocumentSelector<TSchema, TResult>
 ): TResult => readWith(runtime, selector);

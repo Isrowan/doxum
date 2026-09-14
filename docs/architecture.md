@@ -41,10 +41,10 @@ scope and schema-branch checks. Each read branch creates only its requested meth
 write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
 the old method throws; reading the method again obtains the current branch's method.
-Draft, select and track readers are borrowed for their synchronous callback. The internal `readWith` primitive
+Draft, read and track readers are borrowed for their synchronous callback. The internal `readWith` primitive
 uses a trusted borrowed-reader contract: its reader, child proxies and collection
 methods must not escape the synchronous callback. Escaping them is undefined behavior;
-`select`/`track` return values and dependency snapshots, not the reader itself.
+`read`/`track` return values and dependency snapshots, not the reader itself.
 Draft follows the same borrowed lifetime contract inside `update`; projection source
 contexts retain their explicit active check because they have a separate scheduler
 lifecycle.
@@ -283,15 +283,19 @@ History stores sequences of complete commit ChangeSets. Undo reads before in
 reverse commit order; redo reads after in forward order, within one session.
 Local root reset is reversible. Remote commits invalidate local history.
 
-Projection definitions explicitly declare dependencies and are lazy. A
-`ProjectionRuntime` materializes definitions and owns processor closures,
-subscriptions, batching, errors and disposal. Capture, settle, flush, history
-listeners, filtered document listeners and root listeners retain their ordering.
-Materialized collections own stable per-key `Readable` handles and exact keyed
-notifications; `ProjectionRuntime.item` exposes those handles and the React adapter
-consumes them without introducing a second subscription index.
+Projection definitions explicitly declare dependencies and are lazy. A single
+`ProjectionRuntime` owns materialization, processor closures, subscriptions,
+batching, errors and disposal; there is no second Engine owner. Its public spine is
+`get`, `subscribe`, `set`, `batch` and `dispose`. Collection values are immutable
+map-like snapshots, while keyed storage, revisions and transition indexes remain
+private to the runtime.
+React's selector overload records collection key reads at the consumer boundary.
+Keyed invalidation prevents an unrelated entry update from executing the selector;
+equality filters the result only after a related update. This tracking does not
+construct processor dependencies, which remain explicit in `derive` and the
+advanced incremental entry point.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
-are attached to an already committed result.
+are attached to an already accepted commit.
 
 ## Cost Model
 
@@ -348,9 +352,11 @@ normalized ChangeSet through replay without decoding it a second time.
 ## Projection Context Ownership
 
 Projection definitions contain only immutable dependencies and algorithms. Each
-store materializes its own processor closures and indexes, so one definition can
-run in multiple stores without sharing mutable derived state. Document source
-bindings own their receiver and candidate state inside the store. Collection source
-construction derives targets from its selector. Each evaluation creates one scope
-predicate shared by its source contexts and never reactivates an old predicate.
-Materialized collection values remain derived from published processor output.
+runtime materializes its own processor closures and indexes, so one definition can
+run in multiple runtimes without sharing mutable derived state. Document source
+bindings own their receiver and candidate state inside the runtime. Collection
+source construction derives targets from its selector. Each evaluation creates one
+scope predicate shared by its source contexts and never reactivates an old
+predicate. Collection drafts are borrowed only during an advanced processor
+callback; after the callback the runtime seals the draft and publishes one
+immutable map-like value.

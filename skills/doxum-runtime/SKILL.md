@@ -30,12 +30,10 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
 - Paths belong in subscription, impact and collection source callbacks.
 - Projection definitions are lazy; one ProjectionRuntime owns each materialized graph.
-  Use ordinary mappers only for one-source, same-key transforms. Advanced processors
-  declare every source, own any forward/reverse dependency indexes, derive from final
-  batched source state, and rebuild on resets that invalidate those indexes. Core
-  projections never track reads automatically; React selectors do. Observe one
-  materialized collection key with store.item or useProjectionItem instead of a
-  whole-collection value projection.
+  Use tuple `derive` for pure values. Advanced `incremental` processors declare every
+  source, own any forward/reverse dependency indexes, derive from final batched source
+  state, and recover from resets internally. Core projections never track reads
+  automatically; React selectors do through `useProjection(projection, selector)`.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters use integration capabilities.
 - Local sync owns browser persistence/leadership. Network conflict policy and

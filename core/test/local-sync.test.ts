@@ -6,8 +6,9 @@ import {
   field,
   map,
   object,
-  project,
-  select,
+  derive,
+  observe,
+  read,
   table,
 } from '../src';
 import {
@@ -251,7 +252,8 @@ describe('local sync', () => {
         throw error;
       },
     });
-    const status = project({ state: project(follower.state) }, ({ state }) => state.status);
+    const statusSource = observe(follower.state);
+    const status = derive([statusSource], state => state.status);
     const snapshot = leader.state.current();
     const revision = leader.state.revision();
     await leader.flush();
@@ -305,7 +307,7 @@ describe('local sync', () => {
     });
     expect(update.status).toBe('committed');
     if (update.status === 'committed') expect(update.value).toBe('two');
-    expect(select(firstRuntime, read => read.title)).toBe('two');
+    expect(read(firstRuntime, read => read.title)).toBe('two');
     await first.flush();
     expect(first.state.current()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
     await first.dispose();
@@ -317,7 +319,7 @@ describe('local sync', () => {
       documentId: 'document',
     });
     expect(restored.state.current()).toEqual({ status: 'leader', headSeq: 1, checkpointSeq: 0 });
-    expect(select(restoredRuntime, read => read.title)).toBe('two');
+    expect(read(restoredRuntime, read => read.title)).toBe('two');
     await restored.dispose();
   });
   it('allows one leader, applies ordered commands in followers, and transfers leadership', async () => {
@@ -345,7 +347,7 @@ describe('local sync', () => {
     expect(() => followerRuntime.replace(initial)).toThrow(LocalSyncReadOnlyError);
     leaderRuntime.update(tx => (tx.title = 'two'));
     await leader.flush();
-    await waitFor(() => select(followerRuntime, read => read.title) === 'two');
+    await waitFor(() => read(followerRuntime, read => read.title) === 'two');
     expect(follower.state.current()).toEqual({ status: 'follower', headSeq: 1, checkpointSeq: 0 });
     expect(followerRuntime.history.current()).toEqual({ undoDepth: 0, redoDepth: 0 });
     await leader.dispose();
@@ -353,7 +355,7 @@ describe('local sync', () => {
     followerRuntime.update(tx => (tx.tasks.get('a')!.title = 'AA'));
     await follower.flush();
     expect(follower.state.current()).toEqual({ status: 'leader', headSeq: 2, checkpointSeq: 0 });
-    expect(select(followerRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
+    expect(read(followerRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await follower.dispose();
   });
   it('uses runtime history directly and persists undo and redo as commands', async () => {
@@ -366,9 +368,9 @@ describe('local sync', () => {
     documentRuntime.update(tx => (tx.title = 'two'));
     documentRuntime.update(tx => (tx.title = 'three'));
     expect(documentRuntime.history.undo().status).toBe('committed');
-    expect(select(documentRuntime, read => read.title)).toBe('two');
+    expect(read(documentRuntime, read => read.title)).toBe('two');
     expect(documentRuntime.history.redo().status).toBe('committed');
-    expect(select(documentRuntime, read => read.title)).toBe('three');
+    expect(read(documentRuntime, read => read.title)).toBe('three');
     await localSync.flush();
     expect(localSync.state.current()).toEqual({ status: 'leader', headSeq: 4, checkpointSeq: 0 });
     expect(documentRuntime.history.current()).toEqual({ undoDepth: 2, redoDepth: 0 });
@@ -408,7 +410,7 @@ describe('local sync', () => {
       documentId: 'document',
     });
     expect(documentRuntime.update(tx => (tx.title = new Date() as never)).status).toBe('committed');
-    expect(select(documentRuntime, read => read.title)).toBeInstanceOf(Date);
+    expect(read(documentRuntime, read => read.title)).toBeInstanceOf(Date);
     await waitFor(() => localSync.state.current().status === 'error');
     expect(localSync.state.current()).toMatchObject({
       status: 'error',
@@ -432,8 +434,8 @@ describe('local sync', () => {
         tx.tasks.get('a')!.complete = true;
       }).status
     ).toBe('committed');
-    expect(select(documentRuntime, read => read.title)).toBe('one');
-    expect(select(documentRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
+    expect(read(documentRuntime, read => read.title)).toBe('one');
+    expect(read(documentRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await waitFor(() => localSync.state.current().status === 'error');
     await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
     await localSync.dispose();

@@ -8,13 +8,13 @@ import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
 import { compilePath } from '../schema';
 import type {
-  CollectionInput,
+  CollectionContext,
   CollectionRead,
-  DocumentSource,
-  EngineSource,
-  ProjectionCollectionSource,
-  ProjectionValueSource,
-  ValueInput,
+  DocumentHandle,
+  GraphSource,
+  ExternalCollectionSource,
+  ExternalValueSource,
+  ValueContext,
 } from './contract';
 import { ProjectionError } from './contract';
 import { collectionHandles } from './collection';
@@ -35,19 +35,19 @@ export const createSources = (scheduler: Scheduler) => {
   >();
   const collections = new WeakSet<object>();
   const externalSources = new WeakMap<object, object>();
-  const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentSource<S> => {
+  const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentHandle<S> => {
     scheduler.assertIdle();
     const state = accessOf(runtime);
     if (state.disposed) throw new Error('Document has been disposed.');
     const existing = documents.get(state);
-    if (existing) return existing as DocumentSource<S>;
+    if (existing) return existing as DocumentHandle<S>;
     const bindings: {
       handle: object;
       targets: readonly ImpactTarget[];
       record: SourceRecord;
       receive: (commit: DocumentCommit<S>) => void;
     }[] = [];
-    let batch: import('./contract').ProjectionBatch | undefined;
+    let batch: import('./contract').BatchContext | undefined;
     const make = (
       input:
         { readonly targets: readonly ImpactTarget[] } | { readonly collection: CollectionSelector }
@@ -152,7 +152,7 @@ export const createSources = (scheduler: Scheduler) => {
       bindings.push({ handle, targets, record, receive });
       return handle;
     };
-    const handle = make({ targets: [] }) as DocumentSource<S>;
+    const handle = make({ targets: [] }) as DocumentHandle<S>;
     const guard = (locked: boolean) => {
       state.projectionLocks = (state.projectionLocks ?? 0) + (locked ? 1 : -1);
     };
@@ -197,11 +197,11 @@ export const createSources = (scheduler: Scheduler) => {
     let previous = initial;
     let revision = 0;
     let detail: D | undefined;
-    let cause: import('./contract').ProjectionCause | undefined;
-    let batch: import('./contract').ProjectionBatch | undefined;
+    let cause: import('./contract').Cause | undefined;
+    let batch: import('./contract').BatchContext | undefined;
     let reset = false;
     let pending = false;
-    const handle = Object.freeze({}) as EngineSource<ValueInput<T, D>>;
+    const handle = Object.freeze({}) as GraphSource<ValueContext<T, D>>;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
@@ -231,7 +231,7 @@ export const createSources = (scheduler: Scheduler) => {
       },
     };
     scheduler.register(handle, record);
-    const accept = (next: T, metadata?: Partial<ValueInput<T, D>>) => {
+    const accept = (next: T, metadata?: Partial<ValueContext<T, D>>) => {
       scheduler.assertIdle();
       const recovering = record.fault !== undefined;
       const eventful =
@@ -263,12 +263,12 @@ export const createSources = (scheduler: Scheduler) => {
     };
   };
   const externalValueSource = <T, D>(
-    port: ProjectionValueSource<T, D>,
+    port: ExternalValueSource<T, D>,
     equal: (a: T, b: T) => boolean
-  ): EngineSource<ValueInput<T, D>> => {
+  ): GraphSource<ValueContext<T, D>> => {
     scheduler.assertIdle();
     const old = externalSources.get(port);
-    if (old) return old as EngineSource<ValueInput<T, D>>;
+    if (old) return old as GraphSource<ValueContext<T, D>>;
     const input = valueSource<T, D>(port.current(), equal);
     const fail = (cause: unknown) => {
       const record = scheduler.source(input.source);
@@ -301,24 +301,24 @@ export const createSources = (scheduler: Scheduler) => {
     return input.source;
   };
   const externalCollectionSource = <K extends string, V, D>(
-    port: ProjectionCollectionSource<K, V, D>
-  ): EngineSource<CollectionInput<K, V, D>> => {
+    port: ExternalCollectionSource<K, V, D>
+  ): GraphSource<CollectionContext<K, V, D>> => {
     scheduler.assertIdle();
     const old = externalSources.get(port);
-    if (old) return old as EngineSource<CollectionInput<K, V, D>>;
+    if (old) return old as GraphSource<CollectionContext<K, V, D>>;
     let read = port.current();
     let previous = read;
     let revision = port.revision();
-    let change: CollectionInput<K, V, D>['change'];
+    let change: CollectionContext<K, V, D>['change'];
     let reset = false;
     let detail: D | undefined;
-    let cause: import('./contract').ProjectionCause | undefined;
-    let batch: import('./contract').ProjectionBatch | undefined;
+    let cause: import('./contract').Cause | undefined;
+    let batch: import('./contract').BatchContext | undefined;
     let publishedTransitions: readonly import('./contract').CollectionEntryTransition<K, V>[] =
       Object.freeze([]);
     let transitionKeys = new Set<K>();
     let pending = false;
-    const handle = Object.freeze({}) as EngineSource<CollectionInput<K, V, D>>;
+    const handle = Object.freeze({}) as GraphSource<CollectionContext<K, V, D>>;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
@@ -391,7 +391,7 @@ export const createSources = (scheduler: Scheduler) => {
       record.fault = new ProjectionError('source', 'external collection source', [revision], error);
       scheduler.capture(record);
     };
-    const addTransitionKeys = (event: CollectionInput<K, V>) => {
+    const addTransitionKeys = (event: CollectionContext<K, V>) => {
       event.transitions().forEach(transition => transitionKeys.add(transition.key));
       const impact = event.change;
       if (impact?.kind === 'incremental') {
@@ -482,10 +482,10 @@ export const createSources = (scheduler: Scheduler) => {
     },
     document,
     fromSource: <T, D>(
-      source: ProjectionValueSource<T, D>,
+      source: ExternalValueSource<T, D>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }
     ) => externalValueSource(source, options?.isEqual ?? Object.is),
-    fromCollectionSource: <K extends string, V, D>(source: ProjectionCollectionSource<K, V, D>) =>
+    fromCollectionSource: <K extends string, V, D>(source: ExternalCollectionSource<K, V, D>) =>
       externalCollectionSource(source),
     input: <T>(initial: T, options?: { readonly isEqual?: (a: T, b: T) => boolean }) => {
       const { source, set } = valueSource(initial, options?.isEqual ?? Object.is);
@@ -494,14 +494,14 @@ export const createSources = (scheduler: Scheduler) => {
     fromReadable: <T>(
       readable: Readable<T>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }
-    ): EngineSource<ValueInput<T>> => {
+    ): GraphSource<ValueContext<T>> => {
       scheduler.assertIdle();
       if (projectionHandles.has(readable))
         throw new Error('Projection nodes must be declared directly as sources.');
       const equal = options?.isEqual ?? Object.is;
       let bindings = readables.get(readable);
       const old = bindings?.get(equal);
-      if (old) return old.source as EngineSource<ValueInput<T>>;
+      if (old) return old.source as GraphSource<ValueContext<T>>;
       const input = valueSource(readable.current(), equal);
       if (bindings) {
         bindings.set(equal, { source: input.source, accept: value => input.accept(value as T) });

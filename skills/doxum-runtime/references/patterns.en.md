@@ -85,26 +85,18 @@ envelopes or treat its container address as whole-container invalidation.
 ## Projection And React
 
 ```ts
-const titles = project(
-  document,
-  path => path.tasks,
-  (_id, task) => task.title
-);
-const total = project({ titles }, ({ titles }) => titles.ids().length);
+const tasks = observe(document, path => path.tasks);
+const titles = derive([tasks], tasks => new Map([...tasks].map(([id, task]) => [id, task.title])));
+const total = derive([titles], titles => titles.size);
 const zoom = input(1);
-const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
-const store = createProjectionRuntime({ onError: console.error });
-store.get(scaled);
-const title = store.item(titles, taskId);
+const scaled = derive([total, zoom], (total, zoom) => total * zoom);
+const runtime = createProjectionRuntime({ onError: console.error });
+runtime.get(scaled);
+const title = runtime.get(tasks).get(taskId);
 ```
 
-Use `useProjection` with a store for projection definitions; use `useReadable`
-for history and other existing Readable values. Use
-`useProjectionItem(titles, taskId)` for one materialized collection key; it ignores
-other keys and order-only changes. Custom collection processors stage
-writer.set/remove/order/replace and use scoped previous/next reads. Candidates span
-the complete batch; derive output from final state. Processor dependencies remain
-explicit even though React selectors track actual reads. Use a mapper only when a
-source key affects the same output key. For cross-collection joins, declare every
-source and maintain the domain's reverse dependency index as described in the
-[projection reference](projections.en.md).
+Use `useProjection` with a Runtime for projection definitions and
+`useProjection(projection, selector)` for keyed reads. `useInput` returns a value
+and setter. Advanced collection processors in `doxum/advanced` stage
+`output.set/remove/order/replace` and use scoped previous/next reads. Processor
+dependencies remain explicit even though React selectors track actual reads.

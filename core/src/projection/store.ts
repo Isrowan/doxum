@@ -1,192 +1,361 @@
+import { read as readAddress } from '../address';
+import { snapshot } from '../access/scope';
+import { accessOf } from '../runtime/access';
+import { compilePath } from '../schema';
 import type { Unsubscribe } from '../runtime/contract';
 import type { CollectionImpact } from '../impact';
 import type {
   CollectionRead,
-  CollectionReadable,
-  MaterializedCollection,
-  ProjectionEngine,
-  ProjectionBatchOptions,
-  MaterializedValue,
+  CollectionNode,
+  RuntimeExecutor,
+  BatchOptions,
+  ValueNode,
+  GraphSource,
 } from './contract';
 import type { Readable } from './readable';
-import {
-  definitionOf,
-  type CollectionProjection,
-  type InputProjection,
-  type Projection,
-  type ValueProjection,
-} from './definition';
-import { createProjectionEngine, projectionEngineDebug } from './runtime';
+import { definitionOf, type Input, type Projection, type PublicCollection } from './definition';
+import { createRuntimeExecutor } from './runtime';
 
-type Materialized = MaterializedValue<unknown> | MaterializedCollection<string, unknown> | object;
+type RuntimeNode = ValueNode<unknown> | CollectionNode<string, unknown>;
+type RuntimeValue = RuntimeNode;
+type SelectionTracker = {
+  readonly keys: Set<string>;
+  all: boolean;
+  structure: boolean;
+};
+type RuntimeState = {
+  readonly materialize: (projection: Projection<unknown>) => RuntimeValue;
+  readonly get: <T>(projection: Projection<T>) => T;
+};
 
 export type ProjectionRuntime = {
-  get<K extends string, V>(projection: CollectionProjection<K, V>): CollectionRead<K, V>;
-  get<T>(projection: ValueProjection<T>): T;
-  collection<K extends string, V>(projection: CollectionProjection<K, V>): CollectionReadable<K, V>;
-  item<K extends string, V>(
-    projection: CollectionProjection<K, V>,
-    key: K
-  ): Readable<V | undefined>;
-  set<T>(projection: InputProjection<T>, value: T): void;
-  subscribe<K extends string, V>(
-    projection: CollectionProjection<K, V>,
-    listener: (change: CollectionImpact<K>) => void
-  ): Unsubscribe;
-  subscribe<T>(projection: ValueProjection<T>, listener: () => void): Unsubscribe;
-  revision(projection: ValueProjection<unknown> | CollectionProjection<string, unknown>): number;
-  rebuild(projection: ValueProjection<unknown> | CollectionProjection<string, unknown>): void;
-  release(projection: ValueProjection<unknown> | CollectionProjection<string, unknown>): void;
+  get<T>(projection: Projection<T>): T;
+  subscribe<T>(projection: Projection<T>, listener: () => void): Unsubscribe;
+  set<T>(input: Input<T>, value: T): void;
   batch<T>(run: () => T): T;
-  batch<T>(options: ProjectionBatchOptions, run: () => T): T;
+  batch<T>(options: BatchOptions, run: () => T): T;
   dispose(): void;
 };
 
-const stores = new WeakMap<object, ProjectionEngine>();
-export const projectionRuntimeDebug = (owner: ProjectionRuntime) => {
-  const runtime = stores.get(owner);
-  if (!runtime) throw new Error('Unknown projection store.');
-  return projectionEngineDebug(runtime);
+const runtimeStates = new WeakMap<object, RuntimeState>();
+let activeTracker: SelectionTracker | undefined;
+
+const trackKey = (key: string): void => {
+  activeTracker?.keys.add(key);
+};
+const trackAll = (structure = false): void => {
+  if (!activeTracker) return;
+  activeTracker.all = true;
+  activeTracker.structure ||= structure;
 };
 
-export const createProjectionRuntime = (options: {
-  readonly onError: Parameters<typeof createProjectionEngine>[0]['onError'];
+const mapView = <K extends string, V>(read: CollectionRead<K, V>): PublicCollection<K, V> => {
+  const keys = read.ids();
+  const source = new Map<K, V>();
+  for (const key of keys) source.set(key, read.get(key) as V);
+  const view: PublicCollection<K, V> = {
+    get: key => {
+      trackKey(key);
+      return source.get(key);
+    },
+    has: key => {
+      trackKey(key);
+      return source.has(key);
+    },
+    get size() {
+      trackAll(true);
+      return source.size;
+    },
+    keys: () => {
+      trackAll(true);
+      return source.keys();
+    },
+    values: () => {
+      trackAll(true);
+      return source.values();
+    },
+    entries: () => {
+      trackAll(true);
+      return source.entries();
+    },
+    forEach: (callback, thisArg) => {
+      trackAll(true);
+      source.forEach((value, key) => callback.call(thisArg, value, key, view));
+    },
+    [Symbol.iterator]: () => {
+      trackAll(true);
+      return source[Symbol.iterator]();
+    },
+  };
+  return Object.freeze(view);
+};
+
+const isMapLike = (value: unknown): value is ReadonlyMap<string, unknown> =>
+  value instanceof Map ||
+  (value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { get?: unknown }).get === 'function' &&
+    typeof (value as { keys?: unknown }).keys === 'function' &&
+    typeof (value as { entries?: unknown }).entries === 'function');
+
+const mapRead = (value: ReadonlyMap<string, unknown>): CollectionRead<string, unknown> => ({
+  get: key => value.get(key),
+  has: key => value.has(key),
+  ids: () => Object.freeze([...value.keys()]),
+});
+
+const mapChange = (
+  previous: ReadonlyMap<string, unknown>,
+  current: ReadonlyMap<string, unknown>
+): CollectionImpact<string> | undefined => {
+  const added = new Set<string>();
+  const removed = new Set<string>();
+  const updated = new Set<string>();
+  for (const key of previous.keys()) {
+    if (!current.has(key)) removed.add(key);
+    else if (!Object.is(previous.get(key), current.get(key))) updated.add(key);
+  }
+  for (const key of current.keys()) if (!previous.has(key)) added.add(key);
+  const before = [...previous.keys()].filter(key => current.has(key));
+  const after = [...current.keys()].filter(key => previous.has(key));
+  const orderChanged =
+    before.length !== after.length || before.some((key, index) => key !== after[index]);
+  if (!added.size && !removed.size && !updated.size && !orderChanged) return undefined;
+  return { kind: 'incremental', added, removed, updated, orderChanged };
+};
+
+const currentValue = (event: unknown): unknown => {
+  if (!event || typeof event !== 'object') return event;
+  if ('value' in event) return (event as { readonly value: unknown }).value;
+  if ('read' in event) return snapshot((event as { readonly read: unknown }).read);
+  if ('ids' in event && typeof (event as { ids?: unknown }).ids === 'function')
+    return mapView(event as CollectionRead<string, unknown>);
+  return event;
+};
+
+const sourceOf = (instance: RuntimeNode): GraphSource<unknown> => instance as GraphSource<unknown>;
+
+export const createProjectionRuntime = (options?: {
+  readonly onError?: (error: import('./contract').ProjectionError) => void;
 }): ProjectionRuntime => {
-  const runtime = createProjectionEngine(options);
-  const instances = new WeakMap<object, Materialized>();
+  const runtime = createRuntimeExecutor({ onError: options?.onError ?? (() => undefined) });
+  const instances = new WeakMap<object, RuntimeValue>();
   const inputs = new WeakMap<object, { readonly source: object; set(value: unknown): void }>();
-  const materialize = (
-    projection: Projection<unknown, unknown, 'source' | 'value' | 'collection'>
-  ): Materialized => {
+  const collections = new WeakMap<
+    object,
+    { revision: number; value: PublicCollection<string, unknown> }
+  >();
+
+  const materialize = (projection: Projection<unknown>): RuntimeValue => {
     const old = instances.get(projection);
     if (old) return old;
     const definition = definitionOf(projection);
-    let instance: Materialized;
-    if (definition.kind === 'input') {
-      const input = runtime.input(definition.initial, { isEqual: definition.isEqual as never });
-      inputs.set(projection, input);
-      instance = runtime.value({ input: input.source }, ({ input }) => input.value);
-    } else if (definition.kind === 'readable') {
-      const source = runtime.fromReadable(definition.readable, {
-        isEqual: definition.isEqual as never,
-      });
-      instance = runtime.value({ source }, ({ source }) => source.value);
-    } else if (definition.kind === 'source-value') {
-      instance = runtime.fromSource(definition.source as never);
-    } else if (definition.kind === 'source-collection') {
-      instance = runtime.fromCollectionSource(definition.source as never);
-    } else if (definition.kind === 'document') {
-      const document = runtime.document(definition.document);
-      instance = definition.targets?.length
-        ? document.targets(...(definition.targets as [never, ...never[]]))
-        : document;
-    } else if (definition.kind === 'document-collection')
-      instance = runtime.document(definition.document).collection(definition.pick as never);
-    else if (definition.kind === 'map')
-      instance = runtime.map(materialize(definition.source) as never, definition.mapper as never, {
-        isEqual: definition.isEqual as never,
-      });
-    else {
-      const sources = Object.fromEntries(
-        Object.entries(definition.sources).map(([key, source]) => [key, materialize(source)])
-      );
-      if (definition.kind === 'value') {
+    let instance: RuntimeValue;
+    switch (definition.kind) {
+      case 'input': {
+        const input = runtime.input(definition.initial, { isEqual: definition.isEqual });
+        inputs.set(projection, input);
+        instance = runtime.value({ input: input.source }, ({ input }) => input.value);
+        break;
+      }
+      case 'readable': {
+        const source = runtime.fromReadable(definition.readable, { isEqual: definition.isEqual });
+        instance = runtime.value({ source }, ({ source }) => source.value);
+        break;
+      }
+      case 'source-value':
+        {
+          const source = runtime.fromSource(definition.source);
+          instance = runtime.value({ source }, ({ source }) => source.value);
+        }
+        break;
+      case 'source-collection': {
+        const source = runtime.fromCollectionSource(definition.source);
+        instance = runtime.map(source as never, (_key, value) => value);
+        break;
+      }
+      case 'document': {
+        const document = runtime.document(definition.document);
+        if (!definition.selector) {
+          instance = runtime.value({ document }, ({ document }) => snapshot(document.read));
+          break;
+        }
+        const state = accessOf(definition.document);
+        try {
+          const collection = document.collection(definition.selector as never);
+          instance = runtime.map(collection, (_id, entry) => snapshot(entry));
+          break;
+        } catch {
+          const selected = document.targets(definition.selector as never);
+          const address = compilePath(state.schema, 'value', definition.selector as never).address;
+          instance = runtime.value({ selected }, () => {
+            const root = snapshot(state.document);
+            return readAddress(root, address, state.schema);
+          });
+        }
+        break;
+      }
+      case 'derive': {
+        const sources = Object.fromEntries(
+          definition.dependencies.map((dependency, index) => [
+            `d${index}`,
+            sourceOf(materialize(dependency)),
+          ])
+        );
         instance = runtime.value(
-          sources as never,
-          (events: Record<string, unknown>) => {
-            const values = Object.fromEntries(
-              Object.entries(events).map(([key, event]) => [key, current(event)])
-            );
-            return definition.compute(values as never);
-          },
+          sources,
+          values => definition.compute(...Object.values(values).map(currentValue)),
+          { isEqual: definition.isEqual }
+        );
+        break;
+      }
+      case 'incremental-value': {
+        const sources = Object.fromEntries(
+          Object.entries(definition.dependencies).map(([key, dependency]) => [
+            key,
+            sourceOf(materialize(dependency as never)),
+          ])
+        );
+        instance = runtime.value(
+          { sources, build: definition.build as never },
           { isEqual: definition.isEqual as never }
         );
-      } else if (definition.kind === 'advanced-value')
-        instance = runtime.value(
-          { sources: sources as never, build: definition.build as never, name: definition.name },
-          { isEqual: definition.isEqual as never }
+        break;
+      }
+      case 'incremental-collection': {
+        const sources = Object.fromEntries(
+          Object.entries(definition.dependencies).map(([key, dependency]) => [
+            key,
+            sourceOf(materialize(dependency as never)),
+          ])
         );
-      else
         instance = runtime.collection<unknown>()({
-          sources: sources as never,
+          sources,
           build: definition.build as never,
           isEqual: definition.isEqual as never,
           name: definition.name,
         });
+        break;
+      }
     }
     instances.set(projection, instance);
     return instance;
   };
-  const current = (event: unknown): unknown => {
-    if (event && typeof event === 'object') {
-      if ('value' in event) return (event as { value: unknown }).value;
-      if ('read' in event) return (event as { read: unknown }).read;
+
+  const get = <T>(projection: Projection<T>): T => {
+    const instance = materialize(projection as Projection<unknown>);
+    const current: unknown = instance.current();
+    if (
+      current &&
+      typeof current === 'object' &&
+      'ids' in current &&
+      typeof (current as { ids?: unknown }).ids === 'function'
+    ) {
+      const existing = collections.get(instance);
+      const revision = instance.revision();
+      if (existing?.revision === revision) return existing.value as T;
+      const value = mapView(current as CollectionRead<string, unknown>);
+      collections.set(instance, { revision, value });
+      return value as T;
     }
-    return event;
+    if (isMapLike(current)) {
+      const existing = collections.get(instance);
+      const revision = instance.revision();
+      if (existing?.revision === revision) return existing.value as T;
+      const value = mapView(mapRead(current));
+      collections.set(instance, { revision, value });
+      return value as T;
+    }
+    return current as T;
   };
+
   const store: ProjectionRuntime = {
-    get: ((projection: Projection<unknown, unknown, 'source' | 'value' | 'collection'>) => {
+    get,
+    subscribe: ((projection: Projection<unknown>, listener: () => void) => {
       const instance = materialize(projection);
-      if ('current' in instance && typeof instance.current === 'function')
-        return instance.current();
-      throw new TypeError('Projection is a source and has no published value.');
-    }) as ProjectionRuntime['get'],
-    collection: ((projection: CollectionProjection<string, unknown>) => {
-      const instance = materialize(projection);
-      if (
-        !('current' in instance) ||
-        typeof instance.current !== 'function' ||
-        !('item' in instance) ||
-        typeof instance.item !== 'function' ||
-        !('ids' in instance) ||
-        !('all' in instance)
-      )
-        throw new TypeError('Projection is not a materialized collection.');
-      return instance as CollectionReadable<string, unknown>;
-    }) as ProjectionRuntime['collection'],
-    item: ((projection, key) => {
-      const instance = materialize(projection);
-      if (!('item' in instance) || typeof instance.item !== 'function')
-        throw new TypeError('Projection is not a materialized collection.');
-      return instance.item(key);
-    }) as ProjectionRuntime['item'],
-    set: (projection, value) => {
-      materialize(projection);
-      const target = inputs.get(projection);
-      if (!target) throw new TypeError('Projection is not an input.');
-      target.set(value);
-    },
-    subscribe: ((
-      projection: Projection<unknown, unknown, 'source' | 'value' | 'collection'>,
-      listener: Function
-    ) => {
-      const instance = materialize(projection);
-      if (!('subscribe' in instance))
-        throw new TypeError('Projection is a source and cannot be subscribed.');
       return instance.subscribe(listener as never);
     }) as ProjectionRuntime['subscribe'],
-    revision: projection => {
-      const instance = materialize(projection);
-      if (!('revision' in instance) || typeof instance.revision !== 'function')
-        throw new TypeError('Projection has no published revision.');
-      return instance.revision();
-    },
-    rebuild: projection => {
-      const instance = materialize(projection);
-      if (!('rebuild' in instance) || typeof instance.rebuild !== 'function')
-        throw new TypeError('Projection cannot be rebuilt.');
-      instance.rebuild();
-    },
-    release: projection => {
-      const instance = instances.get(projection);
-      if (!instance) return;
-      if ('dispose' in instance && typeof instance.dispose === 'function') instance.dispose();
-      instances.delete(projection);
-      inputs.delete(projection);
-    },
+    set: ((input: Input<unknown>, value: unknown) => {
+      materialize(input);
+      const target = inputs.get(input);
+      if (!target) throw new TypeError('Projection is not an input.');
+      target.set(value);
+    }) as ProjectionRuntime['set'],
     batch: runtime.batch,
     dispose: runtime.dispose,
   };
-  stores.set(store, runtime);
+  runtimeStates.set(store, { materialize, get });
   return Object.freeze(store);
+};
+
+export type ProjectionSelection = {
+  readonly keys: ReadonlySet<string>;
+  readonly all: boolean;
+  readonly structure: boolean;
+};
+
+export const trackProjection = <T, R>(
+  owner: ProjectionRuntime,
+  projection: Projection<T>,
+  selector: (value: T) => R
+): { readonly value: R; readonly selection: ProjectionSelection } => {
+  const state = runtimeStates.get(owner);
+  if (!state) throw new TypeError('Unknown projection runtime.');
+  const tracker: SelectionTracker = { keys: new Set(), all: false, structure: false };
+  const previous = activeTracker;
+  activeTracker = tracker;
+  try {
+    const value = selector(state.get(projection));
+    return {
+      value,
+      selection: Object.freeze({
+        keys: new Set(tracker.keys),
+        all: tracker.all,
+        structure: tracker.structure,
+      }),
+    };
+  } finally {
+    activeTracker = previous;
+  }
+};
+
+export const subscribeProjection = (
+  owner: ProjectionRuntime,
+  projection: Projection<unknown>,
+  selection: ProjectionSelection,
+  listener: () => void
+): Unsubscribe => {
+  const state = runtimeStates.get(owner);
+  if (!state) throw new TypeError('Unknown projection runtime.');
+  const instance = state.materialize(projection);
+  let previousCollection: PublicCollection<string, unknown> | undefined;
+  const initialValue = state.get(projection);
+  if (isMapLike(initialValue)) previousCollection = initialValue;
+  return instance.subscribe(((change: CollectionImpact<string> | undefined) => {
+    if (!change && previousCollection) {
+      const current = state.get(projection);
+      if (isMapLike(current)) {
+        change = mapChange(previousCollection, current);
+        previousCollection = current;
+        if (!change) return;
+      } else previousCollection = undefined;
+    }
+    if (!change || change.kind === 'reset') {
+      listener();
+      return;
+    }
+    if (
+      selection.all &&
+      (selection.structure || change.added.size || change.removed.size || change.updated.size)
+    ) {
+      listener();
+      return;
+    }
+    for (const key of selection.keys) {
+      if (change.added.has(key) || change.removed.has(key) || change.updated.has(key)) {
+        listener();
+        return;
+      }
+    }
+  }) as never);
 };

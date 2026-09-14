@@ -7,11 +7,18 @@ import type {
   OperationResult,
   Readable,
   ProjectionRuntime,
-  CollectionProjection,
-  ValueProjection,
-  InputProjection,
+  Projection,
+  Input,
 } from 'doxum';
-import { track, subscribeDependencies, sameTarget, type ImpactTarget } from 'doxum/integration';
+import {
+  track,
+  subscribeDependencies,
+  sameTarget,
+  type ImpactTarget,
+  trackProjection,
+  subscribeProjection,
+  type ProjectionSelection,
+} from 'doxum/integration';
 import {
   createContext,
   useCallback,
@@ -24,56 +31,106 @@ import {
 export const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
-export function useProjection<T>(projection: ValueProjection<T>, runtime?: ProjectionRuntime): T {
+const sameProjectionSelection = (
+  left: ProjectionSelection,
+  right: ProjectionSelection
+): boolean => {
+  if (
+    left.all !== right.all ||
+    left.structure !== right.structure ||
+    left.keys.size !== right.keys.size
+  )
+    return false;
+  for (const key of left.keys) if (!right.keys.has(key)) return false;
+  return true;
+};
+
+export function useProjection<T>(projection: Projection<T>, runtime?: ProjectionRuntime): T;
+export function useProjection<T, R>(
+  projection: Projection<T>,
+  selector: (value: T) => R,
+  runtime?: ProjectionRuntime
+): R;
+export function useProjection<T, R>(
+  projection: Projection<T>,
+  selector: (value: T) => R,
+  equality?: (previous: R, next: R) => boolean,
+  runtime?: ProjectionRuntime
+): R;
+export function useProjection<T, R>(
+  projection: Projection<T>,
+  selectorOrRuntime?: ((value: T) => R) | ProjectionRuntime,
+  equalityOrRuntime?: ((previous: R, next: R) => boolean) | ProjectionRuntime,
+  suppliedRuntime?: ProjectionRuntime
+): T | R {
   const context = useContext(ProjectionContext);
-  const owner = runtime ?? context;
+  const selector = typeof selectorOrRuntime === 'function' ? selectorOrRuntime : undefined;
+  const equality = typeof equalityOrRuntime === 'function' ? equalityOrRuntime : Object.is;
+  const owner =
+    (selector ? suppliedRuntime : undefined) ??
+    (selector
+      ? equalityOrRuntime && typeof equalityOrRuntime !== 'function'
+        ? equalityOrRuntime
+        : undefined
+      : undefined) ??
+    (selector ? context : typeof selectorOrRuntime === 'object' ? selectorOrRuntime : context);
   if (!owner) throw new Error('ProjectionRuntime is required.');
-  const read = useCallback(() => owner.get(projection), [owner, projection]);
+  if (!selector) {
+    const read = useCallback(() => owner.get(projection), [owner, projection]);
+    const subscribe = useCallback(
+      (listener: () => void) => owner.subscribe(projection, listener),
+      [owner, projection]
+    );
+    return useSyncExternalStore(subscribe, read, read) as T;
+  }
+  const cache = useRef<{ value: R; selection: ProjectionSelection } | undefined>(undefined);
+  const read = useCallback(() => {
+    const selected = trackProjection(owner, projection, selector);
+    const previous = cache.current;
+    const value =
+      previous && equality(previous.value, selected.value) ? previous.value : selected.value;
+    cache.current = { value, selection: selected.selection };
+    return value;
+  }, [equality, owner, projection, selector]);
   const subscribe = useCallback(
-    (listener: () => void) => owner.subscribe(projection, listener),
-    [owner, projection]
+    (listener: () => void) => {
+      read();
+      let selection = cache.current?.selection ?? {
+        keys: new Set<string>(),
+        all: true,
+        structure: false,
+      };
+      let unsubscribe = subscribeProjection(owner, projection, selection, onInvalidate);
+      const reinstall = (next: ProjectionSelection) => {
+        if (sameProjectionSelection(selection, next)) return;
+        unsubscribe();
+        selection = next;
+        unsubscribe = subscribeProjection(owner, projection, selection, onInvalidate);
+      };
+      function onInvalidate() {
+        const previous = cache.current?.value;
+        const next = read();
+        const nextSelection = cache.current?.selection;
+        if (nextSelection) reinstall(nextSelection);
+        if (!Object.is(previous, next)) listener();
+      }
+      return () => unsubscribe();
+    },
+    [owner, projection, read]
   );
   return useSyncExternalStore(subscribe, read, read);
 }
 
-type ProjectionItemSnapshot<T> = {
-  readonly value: T | undefined;
-  readonly revision: number;
-};
-
-export function useProjectionItem<K extends string, V>(
-  projection: CollectionProjection<K, V>,
-  key: K,
+export function useInput<T>(
+  input: Input<T>,
   runtime?: ProjectionRuntime
-): V | undefined {
+): readonly [T, (value: T) => void] {
   const context = useContext(ProjectionContext);
   const owner = runtime ?? context;
   if (!owner) throw new Error('ProjectionRuntime is required.');
-  const item = useMemo(() => owner.item(projection, key), [key, owner, projection]);
-  const read = useMemo(() => {
-    let previousRevision = -1;
-    let snapshot: ProjectionItemSnapshot<V> | undefined;
-    return (): ProjectionItemSnapshot<V> => {
-      const value = item.current();
-      const revision = item.revision();
-      if (snapshot && revision === previousRevision) return snapshot;
-      previousRevision = revision;
-      snapshot = { value, revision };
-      return snapshot;
-    };
-  }, [item]);
-  const subscribe = useCallback((listener: () => void) => item.subscribe(listener), [item]);
-  return useSyncExternalStore(subscribe, read, read).value;
-}
-
-export function useSetProjection<T>(
-  projection: InputProjection<T>,
-  runtime?: ProjectionRuntime
-): (value: T) => void {
-  const context = useContext(ProjectionContext);
-  const owner = runtime ?? context;
-  if (!owner) throw new Error('ProjectionRuntime is required.');
-  return useCallback((value: T) => owner.set(projection, value), [owner, projection]);
+  const value = useProjection(input, owner);
+  const set = useCallback((next: T) => owner.set(input, next), [input, owner]);
+  return useMemo(() => [value, set] as const, [set, value]);
 }
 
 export type DocumentSelectorOptions<TResult> = {

@@ -3,11 +3,28 @@ import type { Read } from './access/scope';
 import type { DocumentReadable } from './runtime/contract';
 import { createDependencyTracker } from './access/dependency';
 import { readWith } from './runtime/access';
-export { projectionRuntimeDebug } from './projection/store';
+import {
+  defineExternalCollection,
+  defineExternalValue,
+  defineReadable,
+  type Projection,
+  type PublicCollection,
+} from './projection/definition';
+import type { ExternalCollectionSource, ExternalValueSource } from './projection/contract';
+export { trackProjection, subscribeProjection, type ProjectionSelection } from './projection/store';
 export type { AddressRef } from './address';
 export { contains, debugKey, overlaps, read as readAddress, resolveAddress } from './address';
 export { subscribeDependencies } from './runtime/notification';
 export { same as sameTarget } from './impact-target';
+
+export const observeReadable = <T>(
+  readable: import('./projection/readable').Readable<T>
+): Projection<T> => defineReadable(readable);
+export const observeExternal = <T, D>(source: ExternalValueSource<T, D>): Projection<T> =>
+  defineExternalValue(source);
+export const observeExternalCollection = <K extends string, V, D>(
+  source: ExternalCollectionSource<K, V, D>
+): Projection<PublicCollection<K, V>> => defineExternalCollection(source);
 export type { ImpactTarget } from './schema';
 
 export type TrackedSelection<TValue> = {

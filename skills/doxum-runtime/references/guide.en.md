@@ -87,22 +87,18 @@ History travels complete ChangeSets; grouped travel is atomic. Local replace is 
 reversible root reset; remote commits invalidate local history. Observer errors occur
 after acceptance.
 
-Use `project(document, path => path.tasks, mapper)` for incremental mapping.
-Pure values use `project(sources, compute)`; stateful algorithms use tagged value
-or collection specs. Definitions are lazy and are materialized by a
-`createProjectionRuntime({ onError })` instance. Sources remain explicit.
-Ordinary mappers only model one-source, same-key transforms. Cross-collection or
-cross-key dependencies use an advanced collection processor with an application-owned
-reverse dependency index; core does not track reads performed by processors. See the
-[projection reference](projections.en.md) for event shapes, lifecycle, writer semantics,
-join indexing, batching, and fault recovery.
-`input` and `project(readable)` connect external boundary values. Dispose the store
-with the owning service. `store.batch` defers projection settlement/listeners, not document commits/listeners. Reads
-inside a batch see the last publication; no cross-document rollback is provided.
-For one materialized collection key, use `store.item(collection, key)` as a stable
-`Readable<V | undefined>` or `useProjectionItem(collection, key)` in React. Other
-keys and order-only changes do not notify it. Use `useDocumentSelector` for a raw
-canonical document item.
+Use `observe(document, path => path.tasks)` for a collection boundary and
+`derive([tasks, filter], (tasks, filter) => ...)` for pure values. Definitions are
+lazy and materialized by one `createProjectionRuntime({ onError })` owner. Sources
+remain explicit. Retained state, reverse indexes and keyed output patches belong to
+the isolated `doxum/advanced` incremental entry points. See the [projection
+reference](projections.en.md) for lifecycle, draft semantics, selector tracking,
+batching and recovery.
+`input` and `observe(readable)` connect external boundary values. Dispose the
+Runtime with the owning service. `runtime.batch` defers projection settlement and
+listeners, not document commits or listeners. Reads inside a batch see the last
+publication; no cross-document rollback is provided. React uses one
+`useProjection` hook with an optional selector and `useInput` for setters.
 
 doxum/local-sync attaches IndexedDB and Web Lock leadership. Only the leader writes;
 followers replay contiguous durable sequence. Writes become visible before async

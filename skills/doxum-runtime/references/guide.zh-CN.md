@@ -75,20 +75,15 @@ apply(changes, { expectedRevision }) 拒绝缺失或不匹配的本地基线；�
 本地 replace 是可撤销根重置，remote commit 使 history 失效。
 observerErrors 属于已提交结果。
 
-集合增量映射使用 `project(document, path => path.tasks, mapper)`。
-纯派生值使用 `project(sources, compute)`；有状态算法使用带 kind 的 value
-或 collection spec。定义是惰性的，由 `createProjectionRuntime({ onError })`
-实例物化和管理。sources 仍然显式声明。
-普通 mapper 只表达单 source、同键转换。跨集合或跨键依赖使用 advanced collection
-processor，并由应用维护反向依赖索引；core 不追踪 processor 内的读取。event 形状、
-生命周期、writer 语义、join 索引、batch 与 fault 恢复见
-[Projection 参考](projections.zh-CN.md)。
-`input` 与 `project(readable)` 接入外部边界值。随所属服务 dispose store。
-`store.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
-不提供跨文档回滚。
-观察物化集合的一个键时，使用稳定的 `store.item(collection, key)`
-`Readable<V | undefined>`，React 使用 `useProjectionItem(collection, key)`。
-其他键和纯顺序变化不会通知它；原始 canonical 文档项仍使用 `useDocumentSelector`。
+集合边界使用 `observe(document, path => path.tasks)`，纯派生值使用
+`derive([tasks, filter], (tasks, filter) => ...)`。定义是惰性的，由一个
+`createProjectionRuntime({ onError })` owner 物化和管理。保留状态、反向索引和
+keyed patch 放在隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
+selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。
+`input` 与 `observe(readable)` 接入外部边界值。随所属服务 dispose Runtime。
+`runtime.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
+不提供跨文档回滚。React 只保留一个带可选 selector 的 `useProjection`，输入使用
+`useInput`。
 
 doxum/local-sync 附着 IndexedDB 和 Web Lock 领导权，只有 leader 写入，
 follower 连续重放 durable seq。先可见后异步落盘，flush 等待持久化。

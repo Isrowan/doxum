@@ -166,6 +166,7 @@ declare const pathValue: unique symbol;
 declare const collectionNode: unique symbol;
 declare const collectionKey: unique symbol;
 type PathMarker<TValue> = { readonly [pathValue]: TValue };
+export type PathValueOf<T> = T extends { readonly [pathValue]: infer TValue } ? TValue : never;
 
 type SchemaPathFor<S extends ObjectShape = ObjectShape, TValue = unknown> = {
   readonly [K in keyof S]: PathValue<S[K]>;

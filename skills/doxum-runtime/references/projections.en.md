@@ -1,220 +1,77 @@
-# Doxum Projection Reference
+# Projection Reference
 
-Use this reference when choosing, implementing, or reviewing a projection. The
-[public long-form contract](../../../docs/projections.md) provides a complete join
-example; source code inspection should not be necessary for normal application work.
-
-## Choose The Form
-
-| Relationship                                  | API                                               |
-| --------------------------------------------- | ------------------------------------------------- |
-| Whole document source                         | `project(document)`                               |
-| Target-limited document source                | `project(document, [pick, ...])`                  |
-| Document collection source                    | `project(document, pick)`                         |
-| One source key to the same output key         | `project(collection, mapper)`                     |
-| Pure current values to one value              | `project(sources, compute)`                       |
-| Stateful incremental value                    | `project({ kind: 'value', sources, build })`      |
-| Multiple sources or cross-key collection work | `project({ kind: 'collection', sources, build })` |
-| Application input                             | `input(initial)` and `store.set(input, value)`    |
-| Existing `Readable`                           | `project(readable)`                               |
-
-Definitions are lazy and reusable. `createProjectionRuntime({ onError })` owns one
-materialization graph. Every store has independent published values, revisions,
-inputs, subscriptions, processor instances, and closure indexes.
-
-An ordinary mapper is deliberately limited to:
-
-```text
-source key K changed -> output key K may change
-```
-
-It rebuilds on reset and follows source order, but does not track reads performed
-inside the mapper. Never read another collection in a mapper and assume it becomes
-a dependency. Declare all sources in an advanced processor instead.
-
-## Source Event Contract
-
-Advanced processors receive events, not just current values:
+Projection definitions are lazy and reusable. The public core consists of
+`Projection<T>`, `ProjectionRuntime`, `input`, `observe`, and tuple `derive`.
 
 ```ts
-type ValueEvent<T> = {
-  value: T;
-  previous: T;
-  changed: boolean;
-  revision: number;
-  reset: boolean;
-};
-
-type CollectionEvent<K extends string, V> = {
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  ids(): readonly K[];
-  change: CollectionImpact<K> | undefined;
-  revision: number;
-  reset: boolean;
-};
-
-type DocumentEvent<S> = {
-  read: Read<S>;
-  revision: number;
-  commits: readonly DocumentCommit<S>[];
-  reset: boolean;
-};
-
-type DocumentCollectionEvent<S, N, K extends string> = {
-  read: CollectionAccess<K, N>;
-  revision: number;
-  commits: readonly DocumentCommit<S>[];
-  reset: boolean;
-  candidates: { keys: readonly K[]; orderDirty: boolean };
-};
+const tasks = observe(document, path => path.tasks);
+const filter = input<'all' | 'open'>('all');
+const visible = derive([tasks, filter], (tasks, filter) =>
+  filter === 'all' ? tasks : new Map([...tasks].filter(([, task]) => !task.done))
+);
+const runtime = createProjectionRuntime({ onError: report });
+runtime.get(visible);
 ```
 
-Projected collection `change` is incremental (`added`, `removed`, `updated`,
-`orderChanged`), reset, or undefined. Document collection candidates are the
-union across all relevant commits in a store batch. A later commit may cancel an
-earlier one without removing its candidate key. Always derive from final `read`
-state. Use `commit.impact.collection(pick)` for per-commit relationship changes.
+`input(initial, equality?)` is Runtime-local and can be written only with
+`runtime.set(input, value)`. `observe(document, selector)` compiles a document
+boundary lazily. Collection paths publish immutable map-like snapshots; the
+whole-document form publishes a snapshot of the root. Existing Doxum Readables
+can also be observed at this boundary.
 
-Across a batch, a value event's `previous` is the pre-batch value and `value` is
-the final value. A net-zero document transaction produces no commit or candidates.
+`derive(dependencies, compute, equality?)` takes a tuple. Dependencies are
+explicit and fixed when the definition is created. Processors must not discover
+graph dependencies by reading other projections.
 
-## Advanced Value Processor
+The Runtime API is intentionally small:
 
 ```ts
-const value = project({
-  kind: 'value',
-  sources,
-  build: events => ({
-    value: buildValue(events),
-    update: events =>
-      needsRebuild(events)
-        ? { kind: 'rebuild' }
-        : changed(events)
-          ? { kind: 'changed', value: updateValue(events) }
-          : { kind: 'unchanged' },
-  }),
+runtime.get(projection);
+runtime.subscribe(projection, listener);
+runtime.set(input, value);
+runtime.batch({ cause }, run);
+runtime.dispose();
+```
+
+There is no public revision, item handle, rebuild or release operation. Runtime
+materialization, keyed storage, recovery and disposal are one owner.
+
+## Incremental processors
+
+Import retained-state processors from `doxum/advanced`:
+
+```ts
+const total = incremental([tasks], ({ sources, previous, state }) => {
+  state.calls = Number(state.calls ?? 0) + 1;
+  return sources[0].size + Number(state.calls) + (previous ?? 0);
+});
+
+const doubled = incremental.collection([tasks], ({ sources, output }) => {
+  for (const [id, task] of sources[0]) output.set(id, task.value * 2);
 });
 ```
 
-Prefer `project(sources, compute)` unless retained state prevents meaningful work.
+Value contexts expose `sources`, `previous`, `reset`, `change`, `cause` and a
+retained `state` object. `incremental.collection(...)` uses a separate
+collection processor protocol and additionally exposes borrowed
+`previous`/`next` keyed reads and a callback-local `output` draft. Draft methods are
+`set`, `remove`, `order`, and `replace`; the Runtime validates and seals them after
+the synchronous callback, computes keyed transitions and publishes one immutable
+map-like value. Reset or fault recovery is internal.
 
-## Advanced Collection Processor
+## React selector tracking
 
-```ts
-const result = project({
-  kind: 'collection',
-  sources,
-  name: 'optional diagnostic name',
-  isEqual: Object.is,
-  build: ({ sources, previous, next, writer }) => {
-    // Build the complete output and any store-local indexes.
-    return {
-      update: ({ sources, previous, next, writer }) => {
-        // Stage only affected keys, or return { kind: 'rebuild' }.
-      },
-    };
-  },
-});
+```tsx
+const task = useProjection(visible, tasks => tasks.get(taskId));
+const [mode, setMode] = useInput(filter);
 ```
 
-`build` runs on first materialization, source reset, explicit `store.rebuild`, an
-update-requested rebuild, and fault recovery. Build starts from a cleared output
-and must stage the complete result. Its closure state is local to one store and
-must be reconstructible from sources.
+Collection `get`/`has` records one key, `keys` records key/order structure, and
+`values`/iteration records the whole collection. Unrelated key changes do not run
+the selector. After a related update, the selector's equality (default
+`Object.is`) decides whether React re-renders. This tracking exists only at the
+consumer boundary; projection dependencies remain explicit.
 
-`update` runs when a declared source participates in settlement. Returning
-`{ kind: 'rebuild' }` discards staged update writes and performs a fresh build.
-All callbacks are synchronous; Promises and thenables are rejected. Reads and
-writes during processing or notification must not reenter a source or document.
-
-`previous`, `next`, source readers, and `writer` are borrowed for the current
-synchronous callback only:
-
-- `previous` sees only published output.
-- `next` immediately sees current staged writes.
-- `writer.set(key, value)` stages presence.
-- `writer.remove(key)` stages absence; a missing removal is a no-op.
-- Repeated operations on one key use the last operation.
-- `writer.order(ids)` supplies the entire next order, with every key exactly once.
-- `writer.replace(entries)` clears and replaces all output in entry order; keys
-  must be unique.
-
-Staged output publishes atomically. Equality defaults to `Object.is`; equal sets
-keep the old reference. Net-zero output does not increment revision or notify.
-
-## Cross-Collection Join Pattern
-
-Do not add a generic join abstraction. The domain owns missing references,
-cardinality, reconnect, delete, ordering, and result-key policy. Model the join as
-an advanced collection with explicit sources and indexes.
-
-For routes derived from `edges(from, to)` and node geometry, maintain:
-
-```text
-endpoints: edgeId -> [fromNodeId, toNodeId]
-adjacency: nodeId -> Set<edgeId>
-```
-
-On build, scan edges once, populate both indexes, and write the complete routes.
-On an edge event:
-
-1. Read exact changed edge ids from each commit's collection impact.
-2. Detach every changed id from its old endpoints.
-3. Read final edge state; attach its final endpoints, or delete its forward entry.
-4. Add that edge id to the affected output set.
-
-On a node collection event, map added/updated/removed node ids through `adjacency`
-and add only adjacent edges to the affected set. Finally read current endpoint
-geometry and set or remove each affected route. Rebuild on either source reset.
-
-After an edge reconnects, the old node must no longer select it. Deleting an edge
-must remove both forward and reverse entries. Missing endpoint behavior is an
-explicit domain decision. Do not scan all edges for every node change unless the
-known collection size makes that tradeoff intentional.
-
-Closure indexes are not part of the writer's staged transaction. An uncaught
-processor failure triggers fresh-build recovery, but a processor that catches a
-failure and continues keeps its own mutations. Perform fallible work before
-mutating live indexes, stage temporary index changes and commit them on success,
-or request a complete rebuild.
-
-## Batching, Faults, And Lifetime
-
-`store.batch` defers projection settlement and projection listeners only. Document
-commits and document listeners remain synchronous. Reads inside the batch return
-the last publication; settlement after the outer batch uses final source state.
-There is no cross-document rollback.
-
-Processor or writer validation failure publishes no partial output. The runtime
-may retry with a fresh build; persistent failure faults that projection and blocks
-its descendants while independent branches continue. Reads then throw
-`ProjectionError`. A later source update or `store.rebuild(projection)` can recover.
-`onError` also receives source, blocked, and listener failures. Listener failures
-never undo published projection state or accepted document commits.
-
-`store.release(projection)` releases an independently releasable materialization;
-do not release a node still used by a materialized downstream projection.
-`store.dispose()` invalidates the complete graph and releases its subscriptions.
-
-For one materialized collection entry, `store.item(collection, key)` returns a
-stable `Readable<V | undefined>`. It follows the key through add, update, remove,
-and recreation; other keys and order-only changes do not notify it. React uses
-`useProjectionItem(collection, key, store?)`. Key or store changes replace the
-subscription. The hook internally observes membership even when both absent and
-present values read as `undefined`. Raw document collection sources are not valid
-inputs; use `useDocumentSelector` for canonical document items.
-
-## Review Checklist
-
-- All result-changing sources are declared.
-- Candidate selection covers add, update, remove, reconnect, and missing reference.
-- Batch logic reads final state instead of replaying imagined intermediate states.
-- Reset and explicit rebuild reconstruct complete output, order, and indexes.
-- Build never depends on prior output or a previous processor closure.
-- `writer.order` is complete and valid whenever used.
-- Equal values preserve references; unrelated changes produce no output revision.
-- Item consumers use keyed readables/hooks instead of whole-collection value projections.
-- A thrown update cannot silently corrupt closure indexes.
-- Tests cover unrelated commits, dynamic dependencies, stable references, reset,
-  batch behavior, recovery, and disposal.
+Processors settle before listeners. Writes are forbidden during notification.
+Listener errors do not roll back an accepted document commit; processor errors use
+the Runtime error callback and internal recovery.

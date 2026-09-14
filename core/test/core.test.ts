@@ -8,7 +8,7 @@ import {
   map,
   object,
   optional,
-  select,
+  read,
   snapshot,
   table,
   TransactionRejected,
@@ -130,7 +130,7 @@ describe('draft transactions', () => {
       expect(d.rows.get('a')).toBe(d.rows.get('a'));
       d.n++;
     });
-    const copy = select(runtime, state => snapshot(state.rows.get('a')));
+    const copy = read(runtime, state => snapshot(state.rows.get('a')));
     expect(copy).toEqual({ n: 1, title: 'A' });
     runtime.update(d => d.rows.get('a')!.n++);
     expect(copy?.n).toBe(1);
@@ -176,7 +176,7 @@ describe('draft transactions', () => {
       d.get = 'updated';
       d.byId.get = d.get;
     });
-    expect(select(runtime, d => snapshot(d))).toMatchObject({
+    expect(read(runtime, d => snapshot(d))).toMatchObject({
       get: 'updated',
       byId: { get: 'updated' },
     });
@@ -195,15 +195,15 @@ describe('draft transactions', () => {
       expect('get' in d.values).toBe(false);
       expect(Object.keys(d.values)).toEqual([]);
     });
-    expect(select(runtime, d => d.values.has('a'))).toBe(true);
-    expect(select(runtime, d => d.values.ids())).toEqual(['a', ...keys]);
+    expect(read(runtime, d => d.values.has('a'))).toBe(true);
+    expect(read(runtime, d => d.values.ids())).toEqual(['a', ...keys]);
     runtime.history.undo();
     expect(runtime.snapshot()).toEqual({ values: {} });
     runtime.history.redo();
     runtime.update(d => {
       d.values.remove('a');
     });
-    expect(select(runtime, d => d.values.has('a'))).toBe(false);
+    expect(read(runtime, d => d.values.has('a'))).toBe(false);
     const beforeWholeReplace = runtime.snapshot();
     runtime.update(d => d.values.replace({ get: 10, replace: 20 }));
     expect(runtime.snapshot().values).toEqual({ get: 10, replace: 20 });
@@ -263,7 +263,7 @@ describe('draft transactions', () => {
   });
   it('forbids writes in reads, nested transactions and asynchronous callbacks', () => {
     const runtime = setup();
-    expect(() => select(runtime, d => Reflect.set(d, 'n', 1))).toThrow('read-only');
+    expect(() => read(runtime, d => Reflect.set(d, 'n', 1))).toThrow('read-only');
     expect(() =>
       runtime.update(d => {
         d.n++;
@@ -574,9 +574,9 @@ describe('subscriptions and ownership', () => {
     a.update(d => d.n++);
     expect(b.snapshot().n).toBe(0);
     expect(listener).not.toHaveBeenCalled();
-    const read = asReadable(a);
-    expect('update' in read).toBe(false);
-    expect(select(read, s => s.n)).toBe(1);
+    const readable = asReadable(a);
+    expect('update' in readable).toBe(false);
+    expect(read(readable, s => s.n)).toBe(1);
   });
   it('returns observer errors after commit and forbids writes while notifying', () => {
     const runtime = setup();
@@ -594,7 +594,7 @@ describe('subscriptions and ownership', () => {
     runtime.dispose();
     runtime.dispose();
     expect(() => runtime.snapshot()).toThrow('disposed');
-    expect(() => select(runtime, d => d.n)).toThrow('disposed');
+    expect(() => read(runtime, d => d.n)).toThrow('disposed');
     expect(() => runtime.subscribe(() => {})).toThrow('disposed');
     expect(() => runtime.history.undo()).toThrow('disposed');
   });
