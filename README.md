@@ -209,7 +209,7 @@ with `history: false` close the active group.
 ## Projections
 
 ```ts
-import { createProjectionStore, input, project } from 'doxum';
+import { createProjectionRuntime, input, project } from 'doxum';
 
 const titles = project(
   document,
@@ -220,13 +220,13 @@ const count = project({ titles }, ({ titles }) => titles.ids().length);
 const zoom = input(1);
 const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
 
-const store = createProjectionStore({ onError: console.error });
+const store = createProjectionRuntime({ onError: console.error });
 store.get(scaled);
 store.set(zoom, 2);
 const title = store.item(titles, taskId); // Stable Readable<string | undefined>.
 ```
 
-Projection declarations are lazy and reusable. A `ProjectionStore` owns
+Projection declarations are lazy and reusable. A `ProjectionRuntime` owns
 materialized values, subscriptions, batching, processor state and disposal.
 `project(document, path)` binds a document collection; adding a mapper performs
 incremental keyed mapping. `project(readable)` bridges an external readable.
@@ -238,12 +238,17 @@ keys, order dirtiness, commits and reset state.
 Ordinary mappers intentionally model only one-source, same-key transforms.
 Cross-collection relationships use an advanced collection processor with explicit,
 application-owned dependency indexes; processor reads are not tracked automatically.
-For per-key observation, `store.item(collection, key)` returns a stable `Readable`
-that only notifies for that key. React components use
+For richer cross-runtime inputs, `project` also accepts a
+`ProjectionValueSource` or `ProjectionCollectionSource`; their events preserve
+local revisions, collection transitions, and optional `cause`/`batch` metadata.
+For collection observation, `store.collection(collection)` exposes stable
+`current`, `ids`, `all`, and `item(key)` readables. `store.item(collection, key)`
+is the direct per-key form and only notifies for that key. React components use
 `useProjectionItem(collection, key)`; unrelated keys and order-only changes do not
 rerender the component.
 
-Processors settle before external listeners. `store.batch` defers graph
+Processors settle before external listeners. `store.batch` (optionally with a
+`{ cause }` object) defers graph
 settlement and projection notifications, but document commits/listeners remain
 synchronous. Projection readers inside the batch see the last publication.
 Dispose projection stores with their owning service.

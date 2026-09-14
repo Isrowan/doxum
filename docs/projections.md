@@ -1,12 +1,12 @@
 # Projection Contracts
 
 Projections are lazy, reusable descriptions of derived state. A
-`ProjectionStore` materializes those descriptions, owns their processor state,
+`ProjectionRuntime` materializes those descriptions, owns their processor state,
 settles the dependency graph, publishes revisions, reports errors, and disposes
 subscriptions. Creating a projection definition does not start work:
 
 ```ts
-import { createProjectionStore, input, project } from 'doxum';
+import { createProjectionRuntime, input, project } from 'doxum';
 
 const titles = project(
   document,
@@ -17,7 +17,7 @@ const total = project({ titles }, ({ titles }) => titles.ids().length);
 const zoom = input(1);
 const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
 
-const store = createProjectionStore({ onError: console.error });
+const store = createProjectionRuntime({ onError: console.error });
 store.get(scaled); // Materializes scaled and its transitive dependencies.
 store.set(zoom, 2);
 ```
@@ -39,6 +39,7 @@ processor instances, indexes, subscriptions, and input state.
 | Maintain an incrementally updated collection        | `project({ kind: 'collection', sources, build })`                  | Source events, output readers, writer            |
 | Accept an application-owned value                   | `input(initial)`                                                   | `ValueEvent` in advanced processors              |
 | Bridge an existing Doxum `Readable`                 | `project(readable)`                                                | `ValueEvent` in advanced processors              |
+| Bridge another projection runtime                   | `project(valueSource)` / `project(collectionSource)`               | Source event with revision and batch metadata    |
 
 `project(document, [path => path.settings])` uses a non-empty tuple and limits a
 whole-document source to explicit targets. Paths compile when the definition is
@@ -100,6 +101,9 @@ type ValueEvent<T> = {
   readonly changed: boolean;
   readonly revision: number;
   readonly reset: boolean;
+  readonly detail?: unknown;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 ```
 
@@ -119,6 +123,11 @@ type CollectionEvent<K extends string, V> = {
   readonly change: CollectionImpact<K> | undefined;
   readonly revision: number;
   readonly reset: boolean;
+  readonly previous: CollectionRead<K, V>;
+  readonly transitions(keys?: Iterable<K>): readonly CollectionEntryTransition<K, V>[];
+  readonly detail?: unknown;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 ```
 
@@ -169,6 +178,34 @@ Candidates identify work to reconsider; they do not describe intermediate
 states. Always read `sources.<name>.read` to derive output from final canonical
 state. Inspect `commit.impact.collection(path => path.rows)` only when the exact
 per-commit transition is needed, such as maintaining a dependency index.
+
+### External Source Ports
+
+An independent runtime can publish a richer value or collection source without
+being converted to a lossy `Readable` first:
+
+```ts
+const scene = project({
+  kind: 'value',
+  sources: { document: project(document), editor: project(editorSource) },
+  build: ({ document, editor }) => ({
+    value: buildScene(document.read, editor.value),
+    update: ({ document, editor }) => ({
+      kind: 'changed',
+      value: buildScene(document.read, editor.value),
+    }),
+  }),
+});
+```
+
+`ProjectionValueSource` has `kind: 'value'`, `current()`, `revision()`, and a
+`subscribe` callback receiving a `ValueInput`. A
+`ProjectionCollectionSource` uses `kind: 'collection'` and publishes the
+current collection read plus `change`, `previous`, and entry transitions. The
+source owns its local revision; the receiving runtime does not merge revisions
+from different owners. Source events can carry opaque `cause` metadata and a
+`ProjectionBatch` identity so processors can diagnose one coherent application
+action.
 
 ## Advanced Value Processors
 
@@ -422,6 +459,23 @@ are explicit and determine graph order. React selectors may track actual reads,
 but that behavior does not extend to core projection processors.
 
 ## Keyed Collection Observation
+
+`ProjectionRuntime.collection(projection)` exposes the complete stable
+collection view when a consumer needs more than one entry:
+
+```ts
+const view = store.collection(titles);
+view.current().ids();
+view.ids.current();
+view.all.current();
+view.item(taskId).current();
+```
+
+`ids`, `all`, and every `item(key)` handle are stable for the lifetime of the
+materialized collection. `ids` changes only when membership or order changes;
+`all` follows any published collection change; an item follows only its own
+logical key. The view is read-only and is disposed together with the owning
+runtime or when the projection is released.
 
 Use `store.item(collection, key)` when a consumer needs one materialized
 collection entry rather than the whole collection:

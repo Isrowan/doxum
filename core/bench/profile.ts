@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -39,7 +39,7 @@ for (const [count, changed, subscribers] of [
       p => p.entities.item(ids[i]).position.x,
       () => {}
     );
-  const store = createProjectionStore({
+  const store = createProjectionRuntime({
     onError: error => {
       throw error;
     },

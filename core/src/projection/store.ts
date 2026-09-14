@@ -2,8 +2,10 @@ import type { Unsubscribe } from '../runtime/contract';
 import type { CollectionImpact } from '../impact';
 import type {
   CollectionRead,
+  CollectionReadable,
   MaterializedCollection,
   ProjectionEngine,
+  ProjectionBatchOptions,
   MaterializedValue,
 } from './contract';
 import type { Readable } from './readable';
@@ -18,9 +20,10 @@ import { createProjectionEngine, projectionEngineDebug } from './runtime';
 
 type Materialized = MaterializedValue<unknown> | MaterializedCollection<string, unknown> | object;
 
-export type ProjectionStore = {
+export type ProjectionRuntime = {
   get<K extends string, V>(projection: CollectionProjection<K, V>): CollectionRead<K, V>;
   get<T>(projection: ValueProjection<T>): T;
+  collection<K extends string, V>(projection: CollectionProjection<K, V>): CollectionReadable<K, V>;
   item<K extends string, V>(
     projection: CollectionProjection<K, V>,
     key: K
@@ -35,19 +38,20 @@ export type ProjectionStore = {
   rebuild(projection: ValueProjection<unknown> | CollectionProjection<string, unknown>): void;
   release(projection: ValueProjection<unknown> | CollectionProjection<string, unknown>): void;
   batch<T>(run: () => T): T;
+  batch<T>(options: ProjectionBatchOptions, run: () => T): T;
   dispose(): void;
 };
 
 const stores = new WeakMap<object, ProjectionEngine>();
-export const projectionStoreDebug = (store: ProjectionStore) => {
-  const runtime = stores.get(store);
+export const projectionRuntimeDebug = (owner: ProjectionRuntime) => {
+  const runtime = stores.get(owner);
   if (!runtime) throw new Error('Unknown projection store.');
   return projectionEngineDebug(runtime);
 };
 
-export const createProjectionStore = (options: {
+export const createProjectionRuntime = (options: {
   readonly onError: Parameters<typeof createProjectionEngine>[0]['onError'];
-}): ProjectionStore => {
+}): ProjectionRuntime => {
   const runtime = createProjectionEngine(options);
   const instances = new WeakMap<object, Materialized>();
   const inputs = new WeakMap<object, { readonly source: object; set(value: unknown): void }>();
@@ -67,6 +71,10 @@ export const createProjectionStore = (options: {
         isEqual: definition.isEqual as never,
       });
       instance = runtime.value({ source }, ({ source }) => source.value);
+    } else if (definition.kind === 'source-value') {
+      instance = runtime.fromSource(definition.source as never);
+    } else if (definition.kind === 'source-collection') {
+      instance = runtime.fromCollectionSource(definition.source as never);
     } else if (definition.kind === 'document') {
       const document = runtime.document(definition.document);
       instance = definition.targets?.length
@@ -116,19 +124,32 @@ export const createProjectionStore = (options: {
     }
     return event;
   };
-  const store: ProjectionStore = {
+  const store: ProjectionRuntime = {
     get: ((projection: Projection<unknown, unknown, 'source' | 'value' | 'collection'>) => {
       const instance = materialize(projection);
       if ('current' in instance && typeof instance.current === 'function')
         return instance.current();
       throw new TypeError('Projection is a source and has no published value.');
-    }) as ProjectionStore['get'],
+    }) as ProjectionRuntime['get'],
+    collection: ((projection: CollectionProjection<string, unknown>) => {
+      const instance = materialize(projection);
+      if (
+        !('current' in instance) ||
+        typeof instance.current !== 'function' ||
+        !('item' in instance) ||
+        typeof instance.item !== 'function' ||
+        !('ids' in instance) ||
+        !('all' in instance)
+      )
+        throw new TypeError('Projection is not a materialized collection.');
+      return instance as CollectionReadable<string, unknown>;
+    }) as ProjectionRuntime['collection'],
     item: ((projection, key) => {
       const instance = materialize(projection);
       if (!('item' in instance) || typeof instance.item !== 'function')
         throw new TypeError('Projection is not a materialized collection.');
       return instance.item(key);
-    }) as ProjectionStore['item'],
+    }) as ProjectionRuntime['item'],
     set: (projection, value) => {
       materialize(projection);
       const target = inputs.get(projection);
@@ -143,7 +164,7 @@ export const createProjectionStore = (options: {
       if (!('subscribe' in instance))
         throw new TypeError('Projection is a source and cannot be subscribed.');
       return instance.subscribe(listener as never);
-    }) as ProjectionStore['subscribe'],
+    }) as ProjectionRuntime['subscribe'],
     revision: projection => {
       const instance = materialize(projection);
       if (!('revision' in instance) || typeof instance.revision !== 'function')

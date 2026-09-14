@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   map,
   object,
@@ -246,7 +246,7 @@ describe('local sync', () => {
       database: name,
       documentId: 'observable',
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

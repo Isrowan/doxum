@@ -284,11 +284,11 @@ reverse commit order; redo reads after in forward order, within one session.
 Local root reset is reversible. Remote commits invalidate local history.
 
 Projection definitions explicitly declare dependencies and are lazy. A
-`ProjectionStore` materializes definitions and owns processor closures,
+`ProjectionRuntime` materializes definitions and owns processor closures,
 subscriptions, batching, errors and disposal. Capture, settle, flush, history
 listeners, filtered document listeners and root listeners retain their ordering.
 Materialized collections own stable per-key `Readable` handles and exact keyed
-notifications; `ProjectionStore.item` exposes those handles and the React adapter
+notifications; `ProjectionRuntime.item` exposes those handles and the React adapter
 consumes them without introducing a second subscription index.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already committed result.

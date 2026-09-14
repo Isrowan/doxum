@@ -1,6 +1,7 @@
 import type { CollectionImpact } from '../impact';
 import { profile } from '../profile';
 import type {
+  CollectionEntryTransition,
   CollectionInput,
   CollectionRead,
   EngineCollectionSpec,
@@ -45,6 +46,9 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
   let reset = false;
   let revision = 0;
   let idsRevision = 0;
+  let batch: import('./contract').ProjectionBatch | undefined;
+  let cause: import('./contract').ProjectionCause | undefined;
+  let publishedTransitions: readonly CollectionEntryTransition<K, V>[] = Object.freeze([]);
   let all: readonly V[] | undefined;
   type Item = { readable: Readable<V | undefined>; revision: number; listeners?: Set<() => void> };
   const items = new Map<K, Item>();
@@ -75,6 +79,20 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
   };
   const owner = createNode(scheduler, spec, {
     evaluate: (sources, build, active) => {
+      const metadata = Object.values(sources as Record<string, unknown>).find(
+        value =>
+          value &&
+          typeof value === 'object' &&
+          (('batch' in value && (value as { readonly batch?: unknown }).batch !== undefined) ||
+            ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
+      ) as
+        | {
+            readonly batch?: import('./contract').ProjectionBatch;
+            readonly cause?: import('./contract').ProjectionCause;
+          }
+        | undefined;
+      batch = scheduler.batchContext() ?? metadata?.batch;
+      cause = metadata?.cause ?? batch?.cause;
       staged = new Map();
       nextIds = ids;
       change = undefined;
@@ -211,10 +229,49 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
         [...added, ...removed, ...updated].forEach(key => changedKeys.add(key));
         profile.projection('changedKeys', changedKeys.size);
       }
+      publishedTransitions = Object.freeze(
+        [...changedKeys].flatMap(key => {
+          const beforePresent = values.has(key);
+          const afterPresent = hasNext(key);
+          if (beforePresent === afterPresent) {
+            if (!beforePresent) return [];
+            if ((spec.isEqual ?? Object.is)(values.get(key) as V, getNext(key) as V)) return [];
+          }
+          return [
+            {
+              key,
+              kind: !beforePresent ? 'added' : !afterPresent ? 'removed' : 'updated',
+              before: beforePresent ? values.get(key) : undefined,
+              after: afterPresent ? getNext(key) : undefined,
+            } satisfies CollectionEntryTransition<K, V>,
+          ];
+        })
+      );
       reset = build;
       return change !== undefined;
     },
     context: active => {
+      const transitions = (keys?: Iterable<K>): readonly CollectionEntryTransition<K, V>[] => {
+        assertScope(active);
+        const selected = keys ? new Set(keys) : undefined;
+        return Object.freeze(
+          publishedTransitions.filter(transition => !selected || selected.has(transition.key))
+        );
+      };
+      const previous: CollectionRead<K, V> = Object.freeze({
+        get: key => {
+          assertScope(active);
+          return values.get(key);
+        },
+        has: key => {
+          assertScope(active);
+          return values.has(key);
+        },
+        ids: () => {
+          assertScope(active);
+          return ids;
+        },
+      });
       const input: CollectionInput<K, V> = {
         get: key => {
           assertScope(active);
@@ -228,9 +285,13 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
           assertScope(active);
           return nextIds;
         },
+        previous,
         change,
         revision: revision + (change ? 1 : 0),
         reset,
+        transitions,
+        batch,
+        cause,
       };
       return Object.freeze(input);
     },
@@ -275,6 +336,9 @@ export const createCollection = <S extends EngineSources, K extends string, V>(
       change = undefined;
       reset = false;
       changedKeys.clear();
+      publishedTransitions = Object.freeze([]);
+      batch = undefined;
+      cause = undefined;
       orderChanged = false;
     },
     release: () => {

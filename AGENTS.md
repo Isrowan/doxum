@@ -87,7 +87,7 @@ when a change touches addressing, mutation, impact, notifications, or views.
   address walk for every field write. Collection dispatch remains local by domain.
 - Root ObjectNode is schema identity. Subscription/impact/collection paths compile
   at their consumer boundary; do not export application target constructors.
-- Projection definitions are lazy and reusable. `ProjectionStore` is the only
+- Projection definitions are lazy and reusable. `ProjectionRuntime` is the only
   owner of materialized derived state; values are recomputed from runtime state
   and declared sources, never manually kept in sync by callers.
 - Preserve notification ordering: materialized processors settle before

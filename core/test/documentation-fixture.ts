@@ -1,6 +1,6 @@
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -52,7 +52,7 @@ export const documentationExamples = () => {
   const count = project({ titles }, ({ titles }) => titles.ids().length);
   const zoom = input(1);
   const scaled = project({ count, zoom }, ({ count, zoom }) => count * zoom);
-  const store = createProjectionStore({ onError: console.error });
+  const store = createProjectionRuntime({ onError: console.error });
   store.get(scaled);
   store.batch(() => {
     store.set(zoom, 2);

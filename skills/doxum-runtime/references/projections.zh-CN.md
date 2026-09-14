@@ -17,7 +17,7 @@
 | 应用输入                       | `input(initial)` 与 `store.set(input, value)`     |
 | 既有 `Readable`                | `project(readable)`                               |
 
-定义是惰性、可复用的描述。`createProjectionStore({ onError })` 拥有一个物化图。
+定义是惰性、可复用的描述。`createProjectionRuntime({ onError })` 拥有一个物化图。
 同一定义在不同 store 内分别拥有发布值、revision、input、订阅、processor 实例和闭包索引。
 
 普通 mapper 的契约有意限制为：

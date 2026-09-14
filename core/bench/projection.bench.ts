@@ -1,7 +1,7 @@
 import { afterAll, bench, describe } from 'vitest';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   input,
   object,
@@ -15,7 +15,7 @@ const runtime = createDocument({
   history: false,
   initial: { rows: { ids, byId: Object.fromEntries(ids.map((id, i) => [id, { value: i }])) } },
 });
-const store = createProjectionStore({
+const store = createProjectionRuntime({
   onError: error => {
     throw error;
   },

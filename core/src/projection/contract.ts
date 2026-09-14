@@ -23,11 +23,28 @@ export type EngineSources = Readonly<Record<string, EngineSource<unknown>>>;
 export type EngineInputs<S extends EngineSources> = {
   readonly [K in keyof S]: S[K] extends EngineSource<infer T> ? T : never;
 };
+/** Opaque application metadata identifying the action that produced a source event. */
+export type ProjectionCause = unknown;
+export type ProjectionBatch = {
+  readonly id: number;
+  readonly cause?: ProjectionCause;
+};
+export type ProjectionBatchOptions = {
+  readonly cause?: ProjectionCause;
+};
+export type CollectionEntryTransition<K extends string, V> = {
+  readonly key: K;
+  readonly kind: 'added' | 'updated' | 'removed';
+  readonly before: V | undefined;
+  readonly after: V | undefined;
+};
 export type DocumentInput<S extends ObjectNode> = {
   readonly read: Read<S>;
   readonly revision: number;
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 export type DocumentCollectionInput<
   S extends ObjectNode,
@@ -39,6 +56,8 @@ export type DocumentCollectionInput<
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
   readonly candidates: { readonly keys: readonly K[]; readonly orderDirty: boolean };
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 export type DocumentSource<S extends ObjectNode> = EngineSource<DocumentInput<S>> & {
   collection<P extends CollectionPath>(
@@ -51,12 +70,15 @@ export type DocumentCollectionSource<
   N extends ValueSchemaNode,
   K extends string = string,
 > = EngineSource<DocumentCollectionInput<S, N, K>>;
-export type ValueInput<T> = {
+export type ValueInput<T, D = unknown> = {
   readonly value: T;
   readonly previous: T;
   readonly changed: boolean;
   readonly revision: number;
   readonly reset: boolean;
+  readonly detail?: D;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 export type EngineInput<T> = {
   readonly source: EngineSource<ValueInput<T>>;
@@ -81,20 +103,40 @@ export type CollectionRead<K extends string, V> = {
   has(key: K): boolean;
   ids(): readonly K[];
 };
-export type CollectionInput<K extends string, V> = CollectionRead<K, V> & {
+export type CollectionInput<K extends string, V, D = unknown> = CollectionRead<K, V> & {
+  readonly previous: CollectionRead<K, V>;
   readonly change: CollectionImpact<K> | undefined;
   readonly revision: number;
   readonly reset: boolean;
+  readonly transitions: (keys?: Iterable<K>) => readonly CollectionEntryTransition<K, V>[];
+  readonly detail?: D;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
-export type MaterializedCollection<K extends string, V> = EngineSource<CollectionInput<K, V>> & {
+export type CollectionReadable<K extends string, V> = {
   current(): CollectionRead<K, V>;
   readonly ids: Readable<readonly K[]>;
   readonly all: Readable<readonly V[]>;
   item(key: K): Readable<V | undefined>;
   revision(): number;
   subscribe(listener: (change: CollectionImpact<K>) => void): Unsubscribe;
-  rebuild(): void;
-  dispose(): void;
+};
+export type MaterializedCollection<K extends string, V> = EngineSource<CollectionInput<K, V>> &
+  CollectionReadable<K, V> & {
+    rebuild(): void;
+    dispose(): void;
+  };
+export type ProjectionValueSource<T, D = unknown> = {
+  readonly kind: 'value';
+  current(): T;
+  revision(): number;
+  subscribe(listener: (event: ValueInput<T, D>) => void): Unsubscribe;
+};
+export type ProjectionCollectionSource<K extends string, V, D = unknown> = {
+  readonly kind: 'collection';
+  current(): CollectionRead<K, V>;
+  revision(): number;
+  subscribe(listener: (event: CollectionInput<K, V, D>) => void): Unsubscribe;
 };
 export type MaterializedCollectionWriter<K extends string, V> = {
   set(key: K, value: V): void;
@@ -137,6 +179,13 @@ export class ProjectionDisposedError extends Error {
 }
 export type ProjectionEngine = {
   document<S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentSource<S>;
+  fromSource<T, D = unknown>(
+    source: ProjectionValueSource<T, D>,
+    options?: { readonly isEqual?: (a: T, b: T) => boolean }
+  ): EngineSource<ValueInput<T, D>>;
+  fromCollectionSource<K extends string, V, D = unknown>(
+    source: ProjectionCollectionSource<K, V, D>
+  ): EngineSource<CollectionInput<K, V, D>>;
   fromReadable<T>(
     readable: Readable<T>,
     options?: { readonly isEqual?: (a: T, b: T) => boolean }
@@ -165,5 +214,6 @@ export type ProjectionEngine = {
     options?: { readonly isEqual?: (a: NoInfer<R>, b: NoInfer<R>) => boolean }
   ): MaterializedCollection<K, R>;
   batch<T>(run: () => Synchronous<T>): T;
+  batch<T>(options: ProjectionBatchOptions, run: () => Synchronous<T>): T;
   dispose(): void;
 };

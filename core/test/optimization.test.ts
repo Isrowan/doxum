@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -276,7 +276,7 @@ describe('bounded mutation work', () => {
         rows: Object.fromEntries(Array.from({ length: 10000 }, (_, n) => [String(n), { n }])),
       },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

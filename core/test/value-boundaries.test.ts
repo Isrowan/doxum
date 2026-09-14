@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   replace,
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -525,7 +525,7 @@ describe('schema validation and snapshots', () => {
   it('updates atomic map projections, including present undefined entries', () => {
     const schema = object({ values: map(field<number | undefined>()) }),
       runtime = createDocument({ schema, initial: { values: { a: 1 } } });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

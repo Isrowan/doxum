@@ -7,6 +7,8 @@ import type {
   EngineSources,
   MaterializedValue,
   EngineValueSpec,
+  ProjectionCollectionSource,
+  ProjectionValueSource,
 } from './contract';
 import type { Synchronous } from '../runtime/contract';
 import { assertSynchronous, createScheduler } from './scheduler';
@@ -131,6 +133,12 @@ export const createProjectionEngine = (options: {
   };
   const runtime: ProjectionEngine = {
     document: sources.document,
+    fromSource: <T, D>(
+      source: ProjectionValueSource<T, D>,
+      options?: { readonly isEqual?: (a: T, b: T) => boolean }
+    ) => sources.fromSource(source, options),
+    fromCollectionSource: <K extends string, V, D>(source: ProjectionCollectionSource<K, V, D>) =>
+      sources.fromCollectionSource(source),
     input: sources.input,
     fromReadable: sources.fromReadable,
     value,

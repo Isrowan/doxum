@@ -77,7 +77,7 @@ observerErrors 属于已提交结果。
 
 集合增量映射使用 `project(document, path => path.tasks, mapper)`。
 纯派生值使用 `project(sources, compute)`；有状态算法使用带 kind 的 value
-或 collection spec。定义是惰性的，由 `createProjectionStore({ onError })`
+或 collection spec。定义是惰性的，由 `createProjectionRuntime({ onError })`
 实例物化和管理。sources 仍然显式声明。
 普通 mapper 只表达单 source、同键转换。跨集合或跨键依赖使用 advanced collection
 processor，并由应用维护反向依赖索引；core 不追踪 processor 内的读取。event 形状、

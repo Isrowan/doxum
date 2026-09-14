@@ -6,7 +6,7 @@ import type {
   LocalHistory,
   OperationResult,
   Readable,
-  ProjectionStore,
+  ProjectionRuntime,
   CollectionProjection,
   ValueProjection,
   InputProjection,
@@ -21,13 +21,13 @@ import {
   useSyncExternalStore,
 } from 'react';
 
-export const ProjectionContext = createContext<ProjectionStore | undefined>(undefined);
+export const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
-export function useProjection<T>(projection: ValueProjection<T>, store?: ProjectionStore): T {
+export function useProjection<T>(projection: ValueProjection<T>, runtime?: ProjectionRuntime): T {
   const context = useContext(ProjectionContext);
-  const owner = store ?? context;
-  if (!owner) throw new Error('ProjectionStore is required.');
+  const owner = runtime ?? context;
+  if (!owner) throw new Error('ProjectionRuntime is required.');
   const read = useCallback(() => owner.get(projection), [owner, projection]);
   const subscribe = useCallback(
     (listener: () => void) => owner.subscribe(projection, listener),
@@ -44,11 +44,11 @@ type ProjectionItemSnapshot<T> = {
 export function useProjectionItem<K extends string, V>(
   projection: CollectionProjection<K, V>,
   key: K,
-  store?: ProjectionStore
+  runtime?: ProjectionRuntime
 ): V | undefined {
   const context = useContext(ProjectionContext);
-  const owner = store ?? context;
-  if (!owner) throw new Error('ProjectionStore is required.');
+  const owner = runtime ?? context;
+  if (!owner) throw new Error('ProjectionRuntime is required.');
   const item = useMemo(() => owner.item(projection, key), [key, owner, projection]);
   const read = useMemo(() => {
     let previousRevision = -1;
@@ -68,11 +68,11 @@ export function useProjectionItem<K extends string, V>(
 
 export function useSetProjection<T>(
   projection: InputProjection<T>,
-  store?: ProjectionStore
+  runtime?: ProjectionRuntime
 ): (value: T) => void {
   const context = useContext(ProjectionContext);
-  const owner = store ?? context;
-  if (!owner) throw new Error('ProjectionStore is required.');
+  const owner = runtime ?? context;
+  if (!owner) throw new Error('ProjectionRuntime is required.');
   return useCallback((value: T) => owner.set(projection, value), [owner, projection]);
 }
 

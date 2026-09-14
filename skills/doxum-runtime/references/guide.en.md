@@ -90,7 +90,7 @@ after acceptance.
 Use `project(document, path => path.tasks, mapper)` for incremental mapping.
 Pure values use `project(sources, compute)`; stateful algorithms use tagged value
 or collection specs. Definitions are lazy and are materialized by a
-`createProjectionStore({ onError })` instance. Sources remain explicit.
+`createProjectionRuntime({ onError })` instance. Sources remain explicit.
 Ordinary mappers only model one-source, same-key transforms. Cross-collection or
 cross-key dependencies use an advanced collection processor with an application-owned
 reverse dependency index; core does not track reads performed by processors. See the

@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   replace,
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -127,7 +127,7 @@ describe('schema inference and public access', () => {
     expectTypeOf(result.commit.impact.collection(p => p.people)).toEqualTypeOf<
       CollectionImpact<PersonId>
     >();
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

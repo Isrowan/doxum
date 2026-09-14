@@ -1,5 +1,4 @@
 import type { CollectionAccess, Read } from '../access/scope';
-import type { CollectionImpact } from '../impact';
 import type { DocumentCommit, DocumentReadable, Synchronous } from '../runtime/contract';
 import type {
   CollectionId,
@@ -11,7 +10,18 @@ import type {
   ValueSchemaNode,
 } from '../schema';
 import type { Readable } from './readable';
-import type { CollectionRead, MaterializedCollectionWriter, ValueUpdate } from './contract';
+import type {
+  CollectionEntryTransition,
+  CollectionInput,
+  CollectionRead,
+  MaterializedCollectionWriter,
+  ProjectionBatch,
+  ProjectionCause,
+  ProjectionCollectionSource,
+  ProjectionValueSource,
+  ValueInput,
+  ValueUpdate,
+} from './contract';
 
 declare const projectionDefinition: unique symbol;
 declare const writableInput: unique symbol;
@@ -68,18 +78,14 @@ export type DocumentCollectionProjection<
   K extends string = string,
 > = CollectionSource<K, Read<N>, DocumentCollectionEvent<S, N, K>>;
 
-export type ValueEvent<T> = {
-  readonly value: T;
-  readonly previous: T;
-  readonly changed: boolean;
-  readonly revision: number;
-  readonly reset: boolean;
-};
+export type ValueEvent<T, D = unknown> = ValueInput<T, D>;
 export type DocumentEvent<S extends ObjectNode> = {
   readonly read: Read<S>;
   readonly revision: number;
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
 export type DocumentCollectionEvent<
   S extends ObjectNode,
@@ -91,16 +97,19 @@ export type DocumentCollectionEvent<
   readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
   readonly candidates: { readonly keys: readonly K[]; readonly orderDirty: boolean };
+  readonly cause?: ProjectionCause;
+  readonly batch?: ProjectionBatch;
 };
-export type CollectionEvent<K extends string, V> = CollectionRead<K, V> & {
-  readonly change: CollectionImpact<K> | undefined;
-  readonly revision: number;
-  readonly reset: boolean;
-};
+export type CollectionEvent<K extends string, V, D = unknown> = CollectionInput<K, V, D>;
 
 type Definition =
   | { readonly kind: 'input'; readonly initial: unknown; readonly isEqual?: Equality }
   | { readonly kind: 'readable'; readonly readable: Readable<unknown>; readonly isEqual?: Equality }
+  | { readonly kind: 'source-value'; readonly source: ProjectionValueSource<unknown, unknown> }
+  | {
+      readonly kind: 'source-collection';
+      readonly source: ProjectionCollectionSource<string, unknown, unknown>;
+    }
   | {
       readonly kind: 'document';
       readonly document: DocumentReadable<ObjectNode>;
@@ -204,6 +213,15 @@ export type AdvancedCollectionProcess<S extends ProjectionSources, K extends str
   readonly writer: MaterializedCollectionWriter<K, V>;
 };
 
+export type CollectionTransition<K extends string, V> = CollectionEntryTransition<K, V>;
+
+export function project<T, D = unknown>(
+  source: ProjectionValueSource<T, D>
+): Projection<T, ValueEvent<T, D>, 'source'>;
+export function project<K extends string, V, D = unknown>(
+  source: ProjectionCollectionSource<K, V, D>
+): CollectionSource<K, V, CollectionEvent<K, V, D>>;
+
 export function project<T>(readable: Readable<T>): ValueProjection<T>;
 export function project<S extends ObjectNode>(document: DocumentReadable<S>): DocumentProjection<S>;
 export function project<S extends ObjectNode>(
@@ -244,6 +262,25 @@ export function project(
   third?: Callback | object,
   fourth?: object
 ): Projection<unknown, unknown, 'source' | 'value' | 'collection'> {
+  if (
+    first &&
+    typeof first === 'object' &&
+    'kind' in first &&
+    ((first as { kind?: unknown }).kind === 'value' ||
+      (first as { kind?: unknown }).kind === 'collection') &&
+    'current' in first &&
+    'revision' in first &&
+    'subscribe' in first
+  ) {
+    return define(
+      (first as { kind: 'value' | 'collection' }).kind === 'value'
+        ? { kind: 'source-value', source: first as ProjectionValueSource<unknown, unknown> }
+        : {
+            kind: 'source-collection',
+            source: first as ProjectionCollectionSource<string, unknown, unknown>,
+          }
+    );
+  }
   if (
     first &&
     typeof first === 'object' &&

@@ -1,5 +1,10 @@
 import type { ObserverError } from '../runtime/contract';
-import { ProjectionDisposedError, ProjectionError } from './contract';
+import {
+  ProjectionDisposedError,
+  ProjectionError,
+  type ProjectionBatch,
+  type ProjectionBatchOptions,
+} from './contract';
 import { profile } from '../profile';
 
 export type SourceRecord = {
@@ -28,6 +33,8 @@ export const projectionHandles = new WeakSet<object>();
 export const createScheduler = (onError: (error: ProjectionError) => void) => {
   let disposed = false;
   let depth = 0;
+  let batchSequence = 0;
+  let activeBatch: ProjectionBatch | undefined;
   let phase: 'idle' | 'compute' | 'notify' = 'idle';
   let sequence = 0;
   const records = new Map<object, SourceRecord>();
@@ -214,6 +221,46 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     if (failures.length) throw new AggregateError(failures, 'Projection error reporter failed.');
     return result;
   };
+  const batch = <T>(
+    optionsOrCallback: ProjectionBatchOptions | (() => T),
+    maybeCallback?: () => T
+  ): T => {
+    assertIdle();
+    const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
+    const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+    if (!callback) throw new TypeError('Projection batch requires a callback.');
+    const outer = depth === 0;
+    if (outer)
+      activeBatch = Object.freeze({
+        id: ++batchSequence,
+        ...(options?.cause === undefined ? {} : { cause: options.cause }),
+      });
+    depth++;
+    let failed = false;
+    try {
+      const value = callback();
+      assertSynchronous(value);
+      return value;
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      depth--;
+      if (!depth) {
+        try {
+          if (failed) {
+            try {
+              run();
+            } catch {
+              /* The original application error retains priority. */
+            }
+          } else run();
+        } finally {
+          activeBatch = undefined;
+        }
+      }
+    }
+  };
   return {
     assertActive,
     assertIdle,
@@ -282,30 +329,8 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       node.release();
       for (const [handle, record] of records) if (record === node) records.delete(handle);
     },
-    batch<T>(callback: () => T): T {
-      assertIdle();
-      depth++;
-      let failed = false;
-      try {
-        const value = callback();
-        assertSynchronous(value);
-        return value;
-      } catch (error) {
-        failed = true;
-        throw error;
-      } finally {
-        depth--;
-        if (!depth) {
-          if (failed) {
-            try {
-              run();
-            } catch {
-              /* The original application error retains priority. */
-            }
-          } else run();
-        }
-      }
-    },
+    batch,
+    batchContext: () => activeBatch,
     dispose() {
       if (disposed) return;
       assertIdle();

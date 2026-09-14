@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   replace,
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   list,
   map,
@@ -255,7 +255,7 @@ describe('shared immutable payload ownership', () => {
       schema: object({ rows: map(field<typeof a>()) }),
       initial: { rows: { a, b } },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

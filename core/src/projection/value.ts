@@ -16,9 +16,25 @@ export const createValue = <S extends EngineSources, T>(
   let revision = 0;
   let changed = false;
   let reset = false;
+  let batch: import('./contract').ProjectionBatch | undefined;
+  let cause: import('./contract').ProjectionCause | undefined;
   const listeners = new Set<() => void>();
   const owner = createNode(scheduler, spec, {
     evaluate: (sources, build) => {
+      const metadata = Object.values(sources as Record<string, unknown>).find(
+        value =>
+          value &&
+          typeof value === 'object' &&
+          (('batch' in value && (value as { readonly batch?: unknown }).batch !== undefined) ||
+            ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
+      ) as
+        | {
+            readonly batch?: import('./contract').ProjectionBatch;
+            readonly cause?: import('./contract').ProjectionCause;
+          }
+        | undefined;
+      batch = scheduler.batchContext() ?? metadata?.batch;
+      cause = metadata?.cause ?? batch?.cause;
       let candidate: T;
       if (build || !instance) {
         profile.materialized.rebuilt();
@@ -54,6 +70,8 @@ export const createValue = <S extends EngineSources, T>(
         changed,
         revision: revision + (changed ? 1 : 0),
         reset,
+        cause,
+        batch,
       });
     },
     revision: () => revision,
@@ -72,6 +90,8 @@ export const createValue = <S extends EngineSources, T>(
       previous = value;
       changed = false;
       reset = false;
+      batch = undefined;
+      cause = undefined;
     },
     release: () => {
       listeners.clear();

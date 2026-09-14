@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   input,
   object,
@@ -12,6 +12,11 @@ import {
   type ValueProjection,
   type AdvancedCollectionSpec,
   type Readable,
+  type ProjectionValueSource,
+  type ProjectionCollectionSource,
+  type CollectionInput,
+  type CollectionRead,
+  type ValueInput,
 } from '../src';
 import { startProfile } from '../src/profile';
 import { replace } from '../src';
@@ -19,12 +24,12 @@ describe('projection composition', () => {
   it('materializes one reusable definition independently in each store', () => {
     const n = input(1);
     const doubled = project({ n }, ({ n }) => n * 2);
-    const first = createProjectionStore({
+    const first = createProjectionRuntime({
       onError: error => {
         throw error;
       },
     });
-    const second = createProjectionStore({
+    const second = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -45,7 +50,7 @@ describe('projection composition', () => {
     const sources: { value: typeof first | typeof second } = { value: first };
     const doubled = project(sources, ({ value }) => value * 2);
     sources.value = second;
-    const store = createProjectionStore({ onError: () => {} });
+    const store = createProjectionRuntime({ onError: () => {} });
 
     expect(store.get(doubled)).toBe(2);
     store.set(first, 3);
@@ -66,7 +71,7 @@ describe('projection composition', () => {
       schema: model,
       initial: { content: { kind: 'empty', label: '' } },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -95,7 +100,7 @@ describe('projection composition', () => {
       schema: model,
       initial: { rows: { ids, byId: Object.fromEntries(ids.map(id => [id, { n: Number(id) }])) } },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -119,7 +124,7 @@ describe('projection composition', () => {
     runtime.dispose();
   });
   it('infers pure and stateful values independently from equality and rejects asynchronous computes', () => {
-    const store = createProjectionStore({ onError: () => {} });
+    const store = createProjectionRuntime({ onError: () => {} });
     const n = input(1);
     const pure = project({ n }, ({ n }) => ({ n: n % 2 }), {
       isEqual: (a, b) => a.n === b.n,
@@ -151,8 +156,36 @@ describe('projection composition', () => {
     expect(() => store.get(asyncValue)).toThrow('synchronous');
     store.dispose();
   });
+  it('keeps a local value source previous at the beginning of a batch', () => {
+    const value = input(1);
+    const seen: Array<readonly [number, number]> = [];
+    const projected = project({
+      kind: 'value',
+      sources: { value },
+      build: ({ value }) => ({
+        value: value.value,
+        update: ({ value }) => {
+          seen.push([value.previous, value.value]);
+          return { kind: 'changed', value: value.value };
+        },
+      }),
+    });
+    const runtime = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    expect(runtime.get(projected)).toBe(1);
+    runtime.batch(() => {
+      runtime.set(value, 2);
+      runtime.set(value, 3);
+    });
+    expect(runtime.get(projected)).toBe(3);
+    expect(seen).toEqual([[1, 3]]);
+    runtime.dispose();
+  });
   it('maps projected collections including present undefined values, order changes and disposal', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -194,7 +227,7 @@ describe('projection composition', () => {
     store.dispose();
   });
   it('exposes stable keyed collection readables with precise membership notifications', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -248,13 +281,265 @@ describe('projection composition', () => {
     expect(() => a.current()).toThrow('disposed');
     store.dispose();
   });
+  it('provides the current batch before-state to downstream collection processors', () => {
+    const n = input(1);
+    const rows = project({
+      kind: 'collection',
+      sources: { n },
+      build: ({ sources, writer }) => {
+        writer.set('a', sources.n.value);
+        return {
+          update: ({ sources, writer }) => writer.set('a', sources.n.value),
+        };
+      },
+    });
+    const transition = project({
+      kind: 'value',
+      sources: { rows },
+      build: ({ rows }) => ({
+        value: [rows.previous.get('a'), rows.get('a'), rows.transitions()] as const,
+        update: ({ rows }) => ({
+          kind: 'changed',
+          value: [rows.previous.get('a'), rows.get('a'), rows.transitions()] as const,
+        }),
+      }),
+    });
+    const runtime = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    expect(runtime.get(transition)).toEqual([1, 1, []]);
+    runtime.set(n, 2);
+    expect(runtime.get(transition)).toEqual([
+      1,
+      2,
+      [{ key: 'a', kind: 'updated', before: 1, after: 2 }],
+    ]);
+    runtime.dispose();
+  });
+  it('composes external value sources into one causal batch', () => {
+    let value = 1;
+    let revision = 0;
+    let emit!: (event: ValueInput<number, { readonly source: string }>) => void;
+    const port = {
+      kind: 'value' as const,
+      current: () => value,
+      revision: () => revision,
+      subscribe(listener: (event: ValueInput<number, { readonly source: string }>) => void) {
+        emit = listener;
+        return () => {
+          emit = undefined!;
+        };
+      },
+    } satisfies ProjectionValueSource<number, { readonly source: string }>;
+    const source = project(port);
+    const seen: { value: number; previous: number; cause: unknown }[] = [];
+    const projected = project({
+      kind: 'value',
+      sources: { source },
+      build: ({ source }) => ({
+        value: source.value,
+        update: ({ source }) => {
+          seen.push({ value: source.value, previous: source.previous, cause: source.batch?.cause });
+          return { kind: 'changed', value: source.value };
+        },
+      }),
+    });
+    const runtime = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    expect(runtime.get(projected)).toBe(1);
+    const listener = vi.fn();
+    runtime.subscribe(projected, listener);
+    runtime.batch({ cause: { kind: 'user-action', id: 'move-1' } }, () => {
+      value = 2;
+      revision = 1;
+      emit({
+        value,
+        previous: 1,
+        changed: true,
+        revision,
+        reset: false,
+        detail: { source: 'editor' },
+      });
+      value = 3;
+      revision = 2;
+      emit({
+        value,
+        previous: 2,
+        changed: true,
+        revision,
+        reset: false,
+        detail: { source: 'editor' },
+      });
+    });
+    expect(runtime.get(projected)).toBe(3);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([{ value: 3, previous: 1, cause: { kind: 'user-action', id: 'move-1' } }]);
+    runtime.dispose();
+  });
+  it('exposes external collection views with stable entry transitions', () => {
+    let values = new Map<string, number>([['a', 1]]);
+    let ids = ['a'];
+    let revision = 0;
+    let emit!: (event: CollectionInput<string, number, { readonly source: string }>) => void;
+    const read = (): CollectionRead<string, number> => {
+      const snapshot = new Map(values);
+      const order = [...ids];
+      return {
+        get: key => snapshot.get(key),
+        has: key => snapshot.has(key),
+        ids: () => order,
+      };
+    };
+    const port = {
+      kind: 'collection' as const,
+      current: read,
+      revision: () => revision,
+      subscribe(
+        listener: (event: CollectionInput<string, number, { readonly source: string }>) => void
+      ) {
+        emit = listener;
+        return () => {
+          emit = undefined!;
+        };
+      },
+    } satisfies ProjectionCollectionSource<string, number, { readonly source: string }>;
+    const source = project(port);
+    const mapped = project(source, (_id, value) => value * 2);
+    const runtime = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    const view = runtime.collection(mapped);
+    const a = view.item('a');
+    const b = view.item('b');
+    const aListener = vi.fn();
+    const bListener = vi.fn();
+    a.subscribe(aListener);
+    b.subscribe(bListener);
+    expect(a.current()).toBe(2);
+    const before = read();
+    values = new Map([['a', 2]]);
+    revision = 1;
+    emit({
+      ...read(),
+      previous: before,
+      change: {
+        kind: 'incremental',
+        added: new Set(),
+        removed: new Set(),
+        updated: new Set(['a']),
+        orderChanged: false,
+      },
+      revision,
+      reset: false,
+      transitions: () => [{ key: 'a', kind: 'updated', before: 1, after: 2 }],
+      detail: { source: 'document' },
+    });
+    expect(a.current()).toBe(4);
+    expect(aListener).toHaveBeenCalledTimes(1);
+    expect(bListener).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+  it('coalesces external collection transitions from the beginning to the end of a batch', () => {
+    let values = new Map<string, number>([['a', 1]]);
+    let ids = ['a'];
+    let revision = 0;
+    let emit!: (event: CollectionInput<string, number>) => void;
+    const read = (): CollectionRead<string, number> => {
+      const snapshot = new Map(values);
+      const order = [...ids];
+      return {
+        get: key => snapshot.get(key),
+        has: key => snapshot.has(key),
+        ids: () => order,
+      };
+    };
+    const port = {
+      kind: 'collection' as const,
+      current: read,
+      revision: () => revision,
+      subscribe(listener: (event: CollectionInput<string, number>) => void) {
+        emit = listener;
+        return () => {
+          emit = undefined!;
+        };
+      },
+    } satisfies ProjectionCollectionSource<string, number>;
+    const source = project(port);
+    const transitions = project({
+      kind: 'value',
+      sources: { source },
+      build: ({ source }) => ({
+        value: source.transitions(),
+        update: ({ source }) => ({ kind: 'changed', value: source.transitions() }),
+      }),
+    });
+    const runtime = createProjectionRuntime({
+      onError: error => {
+        throw error;
+      },
+    });
+    expect(runtime.get(transitions)).toEqual([]);
+    runtime.batch(() => {
+      const before = new Map(values);
+      values = new Map([['a', 2]]);
+      revision = 1;
+      emit({
+        ...read(),
+        previous: {
+          get: key => before.get(key),
+          has: key => before.has(key),
+          ids: () => ['a'],
+        },
+        change: {
+          kind: 'incremental',
+          added: new Set(),
+          removed: new Set(),
+          updated: new Set(['a']),
+          orderChanged: false,
+        },
+        revision,
+        reset: false,
+        transitions: () => [{ key: 'a', kind: 'updated', before: 1, after: 2 }],
+      });
+      const previous = new Map(values);
+      values = new Map([['a', 3]]);
+      revision = 2;
+      emit({
+        ...read(),
+        previous: {
+          get: key => previous.get(key),
+          has: key => previous.has(key),
+          ids: () => ['a'],
+        },
+        change: {
+          kind: 'incremental',
+          added: new Set(),
+          removed: new Set(),
+          updated: new Set(['a']),
+          orderChanged: false,
+        },
+        revision,
+        reset: false,
+        transitions: () => [{ key: 'a', kind: 'updated', before: 2, after: 3 }],
+      });
+    });
+    expect(runtime.get(transitions)).toEqual([{ key: 'a', kind: 'updated', before: 1, after: 3 }]);
+    runtime.dispose();
+  });
   it('publishes document candidate keys once per batch including net-zero changes and reset', () => {
     const model = object({ title: field<string>(), rows: table(object({ n: field<number>() })) });
     const runtime = createDocument({
       schema: model,
       initial: { title: '', rows: { ids: ['a'], byId: { a: { n: 0 } } } },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -298,7 +583,7 @@ describe('projection composition', () => {
     runtime.dispose();
   });
   it('shares external subscriptions while honoring distinct equality policies atomically', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -387,7 +672,7 @@ describe('observable grouped history', () => {
   });
   it('isolates history listener errors after projections settle and forbids observer writes', () => {
     const runtime = setup();
-    const store = createProjectionStore({ onError: () => {} });
+    const store = createProjectionRuntime({ onError: () => {} });
     const view = project({ document: project(runtime) }, ({ document }) => document.n);
     const fault = new Error('history listener');
     const observed: number[] = [];
@@ -431,7 +716,7 @@ describe('observable grouped history', () => {
   });
   it('feeds history into projections and protects an active group from nested ownership', () => {
     const runtime = setup();
-    const store = createProjectionStore({ onError: () => {} });
+    const store = createProjectionRuntime({ onError: () => {} });
     const history = project(runtime.history);
     const count = project({ history }, ({ history }) => history.undoDepth);
     const group = runtime.history.group();
@@ -446,7 +731,7 @@ describe('observable grouped history', () => {
   });
   it('settles document and history sources together before any graph listener', () => {
     const runtime = setup();
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

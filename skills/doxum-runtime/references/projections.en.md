@@ -18,7 +18,7 @@ example; source code inspection should not be necessary for normal application w
 | Application input                             | `input(initial)` and `store.set(input, value)`    |
 | Existing `Readable`                           | `project(readable)`                               |
 
-Definitions are lazy and reusable. `createProjectionStore({ onError })` owns one
+Definitions are lazy and reusable. `createProjectionRuntime({ onError })` owns one
 materialization graph. Every store has independent published values, revisions,
 inputs, subscriptions, processor instances, and closure indexes.
 

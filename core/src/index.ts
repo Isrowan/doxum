@@ -52,7 +52,7 @@ export type { Readable } from './projection/readable';
 export { select } from './projection/select';
 export type { DocumentSelector } from './projection/select';
 export { input, project } from './projection/definition';
-export { createProjectionStore } from './projection/store';
+export { createProjectionRuntime } from './projection/store';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
   Projection,
@@ -69,8 +69,21 @@ export type {
   DocumentEvent,
   DocumentCollectionEvent,
   CollectionEvent,
+  CollectionTransition,
   AdvancedValueSpec,
   AdvancedCollectionSpec,
   AdvancedCollectionProcess,
 } from './projection/definition';
-export type { ProjectionStore } from './projection/store';
+export type { ProjectionRuntime } from './projection/store';
+export type {
+  CollectionRead,
+  CollectionInput,
+  ValueInput,
+  CollectionReadable,
+  CollectionEntryTransition,
+  ProjectionValueSource,
+  ProjectionCollectionSource,
+  ProjectionCause,
+  ProjectionBatch,
+  ProjectionBatchOptions,
+} from './projection/contract';

@@ -92,7 +92,7 @@ const titles = project(
 const total = project({ titles }, ({ titles }) => titles.ids().length);
 const zoom = input(1);
 const scaled = project({ total, zoom }, ({ total, zoom }) => total * zoom);
-const store = createProjectionStore({ onError: console.error });
+const store = createProjectionRuntime({ onError: console.error });
 store.get(scaled);
 const title = store.item(titles, taskId);
 ```

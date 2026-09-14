@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   input,
   object,
@@ -9,7 +9,7 @@ import {
   table,
   type AdvancedCollectionSpec,
 } from '../src';
-import { projectionStoreDebug } from '../src/integration';
+import { projectionRuntimeDebug } from '../src/integration';
 import { startProfile } from '../src/profile';
 describe('explicit projection workloads', () => {
   it('routes only adjacent edges after geometry changes and reconnects without automatic dependencies', () => {
@@ -30,7 +30,7 @@ describe('explicit projection workloads', () => {
         },
       },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -40,7 +40,14 @@ describe('explicit projection workloads', () => {
       path => path.nodes,
       (_id, node) => node.x
     );
-    const edges = project(runtime, path => path.edges);
+    const edges = project(
+      runtime,
+      path => path.edges,
+      (_id, edge) => ({
+        from: edge.from,
+        to: edge.to,
+      })
+    );
     const calculated: string[] = [];
     const routes = project({
       kind: 'collection',
@@ -49,8 +56,8 @@ describe('explicit projection workloads', () => {
       build: ({ sources, writer }) => {
         const adjacency = new Map<string, Set<string>>();
         const endpoints = new Map<string, readonly string[]>();
-        for (const id of sources.edges.read.ids()) {
-          const edge = sources.edges.read.get(id)!;
+        for (const id of sources.edges.ids()) {
+          const edge = sources.edges.get(id)!;
           const pair = [edge.from, edge.to];
           endpoints.set(id, pair);
           pair.forEach(node => {
@@ -63,24 +70,22 @@ describe('explicit projection workloads', () => {
         return {
           update: ({ sources, writer }) => {
             const candidates = new Set<string>();
-            for (const commit of sources.edges.commits) {
-              const change = commit.impact.collection(path => path.edges);
-              if (change.kind === 'reset') return { kind: 'rebuild' };
-              [...change.added, ...change.updated, ...change.removed].forEach(id => {
-                candidates.add(id);
-                endpoints.get(id)?.forEach(node => adjacency.get(node)?.delete(id));
-                const edge = sources.edges.read.get(id);
-                if (!edge) {
-                  endpoints.delete(id);
-                  return;
-                }
-                const pair = [edge.from, edge.to];
-                endpoints.set(id, pair);
-                pair.forEach(node => {
-                  const set = adjacency.get(node) ?? new Set();
-                  set.add(id);
-                  adjacency.set(node, set);
-                });
+            if (sources.edges.reset) return { kind: 'rebuild' };
+            for (const transition of sources.edges.transitions()) {
+              const id = transition.key;
+              candidates.add(id);
+              endpoints.get(id)?.forEach(node => adjacency.get(node)?.delete(id));
+              const edge = transition.after;
+              if (!edge) {
+                endpoints.delete(id);
+                continue;
+              }
+              const pair = [edge.from, edge.to];
+              endpoints.set(id, pair);
+              pair.forEach(node => {
+                const set = adjacency.get(node) ?? new Set();
+                set.add(id);
+                adjacency.set(node, set);
               });
             }
             const change = sources.nodes.change;
@@ -124,7 +129,7 @@ describe('explicit projection workloads', () => {
     runtime.dispose();
   });
   it('keeps hover updates local using previous and current input values', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -155,7 +160,7 @@ describe('explicit projection workloads', () => {
     store.dispose();
   });
   it('does not run unrelated nodes and removes disposed nodes from dispatch', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -186,7 +191,7 @@ describe('explicit projection workloads', () => {
     expect(store.get(active)).toBe(1);
     expect(update).not.toHaveBeenCalled();
     expect(counters.materialized.updated).toBe(2);
-    expect(projectionStoreDebug(store).nodes).toBe(103);
+    expect(projectionRuntimeDebug(store).nodes).toBe(103);
     store.dispose();
   });
 });

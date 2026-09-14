@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
 import {
   createDocument,
-  createProjectionStore,
+  createProjectionRuntime,
   field,
   input,
   object,
@@ -123,7 +123,7 @@ describe('doxum/react', () => {
     runtime.dispose();
   });
   it('surfaces projection faults to an error boundary and reads recovered values after reset', () => {
-    const store = createProjectionStore({ onError: () => undefined });
+    const store = createProjectionRuntime({ onError: () => undefined });
     const source = input(0);
     let fail = false;
     const value = project({
@@ -183,7 +183,7 @@ describe('doxum/react', () => {
       schema: model,
       initial: { rows: { ids: ['a', 'b'], byId: { a: { label: 'A' }, b: { label: 'B' } } } },
     });
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },
@@ -226,7 +226,7 @@ describe('doxum/react', () => {
     runtime.dispose();
   });
   it('switches keyed projection subscriptions and observes present undefined membership', () => {
-    const store = createProjectionStore({
+    const store = createProjectionRuntime({
       onError: error => {
         throw error;
       },

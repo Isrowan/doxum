@@ -1,12 +1,21 @@
 import { createAccess, collectionAccess } from '../access/scope';
 import { affectsTarget, collectionImpact } from '../impact';
+import type { CollectionImpact } from '../impact';
 import * as target from '../impact-target';
 import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
 import { compilePath } from '../schema';
-import type { DocumentSource, EngineSource, ValueInput } from './contract';
+import type {
+  CollectionInput,
+  CollectionRead,
+  DocumentSource,
+  EngineSource,
+  ProjectionCollectionSource,
+  ProjectionValueSource,
+  ValueInput,
+} from './contract';
 import { ProjectionError } from './contract';
 import { collectionHandles } from './collection';
 import type { Readable } from './readable';
@@ -25,6 +34,7 @@ export const createSources = (scheduler: Scheduler) => {
     >
   >();
   const collections = new WeakSet<object>();
+  const externalSources = new WeakMap<object, object>();
   const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentSource<S> => {
     scheduler.assertIdle();
     const state = accessOf(runtime);
@@ -37,6 +47,7 @@ export const createSources = (scheduler: Scheduler) => {
       record: SourceRecord;
       receive: (commit: DocumentCommit<S>) => void;
     }[] = [];
+    let batch: import('./contract').ProjectionBatch | undefined;
     const make = (
       input:
         { readonly targets: readonly ImpactTarget[] } | { readonly collection: CollectionSelector }
@@ -70,6 +81,7 @@ export const createSources = (scheduler: Scheduler) => {
         clear: () => {
           commits = [];
           reset = orderDirty = false;
+          batch = undefined;
           keys.clear();
           candidates = undefined;
         },
@@ -85,6 +97,8 @@ export const createSources = (scheduler: Scheduler) => {
             revision: runtime.revision(),
             commits: Object.freeze(commits.slice()),
             reset: record.reset(),
+            batch,
+            cause: batch?.cause,
             ...(collection
               ? {
                   candidates: (candidates ??= Object.freeze({
@@ -151,6 +165,7 @@ export const createSources = (scheduler: Scheduler) => {
             binding.targets.some(value => affectsTarget(commit.impact, value))
           ) {
             binding.receive(commit);
+            batch = scheduler.batchContext();
             scheduler.capture(binding.record);
           }
         }
@@ -177,19 +192,29 @@ export const createSources = (scheduler: Scheduler) => {
     documents.set(state, handle);
     return handle;
   };
-  const valueSource = <T>(initial: T, equal: (a: T, b: T) => boolean) => {
+  const valueSource = <T, D = unknown>(initial: T, equal: (a: T, b: T) => boolean) => {
     let value = initial;
     let previous = initial;
     let revision = 0;
-    const handle = Object.freeze({}) as EngineSource<ValueInput<T>>;
+    let detail: D | undefined;
+    let cause: import('./contract').ProjectionCause | undefined;
+    let batch: import('./contract').ProjectionBatch | undefined;
+    let reset = false;
+    let pending = false;
+    const handle = Object.freeze({}) as EngineSource<ValueInput<T, D>>;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
       fault: undefined,
       revision: () => revision,
-      reset: () => false,
+      reset: () => reset,
       clear: () => {
         previous = value;
+        pending = false;
+        detail = undefined;
+        cause = undefined;
+        batch = undefined;
+        reset = false;
       },
       context: active => {
         assertScope(active);
@@ -198,19 +223,35 @@ export const createSources = (scheduler: Scheduler) => {
           previous,
           revision,
           changed: !equal(previous, value),
-          reset: false,
+          reset,
+          detail,
+          cause,
+          batch,
         });
       },
     };
     scheduler.register(handle, record);
-    const accept = (next: T) => {
+    const accept = (next: T, metadata?: Partial<ValueInput<T, D>>) => {
       scheduler.assertIdle();
       const recovering = record.fault !== undefined;
-      if (equal(value, next) && !recovering) return;
+      const eventful =
+        metadata !== undefined &&
+        (metadata.reset === true ||
+          (metadata.revision !== undefined && metadata.revision !== revision) ||
+          metadata.detail !== undefined ||
+          metadata.cause !== undefined ||
+          metadata.batch !== undefined);
+      if (equal(value, next) && !recovering && !eventful) return;
       record.fault = undefined;
+      if (!pending) previous = value;
       value = next;
-      revision++;
+      revision = metadata?.revision ?? revision + 1;
+      detail = metadata?.detail;
+      cause = metadata?.cause ?? cause;
+      batch = scheduler.batchContext() ?? metadata?.batch ?? batch;
+      reset ||= metadata?.reset ?? false;
       scheduler.capture(record);
+      pending = true;
     };
     return {
       source: handle,
@@ -221,12 +262,231 @@ export const createSources = (scheduler: Scheduler) => {
       },
     };
   };
+  const externalValueSource = <T, D>(
+    port: ProjectionValueSource<T, D>,
+    equal: (a: T, b: T) => boolean
+  ): EngineSource<ValueInput<T, D>> => {
+    scheduler.assertIdle();
+    const old = externalSources.get(port);
+    if (old) return old as EngineSource<ValueInput<T, D>>;
+    const input = valueSource<T, D>(port.current(), equal);
+    const fail = (cause: unknown) => {
+      const record = scheduler.source(input.source);
+      record.fault = new ProjectionError('source', 'external source', [record.revision()], cause);
+      scheduler.capture(record);
+    };
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = port.subscribe(event => {
+        try {
+          input.accept(event.value, {
+            revision: event.revision,
+            reset: event.reset,
+            detail: event.detail,
+            cause: event.cause,
+            batch: event.batch,
+          });
+        } catch (cause) {
+          fail(cause);
+        }
+        scheduler.run();
+      });
+    } catch (cause) {
+      unsubscribe?.();
+      scheduler.unregisterSource(input.source);
+      throw cause;
+    }
+    scheduler.cleanups.add(() => unsubscribe?.());
+    externalSources.set(port, input.source);
+    return input.source;
+  };
+  const externalCollectionSource = <K extends string, V, D>(
+    port: ProjectionCollectionSource<K, V, D>
+  ): EngineSource<CollectionInput<K, V, D>> => {
+    scheduler.assertIdle();
+    const old = externalSources.get(port);
+    if (old) return old as EngineSource<CollectionInput<K, V, D>>;
+    let read = port.current();
+    let previous = read;
+    let revision = port.revision();
+    let change: CollectionInput<K, V, D>['change'];
+    let reset = false;
+    let detail: D | undefined;
+    let cause: import('./contract').ProjectionCause | undefined;
+    let batch: import('./contract').ProjectionBatch | undefined;
+    let publishedTransitions: readonly import('./contract').CollectionEntryTransition<K, V>[] =
+      Object.freeze([]);
+    let transitionKeys = new Set<K>();
+    let pending = false;
+    const handle = Object.freeze({}) as EngineSource<CollectionInput<K, V, D>>;
+    const record: SourceRecord = {
+      consumers: new Set(),
+      disposed: false,
+      fault: undefined,
+      revision: () => revision,
+      reset: () => reset,
+      clear: () => {
+        previous = read;
+        pending = false;
+        change = undefined;
+        reset = false;
+        detail = undefined;
+        cause = undefined;
+        batch = undefined;
+        publishedTransitions = Object.freeze([]);
+        transitionKeys.clear();
+      },
+      context: active => {
+        assertScope(active);
+        const currentRead: CollectionRead<K, V> = Object.freeze({
+          get: key => {
+            assertScope(active);
+            return read.get(key);
+          },
+          has: key => {
+            assertScope(active);
+            return read.has(key);
+          },
+          ids: () => {
+            assertScope(active);
+            return read.ids();
+          },
+        });
+        const previousRead: CollectionRead<K, V> = Object.freeze({
+          get: key => {
+            assertScope(active);
+            return previous.get(key);
+          },
+          has: key => {
+            assertScope(active);
+            return previous.has(key);
+          },
+          ids: () => {
+            assertScope(active);
+            return previous.ids();
+          },
+        });
+        return Object.freeze({
+          ...currentRead,
+          previous: previousRead,
+          change,
+          revision,
+          reset,
+          transitions: (keys?: Iterable<K>) => {
+            assertScope(active);
+            const selected = keys ? new Set(keys) : undefined;
+            return Object.freeze(
+              publishedTransitions.filter(transition => !selected || selected.has(transition.key))
+            );
+          },
+          detail,
+          cause,
+          batch,
+        });
+      },
+    };
+    scheduler.register(handle, record);
+    collections.add(handle);
+    const fail = (error: unknown) => {
+      record.fault = new ProjectionError('source', 'external collection source', [revision], error);
+      scheduler.capture(record);
+    };
+    const addTransitionKeys = (event: CollectionInput<K, V>) => {
+      event.transitions().forEach(transition => transitionKeys.add(transition.key));
+      const impact = event.change;
+      if (impact?.kind === 'incremental') {
+        impact.added.forEach(key => transitionKeys.add(key));
+        impact.removed.forEach(key => transitionKeys.add(key));
+        impact.updated.forEach(key => transitionKeys.add(key));
+      }
+    };
+    const recomputeTransitions = () => {
+      const transitions: import('./contract').CollectionEntryTransition<K, V>[] = [];
+      for (const key of transitionKeys) {
+        const beforePresent = previous.has(key);
+        const afterPresent = read.has(key);
+        const before = beforePresent ? previous.get(key) : undefined;
+        const after = afterPresent ? read.get(key) : undefined;
+        if (beforePresent === afterPresent && Object.is(before, after)) continue;
+        transitions.push({
+          key,
+          kind: !beforePresent ? 'added' : !afterPresent ? 'removed' : 'updated',
+          before,
+          after,
+        });
+      }
+      publishedTransitions = Object.freeze(transitions);
+    };
+    const deriveChange = (): CollectionImpact<K> | undefined => {
+      if (reset) return Object.freeze({ kind: 'reset' as const });
+      const added = new Set<K>();
+      const removed = new Set<K>();
+      const updated = new Set<K>();
+      publishedTransitions.forEach(transition => {
+        if (transition.kind === 'added') added.add(transition.key);
+        else if (transition.kind === 'removed') removed.add(transition.key);
+        else updated.add(transition.key);
+      });
+      const beforeIds = previous.ids();
+      const afterIds = read.ids();
+      const beforeCommon = beforeIds.filter(key => read.has(key));
+      const afterCommon = afterIds.filter(key => previous.has(key));
+      const orderChanged =
+        beforeCommon.length !== afterCommon.length ||
+        beforeCommon.some((key, index) => afterCommon[index] !== key);
+      if (!added.size && !removed.size && !updated.size && !orderChanged) return undefined;
+      return Object.freeze({
+        kind: 'incremental' as const,
+        added,
+        removed,
+        updated,
+        orderChanged,
+      });
+    };
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = port.subscribe(event => {
+        try {
+          scheduler.assertIdle();
+          if (!pending) previous = event.previous;
+          read = port.current();
+          revision = event.revision;
+          addTransitionKeys(event);
+          reset ||= event.reset || event.change?.kind === 'reset';
+          detail = event.detail;
+          cause = event.cause ?? cause;
+          batch = scheduler.batchContext() ?? event.batch;
+          recomputeTransitions();
+          change = deriveChange();
+          record.fault = undefined;
+          scheduler.capture(record);
+          pending = true;
+        } catch (error) {
+          fail(error);
+        }
+        scheduler.run();
+      });
+    } catch (error) {
+      unsubscribe?.();
+      scheduler.unregisterSource(handle);
+      throw error;
+    }
+    scheduler.cleanups.add(() => unsubscribe?.());
+    externalSources.set(port, handle);
+    return handle;
+  };
   return {
     dispose: () => {
       documents.clear();
       readables.clear();
     },
     document,
+    fromSource: <T, D>(
+      source: ProjectionValueSource<T, D>,
+      options?: { readonly isEqual?: (a: T, b: T) => boolean }
+    ) => externalValueSource(source, options?.isEqual ?? Object.is),
+    fromCollectionSource: <K extends string, V, D>(source: ProjectionCollectionSource<K, V, D>) =>
+      externalCollectionSource(source),
     input: <T>(initial: T, options?: { readonly isEqual?: (a: T, b: T) => boolean }) => {
       const { source, set } = valueSource(initial, options?.isEqual ?? Object.is);
       return Object.freeze({ source, set });
