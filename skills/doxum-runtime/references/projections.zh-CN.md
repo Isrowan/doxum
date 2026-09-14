@@ -16,7 +16,13 @@ runtime.get(visible);
 `input(initial, equality?)` 属于每个 Runtime，只能通过
 `runtime.set(input, value)` 写入。`observe(document, selector)` 延迟编译文档
 边界；集合路径发布只读 map-like 快照，省略 selector 时发布整个文档快照。
-现有 Doxum `Readable` 也可以在这个边界接入。
+现有 Doxum `Readable` 和带事件的 external source 也在这个边界接入。External
+source 通过 `kind: 'value'` 或 `kind: 'collection'` 区分语义，但调用方统一使用
+`observe(source)`。
+
+External event 不再复用 Runtime context：value event 提供新 `value` 和
+`revision`；collection event 提供稳定的 `previous` read、`revision` 和可选的
+keyed `change`。`changed` 与 transitions 由 Runtime 自己计算。
 
 `derive(dependencies, compute, equality?)` 使用 tuple，依赖在定义创建时固定。
 Processor 不能通过读取另一个 Projection 隐式建立图依赖。

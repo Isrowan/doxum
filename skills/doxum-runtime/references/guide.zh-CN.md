@@ -80,7 +80,8 @@ observerErrors 属于已提交结果。
 `createProjectionRuntime({ onError })` owner 物化和管理。保留状态、反向索引和
 keyed patch 放在隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
 selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。
-`input` 与 `observe(readable)` 接入外部边界值。随所属服务 dispose Runtime。
+`input` 与 `observe(source)` 接入外部边界值，包括带事件的 value 和 collection
+source。随所属服务 dispose Runtime。
 `runtime.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，
 不提供跨文档回滚。React 只保留一个带可选 selector 的 `useProjection`，输入使用
 `useInput`。

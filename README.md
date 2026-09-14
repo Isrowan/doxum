@@ -234,6 +234,10 @@ Projection declarations are lazy and reusable. The only Runtime operations are
 state, publication and recovery stay inside the Runtime. Collection values are
 immutable `ReadonlyMap`-like snapshots, so callers do not hold lifecycle handles.
 
+`observe` is the single source boundary for documents, Doxum `Readable` values,
+and eventful external sources. External sources declare `kind: 'value'` or
+`kind: 'collection'`; collection invalidation remains keyed internally.
+
 For retained state, reverse indexes and keyed patches, use the isolated advanced
 entry point. Whole-value processors use `incremental(...)`; keyed collection
 processors use `incremental.collection(...)`:

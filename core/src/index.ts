@@ -61,4 +61,11 @@ export type {
   ProjectionValues,
   PublicCollection,
 } from './projection/definition';
+export type {
+  ExternalCollectionEvent,
+  ExternalCollectionRead,
+  ExternalCollectionSource,
+  ExternalValueEvent,
+  ExternalValueSource,
+} from './projection/contract';
 export type { ProjectionRuntime } from './projection/store';

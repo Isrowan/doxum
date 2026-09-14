@@ -17,7 +17,14 @@ runtime.get(visible);
 `runtime.set(input, value)`. `observe(document, selector)` compiles a document
 boundary lazily. Collection paths publish immutable map-like snapshots; the
 whole-document form publishes a snapshot of the root. Existing Doxum Readables
-can also be observed at this boundary.
+and eventful external sources can also be observed at this boundary. External
+sources use `kind: 'value'` or `kind: 'collection'`; the caller still uses only
+`observe(source)`.
+
+External events are smaller than Runtime contexts. A value event carries the new
+`value` and `revision`; a collection event carries a stable `previous` read,
+`revision`, and an optional keyed `change`. The Runtime derives `changed` and
+transitions itself.
 
 `derive(dependencies, compute, equality?)` takes a tuple. Dependencies are
 explicit and fixed when the definition is created. Processors must not discover

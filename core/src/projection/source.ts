@@ -391,9 +391,7 @@ export const createSources = (scheduler: Scheduler) => {
       record.fault = new ProjectionError('source', 'external collection source', [revision], error);
       scheduler.capture(record);
     };
-    const addTransitionKeys = (event: CollectionContext<K, V>) => {
-      event.transitions().forEach(transition => transitionKeys.add(transition.key));
-      const impact = event.change;
+    const addTransitionKeys = (impact: CollectionContext<K, V>['change']) => {
       if (impact?.kind === 'incremental') {
         impact.added.forEach(key => transitionKeys.add(key));
         impact.removed.forEach(key => transitionKeys.add(key));
@@ -451,7 +449,7 @@ export const createSources = (scheduler: Scheduler) => {
           if (!pending) previous = event.previous;
           read = port.current();
           revision = event.revision;
-          addTransitionKeys(event);
+          addTransitionKeys(event.change);
           reset ||= event.reset || event.change?.kind === 'reset';
           detail = event.detail;
           cause = event.cause ?? cause;

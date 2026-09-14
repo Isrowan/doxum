@@ -103,6 +103,11 @@ export type CollectionRead<K extends string, V> = {
   has(key: K): boolean;
   ids(): readonly K[];
 };
+export type ExternalCollectionRead<K extends string, V> = {
+  readonly get: (key: K) => V | undefined;
+  readonly has: (key: K) => boolean;
+  readonly ids: () => readonly K[];
+};
 export type CollectionContext<K extends string, V, D = unknown> = CollectionRead<K, V> & {
   readonly previous: CollectionRead<K, V>;
   readonly change: CollectionImpact<K> | undefined;
@@ -130,13 +135,30 @@ export type ExternalValueSource<T, D = unknown> = {
   readonly kind: 'value';
   current(): T;
   revision(): number;
-  subscribe(listener: (event: ValueContext<T, D>) => void): Unsubscribe;
+  subscribe(listener: (event: ExternalValueEvent<T, D>) => void): Unsubscribe;
 };
 export type ExternalCollectionSource<K extends string, V, D = unknown> = {
   readonly kind: 'collection';
-  current(): CollectionRead<K, V>;
+  current(): ExternalCollectionRead<K, V>;
   revision(): number;
-  subscribe(listener: (event: CollectionContext<K, V, D>) => void): Unsubscribe;
+  subscribe(listener: (event: ExternalCollectionEvent<K, V, D>) => void): Unsubscribe;
+};
+export type ExternalValueEvent<T, D = unknown> = {
+  readonly value: T;
+  readonly revision: number;
+  readonly reset?: boolean;
+  readonly detail?: D;
+  readonly cause?: Cause;
+  readonly batch?: { readonly id: number; readonly cause?: Cause };
+};
+export type ExternalCollectionEvent<K extends string, V, D = unknown> = {
+  readonly previous: ExternalCollectionRead<K, V>;
+  readonly revision: number;
+  readonly reset?: boolean;
+  readonly change?: CollectionImpact<K>;
+  readonly detail?: D;
+  readonly cause?: Cause;
+  readonly batch?: { readonly id: number; readonly cause?: Cause };
 };
 export type CollectionDraft<K extends string, V> = {
   set(key: K, value: V): void;

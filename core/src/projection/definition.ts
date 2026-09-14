@@ -105,10 +105,15 @@ export const input = <T>(
 ): Input<T> => define<T>({ kind: 'input', initial, isEqual: equality as Equality }) as Input<T>;
 
 /**
- * Establishes a reactive boundary from a document. The selector is compiled
- * when the definition is materialized, so declarations stay lazy and reusable.
+ * Establishes a reactive boundary from a document, readable, or external
+ * source. The selector is compiled when the definition is materialized, so
+ * declarations stay lazy and reusable.
  */
 export function observe<S extends ObjectNode>(document: DocumentReadable<S>): Projection<Infer<S>>;
+export function observe<T, D>(source: ExternalValueSource<T, D>): Projection<T>;
+export function observe<K extends string, V, D>(
+  source: ExternalCollectionSource<K, V, D>
+): Projection<PublicCollection<K, V>>;
 export function observe<T>(readable: Readable<T>): Projection<T>;
 export function observe<S extends ObjectNode, P extends CollectionPath>(
   document: DocumentReadable<S>,
@@ -119,9 +124,17 @@ export function observe<S extends ObjectNode, P>(
   selector: (path: SchemaPath<S['shape']>) => P
 ): Projection<PathValueOf<P>>;
 export function observe<S extends ObjectNode>(
-  document: DocumentReadable<S> | Readable<unknown>,
+  document:
+    | DocumentReadable<S>
+    | Readable<unknown>
+    | ExternalValueSource<unknown, unknown>
+    | ExternalCollectionSource<string, unknown, unknown>,
   selector?: PathSelector<S>
 ): Projection<unknown> {
+  if (isExternalSource(document))
+    return document.kind === 'collection'
+      ? defineExternalCollection(document)
+      : defineExternalValue(document);
   if ('current' in document && typeof document.current === 'function')
     return defineReadable(document as Readable<unknown>);
   return define({
@@ -130,6 +143,25 @@ export function observe<S extends ObjectNode>(
     selector: selector as PathSelector<ObjectNode> | undefined,
   });
 }
+
+const isExternalSource = (
+  source: unknown
+): source is
+  ExternalValueSource<unknown, unknown> | ExternalCollectionSource<string, unknown, unknown> => {
+  if (!source || typeof source !== 'object') return false;
+  const candidate = source as {
+    readonly kind?: unknown;
+    readonly current?: unknown;
+    readonly revision?: unknown;
+    readonly subscribe?: unknown;
+  };
+  return (
+    (candidate.kind === 'value' || candidate.kind === 'collection') &&
+    typeof candidate.current === 'function' &&
+    typeof candidate.revision === 'function' &&
+    typeof candidate.subscribe === 'function'
+  );
+};
 
 export function derive<const D extends readonly Projection<unknown>[], T>(
   dependencies: D,
@@ -147,7 +179,7 @@ export function derive<const D extends readonly Projection<unknown>[], T>(
   });
 }
 
-/** Internal adapters used by the integration boundary, not exported publicly. */
+/** Internal source adapters used by observe, not exported publicly. */
 export const defineReadable = <T>(
   readable: Readable<T>,
   equality: (a: T, b: T) => boolean = Object.is

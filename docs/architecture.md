@@ -289,6 +289,11 @@ batching, errors and disposal; there is no second Engine owner. Its public spine
 `get`, `subscribe`, `set`, `batch` and `dispose`. Collection values are immutable
 map-like snapshots, while keyed storage, revisions and transition indexes remain
 private to the runtime.
+`observe` is the single source boundary for documents, Doxum `Readable` values,
+and eventful external value or collection sources; the source `kind` selects the
+internal adapter without adding another public observe function.
+External events carry boundary metadata and, for collections, a stable previous
+read plus keyed change hint; Runtime contexts and transitions remain internal.
 React's selector overload records collection key reads at the consumer boundary.
 Keyed invalidation prevents an unrelated entry update from executing the selector;
 equality filters the result only after a related update. This tracking does not

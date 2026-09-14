@@ -94,7 +94,8 @@ remain explicit. Retained state, reverse indexes and keyed output patches belong
 the isolated `doxum/advanced` incremental entry points. See the [projection
 reference](projections.en.md) for lifecycle, draft semantics, selector tracking,
 batching and recovery.
-`input` and `observe(readable)` connect external boundary values. Dispose the
+`input` and `observe(source)` connect external boundary values, including
+eventful value and collection sources. Dispose the
 Runtime with the owning service. `runtime.batch` defers projection settlement and
 listeners, not document commits or listeners. Reads inside a batch see the last
 publication; no cross-document rollback is provided. React uses one

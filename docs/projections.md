@@ -26,7 +26,42 @@ value.
 `observe(document, pathSelector)` establishes a document boundary. A collection
 path produces an immutable `ReadonlyMap`-like projection whose entry values are
 snapshots. `observe(document)` produces a snapshot of the complete document.
-`observe(readable)` is the small adapter for an existing Doxum `Readable`.
+`observe(readable)` bridges an existing Doxum `Readable`. Eventful external
+sources use the same `observe(source)` entry point; their `kind` selects the
+value or keyed-collection adapter and preserves collection transitions.
+
+External sources are boundary contracts, not Runtime contexts:
+
+```ts
+type ExternalValueEvent<T, D> = {
+  value: T;
+  revision: number;
+  reset?: boolean;
+  detail?: D;
+  cause?: unknown;
+  batch?: { id: number; cause?: unknown };
+};
+
+type ExternalCollectionRead<K, V> = {
+  get(key: K): V | undefined;
+  has(key: K): boolean;
+  ids(): readonly K[];
+};
+
+type ExternalCollectionEvent<K, V, D> = {
+  previous: ExternalCollectionRead<K, V>;
+  revision: number;
+  change?: CollectionImpact<K>;
+  reset?: boolean;
+  detail?: D;
+  cause?: unknown;
+  batch?: { id: number; cause?: unknown };
+};
+```
+
+The Runtime computes `previous`, `changed` and keyed transitions for its own
+contexts. Collection sources must provide a stable `previous` read in each event
+so mutable external stores cannot make before/after comparison ambiguous.
 
 `derive(dependencies, compute, equality?)` takes a tuple of explicit dependencies
 and calls `compute` with their current values. Dependencies are captured when the

@@ -9,15 +9,11 @@ import {
   object,
   observe,
   table,
+  type ExternalCollectionEvent,
+  type ExternalValueEvent,
 } from '../src';
 import { incremental } from '../src/projection/advanced';
-import {
-  observeExternal,
-  observeExternalCollection,
-  subscribeProjection,
-  trackProjection,
-} from '../src/integration';
-import type { ValueContext } from '../src/projection/contract';
+import { subscribeProjection, trackProjection } from '../src/integration';
 
 const row = object({ value: field<number>(), label: field<string>() });
 const model = object({ rows: map(row), ordered: table(row) });
@@ -97,14 +93,14 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
-  it('adapts external value and collection owners at the integration boundary', () => {
+  it('observes external value and collection sources through the same boundary', () => {
     let value = 1;
-    const valueListeners = new Set<(event: ValueContext<number>) => void>();
-    const valueSource = observeExternal({
+    const valueListeners = new Set<(event: ExternalValueEvent<number>) => void>();
+    const valueSource = observe({
       kind: 'value' as const,
       current: () => value,
       revision: () => value,
-      subscribe: (listener: (event: ValueContext<number>) => void) => {
+      subscribe: (listener: (event: ExternalValueEvent<number>) => void) => {
         valueListeners.add(listener);
         return () => {
           valueListeners.delete(listener);
@@ -112,8 +108,8 @@ describe('projection runtime', () => {
       },
     });
     const collection = new Map([['a', 1]]);
-    const collectionListeners = new Set<(event: never) => void>();
-    const collectionSource = observeExternalCollection({
+    const collectionListeners = new Set<(event: ExternalCollectionEvent<string, number>) => void>();
+    const collectionSource = observe({
       kind: 'collection' as const,
       current: () => ({
         get: (key: string) => collection.get(key),
@@ -121,20 +117,39 @@ describe('projection runtime', () => {
         ids: () => [...collection.keys()],
       }),
       revision: () => value,
-      subscribe: (listener: (event: never) => void) => {
+      subscribe: (listener: (event: ExternalCollectionEvent<string, number>) => void) => {
         collectionListeners.add(listener);
         return () => collectionListeners.delete(listener);
       },
     });
+    const collectionCount = derive([collectionSource], rows => rows.size);
     const runtime = createProjectionRuntime();
     expect(runtime.get(valueSource)).toBe(1);
     expect(runtime.get(collectionSource).get('a')).toBe(1);
+    expect(runtime.get(collectionCount)).toBe(1);
     value = 2;
-    valueListeners.forEach(listener =>
-      listener({ value, previous: 1, changed: true, revision: value, reset: false })
-    );
+    valueListeners.forEach(listener => listener({ value, revision: value }));
     expect(runtime.get(valueSource)).toBe(2);
-    void collectionListeners;
+    collection.set('a', 2);
+    value = 3;
+    collectionListeners.forEach(listener =>
+      listener({
+        previous: {
+          get: key => (key === 'a' ? 1 : undefined),
+          has: key => key === 'a',
+          ids: () => ['a'],
+        },
+        revision: value,
+        change: {
+          kind: 'incremental',
+          added: new Set(),
+          removed: new Set(),
+          updated: new Set(['a']),
+          orderChanged: false,
+        },
+      })
+    );
+    expect(runtime.get(collectionSource).get('a')).toBe(2);
     runtime.dispose();
   });
 
