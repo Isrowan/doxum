@@ -254,6 +254,12 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 });
 ```
 
+Incremental processors receive a dependency-aligned `changes` tuple. Collection
+entries carry discriminated `added`/`updated`/`removed` transitions with complete
+`before`/`after` values, so a processor can patch indexes without rescanning the
+collection; scalar dependencies use `undefined` and the initial collection build
+reports `{ kind: 'reset' }`.
+
 In React, `useProjection(projection)` reads a value and
 `useProjection(projection, selector, equality?)` tracks keyed reads such as
 `tasks => tasks.get(taskId)`. Unrelated key changes do not execute that selector;

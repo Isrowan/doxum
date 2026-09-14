@@ -14,6 +14,7 @@ import type {
   BatchContext,
   Cause,
   CollectionContext,
+  CollectionChange,
   CollectionDraft,
   CollectionRead,
   CollectionEntryTransition,
@@ -27,24 +28,34 @@ import type {
 } from './contract';
 
 declare const projectionDefinition: unique symbol;
+declare const projectionChanges: unique symbol;
 declare const writableInput: unique symbol;
 
 /** A lazy, reusable projection definition. Its value is materialized per runtime. */
-export type Projection<T> = {
+export type Projection<T, C = undefined> = {
   readonly [projectionDefinition]: T;
+  readonly [projectionChanges]: C;
 };
 
 /** A runtime-local writable projection definition. */
 export type Input<T> = Projection<T> & { readonly [writableInput]: true };
 
-export type ProjectionValues<D extends readonly Projection<unknown>[]> = {
-  readonly [K in keyof D]: D[K] extends Projection<infer T> ? T : never;
+export type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
+  readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
+};
+
+export type ProjectionChanges<D extends readonly Projection<unknown, unknown>[]> = {
+  readonly [K in keyof D]: D[K] extends Projection<unknown, infer C>
+    ? [C] extends [undefined]
+      ? undefined
+      : C | undefined
+    : undefined;
 };
 
 export type PublicCollection<K extends string, V> = ReadonlyMap<K, V>;
-type ObservedCollection<P extends CollectionPath> = PublicCollection<
-  CollectionId<P>,
-  ReadonlyValue<Infer<SchemaCollectionNode<P>>>
+export type CollectionProjection<K extends string, V> = Projection<
+  PublicCollection<K, V>,
+  CollectionChange<K, V>
 >;
 
 type Equality = (a: unknown, b: unknown) => boolean;
@@ -65,7 +76,7 @@ type Definition =
     }
   | {
       readonly kind: 'derive';
-      readonly dependencies: readonly Projection<unknown>[];
+      readonly dependencies: readonly Projection<unknown, unknown>[];
       readonly compute: (...values: readonly unknown[]) => unknown;
       readonly isEqual?: Equality;
     }
@@ -84,11 +95,11 @@ type Definition =
       readonly name?: string;
     };
 
-type DefinitionProjection = Projection<unknown>;
+type DefinitionProjection = Projection<unknown, unknown>;
 const definitions = new WeakMap<object, Definition>();
 
-const define = <T>(definition: Definition): Projection<T> => {
-  const handle = Object.freeze({}) as Projection<T>;
+const define = <T, C = undefined>(definition: Definition): Projection<T, C> => {
+  const handle = Object.freeze({}) as Projection<T, C>;
   definitions.set(handle, definition);
   return handle;
 };
@@ -113,12 +124,12 @@ export function observe<S extends ObjectNode>(document: DocumentReadable<S>): Pr
 export function observe<T, D>(source: ExternalValueSource<T, D>): Projection<T>;
 export function observe<K extends string, V, D>(
   source: ExternalCollectionSource<K, V, D>
-): Projection<PublicCollection<K, V>>;
+): CollectionProjection<K, V>;
 export function observe<T>(readable: Readable<T>): Projection<T>;
 export function observe<S extends ObjectNode, P extends CollectionPath>(
   document: DocumentReadable<S>,
   selector: (path: SchemaPath<S['shape']>) => P
-): Projection<ObservedCollection<P>>;
+): CollectionProjection<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>;
 export function observe<S extends ObjectNode, P>(
   document: DocumentReadable<S>,
   selector: (path: SchemaPath<S['shape']>) => P
@@ -130,7 +141,7 @@ export function observe<S extends ObjectNode>(
     | ExternalValueSource<unknown, unknown>
     | ExternalCollectionSource<string, unknown, unknown>,
   selector?: PathSelector<S>
-): Projection<unknown> {
+): Projection<unknown, unknown> {
   if (isExternalSource(document))
     return document.kind === 'collection'
       ? defineExternalCollection(document)
@@ -163,14 +174,14 @@ const isExternalSource = (
   );
 };
 
-export function derive<const D extends readonly Projection<unknown>[], T>(
+export function derive<const D extends readonly Projection<unknown, unknown>[], T>(
   dependencies: D,
   compute: (...values: ProjectionValues<D>) => Synchronous<T>,
   equality: (previous: T, next: T) => boolean = Object.is
 ): Projection<T> {
   if (!Array.isArray(dependencies) || dependencies.some(value => !definitions.has(value)))
     throw new TypeError('derive dependencies must be projections.');
-  const frozen = Object.freeze([...dependencies]) as readonly Projection<unknown>[];
+  const frozen = Object.freeze([...dependencies]) as readonly Projection<unknown, unknown>[];
   return define<T>({
     kind: 'derive',
     dependencies: frozen,
@@ -190,8 +201,11 @@ export const defineExternalValue = <T, D>(source: ExternalValueSource<T, D>): Pr
 
 export const defineExternalCollection = <K extends string, V, D>(
   source: ExternalCollectionSource<K, V, D>
-): Projection<PublicCollection<K, V>> =>
-  define<PublicCollection<K, V>>({ kind: 'source-collection', source: source as never });
+): CollectionProjection<K, V> =>
+  define<PublicCollection<K, V>, CollectionChange<K, V>>({
+    kind: 'source-collection',
+    source: source as never,
+  });
 
 export type IncrementalValueDefinition = Extract<Definition, { kind: 'incremental-value' }>;
 export type IncrementalCollectionDefinition = Extract<
@@ -218,8 +232,8 @@ export const defineIncrementalCollection = <K extends string, V>(definition: {
   readonly build: (...args: never[]) => unknown;
   readonly isEqual?: (a: V, b: V) => boolean;
   readonly name?: string;
-}): Projection<PublicCollection<K, V>> =>
-  define<PublicCollection<K, V>>({
+}): CollectionProjection<K, V> =>
+  define<PublicCollection<K, V>, CollectionChange<K, V>>({
     kind: 'incremental-collection',
     dependencies: definition.dependencies,
     build: definition.build,

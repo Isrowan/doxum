@@ -295,7 +295,9 @@ revision for store integrations. Selector tracking and equality belong to a runt
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
 External events carry boundary metadata and, for collections, a stable previous
-read plus keyed change hint; Runtime contexts and transitions remain internal.
+read plus keyed change hint. The isolated advanced incremental boundary exposes
+dependency-aligned collection transitions with complete entry before/after values;
+the document runtime still owns the canonical ChangeSet and impact protocols.
 React's selector overload is implemented by `runtime.readable(projection, selector,
 equality)`, so the same runtime-owned readable can be consumed by React or
 imperative code. Keyed invalidation prevents an unrelated entry update from

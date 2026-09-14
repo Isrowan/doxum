@@ -60,9 +60,15 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 });
 ```
 
-Value contexts expose `sources`, `previous`, `reset`, `change`, `cause` and a
-retained `state` object. `incremental.collection(...)` uses a separate
-collection processor protocol and additionally exposes borrowed
+Both processor contexts expose `sources`, a dependency-aligned `changes` tuple,
+`previous`, `reset`, `cause` and a retained `state` object. `changes[i]` belongs
+to dependency `i`: scalar dependencies are `undefined`, while collection
+dependencies receive `reset` or grouped `added`/`updated`/`removed` entries with
+complete `before`/`after` values and optional `order.before`/`order.after`.
+The initial build reports `reset` for collection dependencies. A committed batch
+is already coalesced into one net transition.
+
+`incremental.collection(...)` uses a separate collection processor protocol and additionally exposes borrowed
 `previous`/`next` keyed reads and a callback-local `output` draft. Draft methods are
 `set`, `remove`, `order`, and `replace`; the Runtime validates and seals them after
 the synchronous callback, computes keyed transitions and publishes one immutable

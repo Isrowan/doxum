@@ -31,10 +31,10 @@ type Selection = {
 };
 
 export type ProjectionRuntime = {
-  get<T>(projection: Projection<T>): T;
-  readable<T>(projection: Projection<T>): Readable<T>;
+  get<T>(projection: Projection<T, unknown>): T;
+  readable<T>(projection: Projection<T, unknown>): Readable<T>;
   readable<T, R>(
-    projection: Projection<T>,
+    projection: Projection<T, unknown>,
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
@@ -184,7 +184,7 @@ export const createProjectionRuntime = (options?: {
     { revision: number; value: PublicCollection<string, unknown> }
   >();
 
-  const materialize = (projection: Projection<unknown>): RuntimeValue => {
+  const materialize = (projection: Projection<unknown, unknown>): RuntimeValue => {
     const old = instances.get(projection);
     if (old) return old;
     const definition = definitionOf(projection);
@@ -280,8 +280,8 @@ export const createProjectionRuntime = (options?: {
     return instance;
   };
 
-  const get = <T>(projection: Projection<T>): T => {
-    const instance = materialize(projection as Projection<unknown>);
+  const get = <T>(projection: Projection<T, unknown>): T => {
+    const instance = materialize(projection as Projection<unknown, unknown>);
     const current: unknown = instance.current();
     if (
       current &&
@@ -307,14 +307,14 @@ export const createProjectionRuntime = (options?: {
     return current as T;
   };
 
-  function readable<T>(projection: Projection<T>): Readable<T>;
+  function readable<T>(projection: Projection<T, unknown>): Readable<T>;
   function readable<T, R>(
-    projection: Projection<T>,
+    projection: Projection<T, unknown>,
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
   function readable<T, R>(
-    projection: Projection<T>,
+    projection: Projection<T, unknown>,
     selector?: (value: T) => R,
     equality: (previous: R, next: R) => boolean = Object.is
   ): Readable<T | R> {

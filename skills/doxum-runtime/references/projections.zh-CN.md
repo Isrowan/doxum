@@ -57,9 +57,14 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 });
 ```
 
-Value context 包含 `sources`、`previous`、`reset`、`change`、`cause` 和持久
-`state`。`incremental.collection(...)` 使用独立的 collection processor 协议，
-另外提供借用的 `previous`/`next` keyed read，以及
+两种 processor context 都包含 `sources`、按依赖位置对齐的 `changes` tuple、
+`previous`、`reset`、`cause` 和持久 `state`。`changes[i]` 只对应第 `i` 个依赖：
+标量依赖为 `undefined`，集合依赖则是 `reset`，或带完整 `before`/`after` 值的
+`added`/`updated`/`removed` 分组，并可选提供 `order.before`/`order.after`。初次
+build 对集合依赖报告 `reset`；一次已提交的 batch 已经合并成一个净 transition。
+
+`incremental.collection(...)` 使用独立的 collection processor 协议，另外提供借用的
+`previous`/`next` keyed read，以及
 只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`、
 `replace`；Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
 一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。

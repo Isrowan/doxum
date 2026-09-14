@@ -59,16 +59,118 @@ describe('projection runtime', () => {
       },
     });
     const source = observe(document, path => path.rows);
-    const doubled = incremental.collection([source], ({ sources, output }) => {
+    const seenChanges: unknown[] = [];
+    const doubled = incremental.collection([source], ({ sources, output, changes }) => {
+      if (changes[0]?.kind === 'incremental') {
+        for (const transition of changes[0].updated) {
+          const beforeLabel: string = transition.before.label;
+          const afterValue: number = transition.after.value;
+          void beforeLabel;
+          void afterValue;
+        }
+      }
+      seenChanges.push(changes[0]);
       for (const [key, value] of sources[0]) output.set(key, value.value * 2);
     });
     const runtime = createProjectionRuntime();
     expect(runtime.get(doubled).get('a')).toBe(2);
+    expect(seenChanges[0]).toEqual({ kind: 'reset' });
     document.update(draft => {
       draft.rows.get('b')!.value = 4;
     });
     expect(runtime.get(doubled).get('a')).toBe(2);
     expect(runtime.get(doubled).get('b')).toBe(8);
+    expect(seenChanges[1]).toMatchObject({
+      kind: 'incremental',
+      updated: [
+        {
+          key: 'b',
+          kind: 'updated',
+          before: { value: 2, label: 'B' },
+          after: { value: 4, label: 'B' },
+        },
+      ],
+    });
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('passes dependency-aligned collection transitions with complete entry values', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const ordered = observe(document, path => path.ordered);
+    const filter = input('all');
+    const changes: unknown[][] = [];
+    const projection = incremental([rows, ordered, filter], ({ changes: next }) => {
+      const rowChange = next[0];
+      if (rowChange?.kind === 'incremental') {
+        for (const transition of rowChange.updated) {
+          const beforeValue: number = transition.before.value;
+          const afterLabel: string = transition.after.label;
+          void beforeValue;
+          void afterLabel;
+        }
+      }
+      changes.push(next as unknown as unknown[]);
+      return 0;
+    });
+    const runtime = createProjectionRuntime();
+
+    runtime.get(projection);
+    expect(changes[0][0]).toEqual({ kind: 'reset' });
+    expect(changes[0][1]).toEqual({ kind: 'reset' });
+    expect(changes[0][2]).toBeUndefined();
+
+    document.update(draft => {
+      draft.rows.get('b')!.value = 4;
+      draft.rows.put('c', { value: 3, label: 'C' });
+      draft.rows.remove('a');
+    });
+    runtime.get(projection);
+    const rowChange = changes.at(-1)![0] as {
+      kind: 'incremental';
+      added: readonly { key: string; after: { value: number; label: string } }[];
+      updated: readonly {
+        key: string;
+        before: { value: number; label: string };
+        after: { value: number; label: string };
+      }[];
+      removed: readonly { key: string; before: { value: number; label: string } }[];
+    };
+    expect(rowChange.kind).toBe('incremental');
+    expect(rowChange.added).toEqual([{ key: 'c', kind: 'added', after: { value: 3, label: 'C' } }]);
+    expect(rowChange.updated).toEqual([
+      {
+        key: 'b',
+        kind: 'updated',
+        before: { value: 2, label: 'B' },
+        after: { value: 4, label: 'B' },
+      },
+    ]);
+    expect(rowChange.removed).toEqual([
+      { key: 'a', kind: 'removed', before: { value: 1, label: 'A' } },
+    ]);
+    expect(changes.at(-1)![1]).toBeUndefined();
+    expect(changes.at(-1)![2]).toBeUndefined();
+
+    document.update(draft => draft.ordered.move('b', { at: 'start' }));
+    runtime.get(projection);
+    const orderChange = changes.at(-1)![1] as {
+      kind: 'incremental';
+      order?: { before: readonly string[]; after: readonly string[] };
+    };
+    expect(orderChange.kind).toBe('incremental');
+    expect(orderChange.order).toEqual({ before: ['a', 'b'], after: ['b', 'a'] });
+
     document.dispose();
     runtime.dispose();
   });

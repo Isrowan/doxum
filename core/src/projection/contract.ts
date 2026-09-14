@@ -32,12 +32,46 @@ export type BatchContext = {
 export type BatchOptions = {
   readonly cause?: Cause;
 };
-export type CollectionEntryTransition<K extends string, V> = {
-  readonly key: K;
-  readonly kind: 'added' | 'updated' | 'removed';
-  readonly before: V | undefined;
-  readonly after: V | undefined;
-};
+export type CollectionEntryTransition<K extends string, V> =
+  | {
+      readonly key: K;
+      readonly kind: 'added';
+      readonly before: undefined;
+      readonly after: V;
+    }
+  | {
+      readonly key: K;
+      readonly kind: 'updated';
+      readonly before: V;
+      readonly after: V;
+    }
+  | {
+      readonly key: K;
+      readonly kind: 'removed';
+      readonly before: V;
+      readonly after: undefined;
+    };
+export type CollectionChange<K extends string, V> =
+  | { readonly kind: 'reset' }
+  | {
+      readonly kind: 'incremental';
+      readonly added: readonly Omit<
+        Extract<CollectionEntryTransition<K, V>, { readonly kind: 'added' }>,
+        'before'
+      >[];
+      readonly updated: readonly Extract<
+        CollectionEntryTransition<K, V>,
+        { readonly kind: 'updated' }
+      >[];
+      readonly removed: readonly Omit<
+        Extract<CollectionEntryTransition<K, V>, { readonly kind: 'removed' }>,
+        'after'
+      >[];
+      readonly order?: {
+        readonly before: readonly K[];
+        readonly after: readonly K[];
+      };
+    };
 export type DocumentContext<S extends ObjectNode> = {
   readonly read: Read<S>;
   readonly revision: number;

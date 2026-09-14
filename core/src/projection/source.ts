@@ -406,12 +406,11 @@ export const createSources = (scheduler: Scheduler) => {
         const before = beforePresent ? previous.get(key) : undefined;
         const after = afterPresent ? read.get(key) : undefined;
         if (beforePresent === afterPresent && Object.is(before, after)) continue;
-        transitions.push({
-          key,
-          kind: !beforePresent ? 'added' : !afterPresent ? 'removed' : 'updated',
-          before,
-          after,
-        });
+        if (!beforePresent)
+          transitions.push({ key, kind: 'added', before: undefined, after: after as V });
+        else if (!afterPresent)
+          transitions.push({ key, kind: 'removed', before: before as V, after: undefined });
+        else transitions.push({ key, kind: 'updated', before: before as V, after: after as V });
       }
       publishedTransitions = Object.freeze(transitions);
     };

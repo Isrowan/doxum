@@ -23,20 +23,23 @@ import {
 export const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
-export function useProjection<T>(projection: Projection<T>, runtime?: ProjectionRuntime): T;
+export function useProjection<T>(
+  projection: Projection<T, unknown>,
+  runtime?: ProjectionRuntime
+): T;
 export function useProjection<T, R>(
-  projection: Projection<T>,
+  projection: Projection<T, unknown>,
   selector: (value: T) => R,
   runtime?: ProjectionRuntime
 ): R;
 export function useProjection<T, R>(
-  projection: Projection<T>,
+  projection: Projection<T, unknown>,
   selector: (value: T) => R,
   equality?: (previous: R, next: R) => boolean,
   runtime?: ProjectionRuntime
 ): R;
 export function useProjection<T, R>(
-  projection: Projection<T>,
+  projection: Projection<T, unknown>,
   selectorOrRuntime?: ((value: T) => R) | ProjectionRuntime,
   equalityOrRuntime?: ((previous: R, next: R) => boolean) | ProjectionRuntime,
   suppliedRuntime?: ProjectionRuntime

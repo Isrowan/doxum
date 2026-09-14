@@ -141,9 +141,27 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 });
 ```
 
-An incremental value processor receives `sources`, `previous`, `reset`, `change`,
-`cause` and a retained `state` object. An incremental collection processor also
-receives `previous`, `next` and a callback-local `output` draft:
+Both incremental processors receive `sources`, a dependency-aligned `changes`
+tuple, `previous` (for values), `reset`, `cause` and a retained `state` object.
+An incremental collection processor also receives `previous`, `next` and a
+callback-local `output` draft. `changes[i]` describes only dependency `i`; scalar
+dependencies are `undefined`, while collection dependencies use this exact shape:
+
+```ts
+type CollectionChange<K extends string, V> =
+  | { kind: 'reset' }
+  | {
+      kind: 'incremental';
+      added: readonly { kind: 'added'; key: K; after: V }[];
+      updated: readonly { kind: 'updated'; key: K; before: V; after: V }[];
+      removed: readonly { kind: 'removed'; key: K; before: V }[];
+      order?: { before: readonly K[]; after: readonly K[] };
+    };
+```
+
+The initial build reports `reset` for collection dependencies. A committed
+document batch is already coalesced into one net transition, so `before` and
+`after` are the values at the batch boundaries.
 
 The two processor protocols intentionally live under one advanced namespace:
 `incremental(...)` returns a whole value, while `incremental.collection(...)`

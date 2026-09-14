@@ -229,24 +229,38 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
         [...added, ...removed, ...updated].forEach(key => changedKeys.add(key));
         profile.projection('changedKeys', changedKeys.size);
       }
-      publishedTransitions = Object.freeze(
-        [...changedKeys].flatMap(key => {
-          const beforePresent = values.has(key);
-          const afterPresent = hasNext(key);
-          if (beforePresent === afterPresent) {
-            if (!beforePresent) return [];
-            if ((spec.isEqual ?? Object.is)(values.get(key) as V, getNext(key) as V)) return [];
-          }
-          return [
-            {
-              key,
-              kind: !beforePresent ? 'added' : !afterPresent ? 'removed' : 'updated',
-              before: beforePresent ? values.get(key) : undefined,
-              after: afterPresent ? getNext(key) : undefined,
-            } satisfies CollectionEntryTransition<K, V>,
-          ];
-        })
-      );
+      const transitions: CollectionEntryTransition<K, V>[] = [];
+      for (const key of changedKeys) {
+        const beforePresent = values.has(key);
+        const afterPresent = hasNext(key);
+        if (beforePresent === afterPresent) {
+          if (!beforePresent) continue;
+          if ((spec.isEqual ?? Object.is)(values.get(key) as V, getNext(key) as V)) continue;
+        }
+        if (!beforePresent) {
+          transitions.push({
+            key,
+            kind: 'added',
+            before: undefined,
+            after: getNext(key) as V,
+          });
+        } else if (!afterPresent) {
+          transitions.push({
+            key,
+            kind: 'removed',
+            before: values.get(key) as V,
+            after: undefined,
+          });
+        } else {
+          transitions.push({
+            key,
+            kind: 'updated',
+            before: values.get(key) as V,
+            after: getNext(key) as V,
+          });
+        }
+      }
+      publishedTransitions = Object.freeze(transitions);
       reset = build;
       return change !== undefined;
     },

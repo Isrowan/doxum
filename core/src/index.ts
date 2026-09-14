@@ -57,6 +57,7 @@ export { createProjectionRuntime } from './projection/store';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
   Projection,
+  ProjectionChanges,
   Input,
   ProjectionValues,
   PublicCollection,
