@@ -1,11 +1,8 @@
 import type { ObserverError } from '../runtime/contract';
-import {
-  ProjectionDisposedError,
-  ProjectionError,
-  type BatchContext,
-  type BatchOptions,
-} from './contract';
+import { ProjectionDisposedError, ProjectionError, type BatchContext } from './contract';
 import { profile } from '../profile';
+
+type BatchOptions = { readonly cause?: unknown };
 
 export type SourceRecord = {
   readonly consumers: Set<NodeRecord>;
@@ -20,8 +17,6 @@ export type NodeRecord = SourceRecord & {
   readonly order: number;
   readonly name: string;
   readonly sources: readonly SourceRecord[];
-  forced: boolean;
-  statusChanged: boolean;
   evaluate(build: boolean): boolean;
   publish(): void;
   emit(call: (listener: () => void) => void): void;
@@ -130,7 +125,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         if (blocked) {
           node.fault = errorFor(node, blocked.fault ?? new ProjectionDisposedError(), 'blocked');
         } else {
-          const build = node.forced || wasFaulted || node.sources.some(source => source.reset());
+          const build = wasFaulted || node.sources.some(source => source.reset());
           try {
             changed = node.evaluate(build);
             const failure = node.sources.find(source => source.fault)?.fault;
@@ -153,8 +148,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
             }
           }
         }
-        node.forced = false;
-        node.statusChanged = wasFaulted !== (node.fault !== undefined);
         completed.push(node);
         if (changed || wasFaulted || node.fault) {
           profile.projection('publishedNodes');
@@ -308,24 +301,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         phase = 'idle';
       }
     },
-    rebuild(node: NodeRecord) {
-      assertIdle();
-      if (node.disposed) throw new ProjectionDisposedError();
-      node.forced = true;
-      enqueue(node);
-      run();
-    },
-    disposeNode(node: NodeRecord) {
-      if (node.disposed) return;
-      assertIdle();
-      if (node.consumers.size)
-        throw new Error('Cannot dispose a projection node with downstream consumers.');
-      node.disposed = true;
-      node.sources.forEach(source => source.consumers.delete(node));
-      nodes.delete(node);
-      node.release();
-      for (const [handle, record] of records) if (record === node) records.delete(handle);
-    },
     batch,
     batchContext: () => activeBatch,
     dispose() {
@@ -363,12 +338,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       reportingFailures = [];
       if (failures.length) throw new AggregateError(failures, 'Projection cleanup failed.');
     },
-    debug: () => ({
-      nodes: nodes.size,
-      sources: records.size - nodes.size,
-      subscriptions: cleanups.size,
-      pending: pending.size + heap.length,
-    }),
   };
 };
 export type Scheduler = ReturnType<typeof createScheduler>;

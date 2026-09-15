@@ -95,8 +95,8 @@ runtime.get(scaled);
 const title = runtime.get(tasks).get(taskId);
 ```
 
-Use `useProjection` with a Runtime for projection definitions and
-`useProjection(projection, selector)` for keyed reads. `useInput` returns a value
-and setter. Advanced collection processors in `doxum/advanced` stage
-`output.set/remove/order/replace` and use scoped previous/next reads. Processor
+Provide the Runtime through `ProjectionProvider`, then use `useProjection` for
+projection definitions and `useProjection(projection, selector)` for keyed reads.
+`useInput` returns a value and setter. Advanced collection processors in `doxum/advanced` stage
+`output.set/remove/order` and use scoped previous/next reads. Processor
 dependencies remain explicit even though React selectors track actual reads.

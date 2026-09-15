@@ -1,17 +1,11 @@
-import type { CollectionAccess, Read } from '../access/scope';
+import type { Read } from '../access/scope';
 import type { CollectionImpact } from '../impact';
-import type {
-  DocumentCommit,
-  DocumentReadable,
-  Synchronous,
-  Unsubscribe,
-} from '../runtime/contract';
+import type { DocumentReadable, Unsubscribe } from '../runtime/contract';
 import type {
   CollectionNode as SchemaCollectionNode,
   CollectionId,
   CollectionPath,
   ObjectNode,
-  ValueSchemaNode,
   PathPick,
   SchemaPath,
 } from '../schema';
@@ -23,105 +17,64 @@ export type GraphSources = Readonly<Record<string, GraphSource<unknown>>>;
 export type InputHandles<S extends GraphSources> = {
   readonly [K in keyof S]: S[K] extends GraphSource<infer T> ? T : never;
 };
-/** Opaque application metadata identifying the action that produced a source event. */
-export type Cause = unknown;
+
+/** Scheduler-owned metadata for one Runtime batch. */
 export type BatchContext = {
   readonly id: number;
-  readonly cause?: Cause;
+  readonly cause?: unknown;
 };
-export type BatchOptions = {
-  readonly cause?: Cause;
-};
-export type CollectionEntryTransition<K extends string, V> =
-  | {
-      readonly key: K;
-      readonly kind: 'added';
-      readonly before: undefined;
-      readonly after: V;
-    }
-  | {
-      readonly key: K;
-      readonly kind: 'updated';
-      readonly before: V;
-      readonly after: V;
-    }
-  | {
-      readonly key: K;
-      readonly kind: 'removed';
-      readonly before: V;
-      readonly after: undefined;
-    };
+
+/** The one processor-facing collection transition protocol. */
 export type CollectionChange<K extends string, V> =
   | { readonly kind: 'reset' }
   | {
       readonly kind: 'incremental';
-      readonly added: readonly Omit<
-        Extract<CollectionEntryTransition<K, V>, { readonly kind: 'added' }>,
-        'before'
-      >[];
-      readonly updated: readonly Extract<
-        CollectionEntryTransition<K, V>,
-        { readonly kind: 'updated' }
-      >[];
-      readonly removed: readonly Omit<
-        Extract<CollectionEntryTransition<K, V>, { readonly kind: 'removed' }>,
-        'after'
-      >[];
+      readonly added: readonly { readonly key: K; readonly after: V }[];
+      readonly updated: readonly {
+        readonly key: K;
+        readonly before: V;
+        readonly after: V;
+      }[];
+      readonly removed: readonly { readonly key: K; readonly before: V }[];
       readonly order?: {
         readonly before: readonly K[];
         readonly after: readonly K[];
       };
     };
+
 export type DocumentContext<S extends ObjectNode> = {
+  readonly kind: 'document';
   readonly read: Read<S>;
   readonly revision: number;
-  readonly commits: readonly DocumentCommit<S>[];
   readonly reset: boolean;
-  readonly cause?: Cause;
-  readonly batch?: BatchContext;
+  readonly cause?: unknown;
 };
-export type DocumentCollectionContext<
-  S extends ObjectNode,
-  N extends ValueSchemaNode,
-  K extends string = string,
-> = {
-  readonly read: CollectionAccess<K, N>;
-  readonly revision: number;
-  readonly commits: readonly DocumentCommit<S>[];
-  readonly reset: boolean;
-  readonly candidates: { readonly keys: readonly K[]; readonly orderDirty: boolean };
-  readonly cause?: Cause;
-  readonly batch?: BatchContext;
-};
+
 export type DocumentHandle<S extends ObjectNode> = GraphSource<DocumentContext<S>> & {
   collection<P extends CollectionPath>(
     pick: (path: SchemaPath<S['shape']>) => P
-  ): DocumentCollectionSource<S, SchemaCollectionNode<P>, CollectionId<P>>;
+  ): GraphSource<CollectionContext<CollectionId<P>, Read<SchemaCollectionNode<P>>>>;
   targets(...targets: readonly [PathPick<S>, ...PathPick<S>[]]): GraphSource<DocumentContext<S>>;
 };
-export type DocumentCollectionSource<
-  S extends ObjectNode,
-  N extends ValueSchemaNode,
-  K extends string = string,
-> = GraphSource<DocumentCollectionContext<S, N, K>>;
-export type ValueContext<T, D = unknown> = {
+
+export type ValueContext<T> = {
+  readonly kind: 'value';
   readonly value: T;
-  readonly previous: T;
-  readonly changed: boolean;
   readonly revision: number;
   readonly reset: boolean;
-  readonly detail?: D;
-  readonly cause?: Cause;
-  readonly batch?: BatchContext;
+  readonly cause?: unknown;
 };
+
 export type InputHandle<T> = {
   readonly source: GraphSource<ValueContext<T>>;
   set(value: T): void;
 };
+
 export type NodeUpdate<T> =
   | { readonly kind: 'unchanged' }
   | { readonly kind: 'changed'; readonly value: T }
   | { readonly kind: 'rebuild' };
+
 export type ValueNodeSpec<S extends GraphSources, T> = {
   readonly name?: string;
   readonly sources: S;
@@ -130,82 +83,79 @@ export type ValueNodeSpec<S extends GraphSources, T> = {
     readonly update: (sources: InputHandles<S>) => NodeUpdate<NoInfer<T>>;
   };
 };
-export type ValueNode<T> = Readable<T> &
-  GraphSource<ValueContext<T>> & { rebuild(): void; dispose(): void };
+
+export type ValueNode<T> = Readable<T> & GraphSource<ValueContext<T>> & { readonly kind: 'value' };
+
 export type CollectionRead<K extends string, V> = {
   get(key: K): V | undefined;
   has(key: K): boolean;
   ids(): readonly K[];
 };
+
 export type ExternalCollectionRead<K extends string, V> = {
   readonly get: (key: K) => V | undefined;
   readonly has: (key: K) => boolean;
   readonly ids: () => readonly K[];
 };
-export type CollectionContext<K extends string, V, D = unknown> = CollectionRead<K, V> & {
-  readonly previous: CollectionRead<K, V>;
-  readonly change: CollectionImpact<K> | undefined;
+
+export type CollectionContext<K extends string, V> = {
+  readonly kind: 'collection';
+  readonly read: CollectionRead<K, V>;
+  readonly change: CollectionChange<K, V> | undefined;
   readonly revision: number;
-  readonly reset: boolean;
-  readonly transitions: (keys?: Iterable<K>) => readonly CollectionEntryTransition<K, V>[];
-  readonly detail?: D;
-  readonly cause?: Cause;
-  readonly batch?: BatchContext;
+  readonly cause?: unknown;
 };
-export type CollectionHandle<K extends string, V> = {
+
+export type CollectionNode<K extends string, V> = GraphSource<CollectionContext<K, V>> & {
+  readonly kind: 'collection';
   current(): CollectionRead<K, V>;
-  readonly ids: Readable<readonly K[]>;
-  readonly all: Readable<readonly V[]>;
-  item(key: K): Readable<V | undefined>;
   revision(): number;
-  subscribe(listener: (change: CollectionImpact<K>) => void): Unsubscribe;
+  subscribe(listener: (change: CollectionChange<K, V>) => void): Unsubscribe;
 };
-export type CollectionNode<K extends string, V> = GraphSource<CollectionContext<K, V>> &
-  CollectionHandle<K, V> & {
-    rebuild(): void;
-    dispose(): void;
-  };
-export type ExternalValueSource<T, D = unknown> = {
+
+export type ExternalValueSource<T> = {
   readonly kind: 'value';
   current(): T;
   revision(): number;
-  subscribe(listener: (event: ExternalValueEvent<T, D>) => void): Unsubscribe;
+  subscribe(listener: (event: ExternalValueEvent<T>) => void): Unsubscribe;
 };
-export type ExternalCollectionSource<K extends string, V, D = unknown> = {
+
+export type ExternalCollectionSource<K extends string, V> = {
   readonly kind: 'collection';
   current(): ExternalCollectionRead<K, V>;
   revision(): number;
-  subscribe(listener: (event: ExternalCollectionEvent<K, V, D>) => void): Unsubscribe;
+  subscribe(listener: (event: ExternalCollectionEvent<K, V>) => void): Unsubscribe;
 };
-export type ExternalValueEvent<T, D = unknown> = {
+
+export type ExternalValueEvent<T> = {
   readonly value: T;
   readonly revision: number;
   readonly reset?: boolean;
-  readonly detail?: D;
-  readonly cause?: Cause;
-  readonly batch?: { readonly id: number; readonly cause?: Cause };
+  readonly cause?: unknown;
 };
-export type ExternalCollectionEvent<K extends string, V, D = unknown> = {
+
+export type ExternalCollectionEvent<K extends string, V> = {
+  /** Stable read from the source before this event or external batch. */
   readonly previous: ExternalCollectionRead<K, V>;
   readonly revision: number;
-  readonly reset?: boolean;
-  readonly change?: CollectionImpact<K>;
-  readonly detail?: D;
-  readonly cause?: Cause;
-  readonly batch?: { readonly id: number; readonly cause?: Cause };
+  /** Optional document-style hint; the adapter resolves the canonical change. */
+  readonly impact?: CollectionImpact<K>;
+  readonly cause?: unknown;
 };
+
 export type CollectionDraft<K extends string, V> = {
   set(key: K, value: V): void;
   remove(key: K): void;
   order(ids: readonly K[]): void;
-  replace(entries: readonly (readonly [K, V])[]): void;
 };
+
 export type CollectionProcess<S extends GraphSources, K extends string, V> = {
   readonly sources: InputHandles<S>;
   readonly previous: CollectionRead<K, V>;
   readonly next: CollectionRead<K, V>;
-  readonly writer: CollectionDraft<K, V>;
+  readonly output: CollectionDraft<K, V>;
 };
+
 export type CollectionNodeSpec<S extends GraphSources, K extends string, V> = {
   readonly name?: string;
   readonly sources: S;
@@ -214,6 +164,7 @@ export type CollectionNodeSpec<S extends GraphSources, K extends string, V> = {
     readonly update: (input: CollectionProcess<S, K, V>) => void | { readonly kind: 'rebuild' };
   };
 };
+
 export class ProjectionError extends Error {
   constructor(
     readonly phase: 'processor' | 'listener' | 'source' | 'blocked',
@@ -225,49 +176,10 @@ export class ProjectionError extends Error {
     this.name = 'ProjectionError';
   }
 }
+
 export class ProjectionDisposedError extends Error {
   constructor() {
     super('Projection has been disposed.');
     this.name = 'ProjectionDisposedError';
   }
 }
-export type RuntimeExecutor = {
-  document<S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentHandle<S>;
-  fromSource<T, D = unknown>(
-    source: ExternalValueSource<T, D>,
-    options?: { readonly isEqual?: (a: T, b: T) => boolean }
-  ): GraphSource<ValueContext<T, D>>;
-  fromCollectionSource<K extends string, V, D = unknown>(
-    source: ExternalCollectionSource<K, V, D>
-  ): GraphSource<CollectionContext<K, V, D>>;
-  fromReadable<T>(
-    readable: Readable<T>,
-    options?: { readonly isEqual?: (a: T, b: T) => boolean }
-  ): GraphSource<ValueContext<T>>;
-  input<T>(initial: T, options?: { readonly isEqual?: (a: T, b: T) => boolean }): InputHandle<T>;
-  value<S extends GraphSources, T>(
-    sources: S,
-    compute: (sources: InputHandles<S>) => Synchronous<T>,
-    options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): ValueNode<T>;
-  value<S extends GraphSources, T>(
-    spec: ValueNodeSpec<S, T>,
-    options?: { readonly isEqual?: (a: NoInfer<T>, b: NoInfer<T>) => boolean }
-  ): ValueNode<T>;
-  collection<V, K extends string = string>(): <S extends GraphSources>(
-    spec: CollectionNodeSpec<S, K, V>
-  ) => CollectionNode<K, V>;
-  map<S extends ObjectNode, N extends ValueSchemaNode, K extends string, V>(
-    source: DocumentCollectionSource<S, N, K>,
-    mapper: (id: K, entry: Read<N>) => Synchronous<V>,
-    options?: { readonly isEqual?: (a: V, b: V) => boolean }
-  ): CollectionNode<K, V>;
-  map<K extends string, V, R>(
-    source: CollectionNode<K, V>,
-    mapper: (id: K, entry: V) => Synchronous<R>,
-    options?: { readonly isEqual?: (a: NoInfer<R>, b: NoInfer<R>) => boolean }
-  ): CollectionNode<K, R>;
-  batch<T>(run: () => Synchronous<T>): T;
-  batch<T>(options: BatchOptions, run: () => Synchronous<T>): T;
-  dispose(): void;
-};

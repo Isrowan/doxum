@@ -11,13 +11,11 @@ export const createValue = <S extends GraphSources, T>(
   let instance: ReturnType<typeof spec.build> | undefined;
   let value!: T;
   let next!: T;
-  let previous!: T;
   let initialized = false;
   let revision = 0;
   let changed = false;
   let reset = false;
-  let batch: import('./contract').BatchContext | undefined;
-  let cause: import('./contract').Cause | undefined;
+  let cause: unknown;
   const listeners = new Set<() => void>();
   const owner = createNode(scheduler, spec, {
     evaluate: (sources, build) => {
@@ -25,16 +23,10 @@ export const createValue = <S extends GraphSources, T>(
         value =>
           value &&
           typeof value === 'object' &&
-          (('batch' in value && (value as { readonly batch?: unknown }).batch !== undefined) ||
-            ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
-      ) as
-        | {
-            readonly batch?: import('./contract').BatchContext;
-            readonly cause?: import('./contract').Cause;
-          }
-        | undefined;
-      batch = scheduler.batchContext() ?? metadata?.batch;
-      cause = metadata?.cause ?? batch?.cause;
+          'cause' in value &&
+          (value as { readonly cause?: unknown }).cause !== undefined
+      ) as { readonly cause?: unknown } | undefined;
+      cause = metadata?.cause ?? scheduler.batchContext()?.cause;
       let candidate: T;
       if (build || !instance) {
         profile.materialized.rebuilt();
@@ -56,7 +48,6 @@ export const createValue = <S extends GraphSources, T>(
           build = true;
         } else candidate = result.kind === 'changed' ? result.value : value;
       }
-      previous = value;
       changed = !initialized || !(options?.isEqual ?? Object.is)(value, candidate);
       next = changed ? candidate : value;
       reset = build;
@@ -65,13 +56,11 @@ export const createValue = <S extends GraphSources, T>(
     context: active => {
       assertScope(active);
       return Object.freeze({
+        kind: 'value' as const,
         value: next,
-        previous,
-        changed,
         revision: revision + (changed ? 1 : 0),
         reset,
         cause,
-        batch,
       });
     },
     revision: () => revision,
@@ -87,19 +76,18 @@ export const createValue = <S extends GraphSources, T>(
     },
     clear: () => {
       next = value;
-      previous = value;
       changed = false;
       reset = false;
-      batch = undefined;
       cause = undefined;
     },
     release: () => {
       listeners.clear();
       instance = undefined;
-      value = next = previous = undefined as T;
+      value = next = undefined as T;
     },
   });
   const handle = Object.freeze({
+    kind: 'value' as const,
     current: () => {
       owner.check();
       return value;
@@ -115,8 +103,6 @@ export const createValue = <S extends GraphSources, T>(
         listeners.delete(listener);
       };
     },
-    rebuild: owner.rebuild,
-    dispose: owner.dispose,
   }) as ValueNode<T>;
   owner.install(handle);
   return handle;

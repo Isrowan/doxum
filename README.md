@@ -255,7 +255,7 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 ```
 
 Incremental processors receive a dependency-aligned `changes` tuple. Collection
-entries carry discriminated `added`/`updated`/`removed` transitions with complete
+entries carry `added`/`updated`/`removed` transitions with complete
 `before`/`after` values, so a processor can patch indexes without rescanning the
 collection; scalar dependencies use `undefined` and the initial collection build
 reports `{ kind: 'reset' }`.

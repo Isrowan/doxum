@@ -20,41 +20,22 @@ import {
   useSyncExternalStore,
 } from 'react';
 
-export const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
+const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
-export function useProjection<T>(
-  projection: Projection<T, unknown>,
-  runtime?: ProjectionRuntime
-): T;
+export function useProjection<T>(projection: Projection<T, unknown>): T;
 export function useProjection<T, R>(
   projection: Projection<T, unknown>,
   selector: (value: T) => R,
-  runtime?: ProjectionRuntime
+  equality?: (previous: R, next: R) => boolean
 ): R;
 export function useProjection<T, R>(
   projection: Projection<T, unknown>,
-  selector: (value: T) => R,
-  equality?: (previous: R, next: R) => boolean,
-  runtime?: ProjectionRuntime
-): R;
-export function useProjection<T, R>(
-  projection: Projection<T, unknown>,
-  selectorOrRuntime?: ((value: T) => R) | ProjectionRuntime,
-  equalityOrRuntime?: ((previous: R, next: R) => boolean) | ProjectionRuntime,
-  suppliedRuntime?: ProjectionRuntime
+  selector?: (value: T) => R,
+  equality: (previous: R, next: R) => boolean = Object.is
 ): T | R {
   const context = useContext(ProjectionContext);
-  const selector = typeof selectorOrRuntime === 'function' ? selectorOrRuntime : undefined;
-  const equality = typeof equalityOrRuntime === 'function' ? equalityOrRuntime : Object.is;
-  const owner =
-    (selector ? suppliedRuntime : undefined) ??
-    (selector
-      ? equalityOrRuntime && typeof equalityOrRuntime !== 'function'
-        ? equalityOrRuntime
-        : undefined
-      : undefined) ??
-    (selector ? context : typeof selectorOrRuntime === 'object' ? selectorOrRuntime : context);
+  const owner = context;
   if (!owner) throw new Error('ProjectionRuntime is required.');
   const readable = useMemo(
     () => (selector ? owner.readable(projection, selector, equality) : owner.readable(projection)),
@@ -63,14 +44,11 @@ export function useProjection<T, R>(
   return useReadable(readable as Readable<T | R>);
 }
 
-export function useInput<T>(
-  input: Input<T>,
-  runtime?: ProjectionRuntime
-): readonly [T, (value: T) => void] {
+export function useInput<T>(input: Input<T>): readonly [T, (value: T) => void] {
   const context = useContext(ProjectionContext);
-  const owner = runtime ?? context;
+  const owner = context;
   if (!owner) throw new Error('ProjectionRuntime is required.');
-  const value = useProjection(input, owner);
+  const value = useProjection(input);
   const set = useCallback((next: T) => owner.set(input, next), [input, owner]);
   return useMemo(() => [value, set] as const, [set, value]);
 }

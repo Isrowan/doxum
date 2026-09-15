@@ -33,8 +33,6 @@ export const createNode = <S extends GraphSources>(
     consumers: new Set(),
     disposed: false,
     fault: undefined,
-    forced: false,
-    statusChanged: false,
     evaluate: build => {
       let active = true;
       try {
@@ -67,7 +65,5 @@ export const createNode = <S extends GraphSources>(
       scheduler.register(handle, node);
       scheduler.addNode(node);
     },
-    rebuild: () => scheduler.rebuild(node),
-    dispose: () => scheduler.disposeNode(node),
   };
 };

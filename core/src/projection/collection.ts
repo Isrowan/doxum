@@ -1,7 +1,6 @@
-import type { CollectionImpact } from '../impact';
 import { profile } from '../profile';
 import type {
-  CollectionEntryTransition,
+  CollectionChange,
   CollectionContext,
   CollectionRead,
   CollectionNodeSpec,
@@ -9,29 +8,136 @@ import type {
   CollectionNode,
   GraphSources,
 } from './contract';
-import type { Readable } from './readable';
 import { createNode } from './node';
-import { assertScope, assertSynchronous, projectionHandles, type Scheduler } from './scheduler';
+import { assertScope, assertSynchronous, type Scheduler } from './scheduler';
 
-export const collectionHandles = new WeakSet<object>();
-
-const readonlySet = <T>(values: Iterable<T>): ReadonlySet<T> => {
-  const set = new Set(values);
-  const view: ReadonlySet<T> = Object.freeze({
-    get size() {
-      return set.size;
-    },
-    has: (value: T) => set.has(value),
-    entries: () => set.entries(),
-    keys: () => set.keys(),
-    values: () => set.values(),
-    [Symbol.iterator]: () => set.values(),
-    forEach: (callback: (value: T, key: T, set: ReadonlySet<T>) => void, thisArg?: unknown) =>
-      set.forEach(value => callback.call(thisArg, value, value, view)),
-  });
-  return view;
-};
 type Entry<V> = { present: true; value: V } | { present: false };
+
+type TreeNode<K extends string, V> = {
+  readonly key: K;
+  readonly value: V;
+  readonly height: number;
+  readonly left?: TreeNode<K, V>;
+  readonly right?: TreeNode<K, V>;
+};
+
+const height = <K extends string, V>(node: TreeNode<K, V> | undefined): number => node?.height ?? 0;
+
+const makeTreeNode = <K extends string, V>(
+  key: K,
+  value: V,
+  left?: TreeNode<K, V>,
+  right?: TreeNode<K, V>
+): TreeNode<K, V> =>
+  Object.freeze({
+    key,
+    value,
+    left,
+    right,
+    height: Math.max(height(left), height(right)) + 1,
+  });
+
+const rotateLeft = <K extends string, V>(node: TreeNode<K, V>): TreeNode<K, V> => {
+  const right = node.right!;
+  return makeTreeNode(
+    right.key,
+    right.value,
+    makeTreeNode(node.key, node.value, node.left, right.left),
+    right.right
+  );
+};
+
+const rotateRight = <K extends string, V>(node: TreeNode<K, V>): TreeNode<K, V> => {
+  const left = node.left!;
+  return makeTreeNode(
+    left.key,
+    left.value,
+    left.left,
+    makeTreeNode(node.key, node.value, left.right, node.right)
+  );
+};
+
+const rebalance = <K extends string, V>(node: TreeNode<K, V>): TreeNode<K, V> => {
+  const balance = height(node.left) - height(node.right);
+  if (balance > 1) {
+    if (height(node.left!.left) < height(node.left!.right))
+      return rotateRight(makeTreeNode(node.key, node.value, rotateLeft(node.left!), node.right));
+    return rotateRight(node);
+  }
+  if (balance < -1) {
+    if (height(node.right!.right) < height(node.right!.left))
+      return rotateLeft(makeTreeNode(node.key, node.value, node.left, rotateRight(node.right!)));
+    return rotateLeft(node);
+  }
+  return node;
+};
+
+const treeSet = <K extends string, V>(
+  node: TreeNode<K, V> | undefined,
+  key: K,
+  value: V
+): TreeNode<K, V> => {
+  if (!node) return makeTreeNode(key, value);
+  if (key === node.key) return makeTreeNode(key, value, node.left, node.right);
+  if (key < node.key)
+    return rebalance(
+      makeTreeNode(node.key, node.value, treeSet(node.left, key, value), node.right)
+    );
+  return rebalance(makeTreeNode(node.key, node.value, node.left, treeSet(node.right, key, value)));
+};
+
+const treeMin = <K extends string, V>(node: TreeNode<K, V>): TreeNode<K, V> =>
+  node.left ? treeMin(node.left) : node;
+
+const treeRemove = <K extends string, V>(
+  node: TreeNode<K, V> | undefined,
+  key: K
+): TreeNode<K, V> | undefined => {
+  if (!node) return undefined;
+  if (key < node.key)
+    return rebalance(makeTreeNode(node.key, node.value, treeRemove(node.left, key), node.right));
+  if (key > node.key)
+    return rebalance(makeTreeNode(node.key, node.value, node.left, treeRemove(node.right, key)));
+  if (!node.left) return node.right;
+  if (!node.right) return node.left;
+  const next = treeMin(node.right);
+  return rebalance(makeTreeNode(next.key, next.value, node.left, treeRemove(node.right, next.key)));
+};
+
+const treeGet = <K extends string, V>(node: TreeNode<K, V> | undefined, key: K): V | undefined => {
+  let current = node;
+  while (current) {
+    if (key === current.key) return current.value;
+    current = key < current.key ? current.left : current.right;
+  }
+  return undefined;
+};
+
+const treeHas = <K extends string, V>(node: TreeNode<K, V> | undefined, key: K): boolean => {
+  let current = node;
+  while (current) {
+    if (key === current.key) return true;
+    current = key < current.key ? current.left : current.right;
+  }
+  return false;
+};
+
+const treeFromSorted = <K extends string, V>(
+  entries: readonly (readonly [K, V])[],
+  start = 0,
+  end = entries.length
+): TreeNode<K, V> | undefined => {
+  if (start >= end) return undefined;
+  const middle = (start + end) >> 1;
+  const [key, value] = entries[middle];
+  return makeTreeNode(
+    key,
+    value,
+    treeFromSorted(entries, start, middle),
+    treeFromSorted(entries, middle + 1, end)
+  );
+};
+
 export const createCollection = <S extends GraphSources, K extends string, V>(
   scheduler: Scheduler,
   spec: CollectionNodeSpec<S, K, V>
@@ -40,38 +146,34 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
   let ids: readonly K[] = Object.freeze([]);
   let staged = new Map<K, Entry<V>>();
   let nextIds = ids;
-  let change: CollectionImpact<K> | undefined;
+  let change: CollectionChange<K, V> | undefined;
   let instance: ReturnType<typeof spec.build> | undefined;
   let initialized = false;
   let reset = false;
   let revision = 0;
-  let idsRevision = 0;
-  let batch: import('./contract').BatchContext | undefined;
-  let cause: import('./contract').Cause | undefined;
-  let publishedTransitions: readonly CollectionEntryTransition<K, V>[] = Object.freeze([]);
-  let all: readonly V[] | undefined;
-  type Item = { readable: Readable<V | undefined>; revision: number; listeners?: Set<() => void> };
-  const items = new Map<K, Item>();
-  const subscribedItems = new Set<Item>();
-  const idsListeners = new Set<() => void>();
-  const allListeners = new Set<() => void>();
-  const listeners = new Set<(change: CollectionImpact<K>) => void>();
+  let publishedRoot: TreeNode<K, V> | undefined;
+  let cause: unknown;
+  const listeners = new Set<(change: CollectionChange<K, V>) => void>();
   const changedKeys = new Set<K>();
   let orderChanged = false;
-  const current: CollectionRead<K, V> = Object.freeze({
-    get: (key: K) => {
-      owner.check();
-      return values.get(key);
-    },
-    has: (key: K) => {
-      owner.check();
-      return values.has(key);
-    },
-    ids: () => {
-      owner.check();
-      return ids;
-    },
-  });
+  const readPublished = (
+    root: TreeNode<K, V> | undefined,
+    publishedIds: readonly K[]
+  ): CollectionRead<K, V> =>
+    Object.freeze({
+      get: (key: K) => {
+        owner.check();
+        return treeGet(root, key);
+      },
+      has: (key: K) => {
+        owner.check();
+        return treeHas(root, key);
+      },
+      ids: () => {
+        owner.check();
+        return publishedIds;
+      },
+    });
   const hasNext = (key: K) => (staged.has(key) ? staged.get(key)!.present : values.has(key));
   const getNext = (key: K) => {
     const entry = staged.get(key);
@@ -83,16 +185,10 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
         value =>
           value &&
           typeof value === 'object' &&
-          (('batch' in value && (value as { readonly batch?: unknown }).batch !== undefined) ||
-            ('cause' in value && (value as { readonly cause?: unknown }).cause !== undefined))
-      ) as
-        | {
-            readonly batch?: import('./contract').BatchContext;
-            readonly cause?: import('./contract').Cause;
-          }
-        | undefined;
-      batch = scheduler.batchContext() ?? metadata?.batch;
-      cause = metadata?.cause ?? batch?.cause;
+          'cause' in value &&
+          (value as { readonly cause?: unknown }).cause !== undefined
+      ) as { readonly cause?: unknown } | undefined;
+      cause = metadata?.cause ?? scheduler.batchContext()?.cause;
       staged = new Map();
       nextIds = ids;
       change = undefined;
@@ -131,7 +227,7 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
           return next ? Object.freeze(explicitOrder ? explicitOrder.slice() : deriveIds()) : ids;
         },
       });
-      const writer: CollectionDraft<K, V> = {
+      const output: CollectionDraft<K, V> = {
         set: (key, value) => {
           assertScope(active);
           if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
@@ -145,20 +241,8 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
           assertScope(active);
           explicitOrder = order.slice();
         },
-        replace: entries => {
-          assertScope(active);
-          staged.clear();
-          cleared = true;
-          const order: K[] = [];
-          for (const [key, value] of entries) {
-            if (staged.has(key)) throw new TypeError('Duplicate projection key.');
-            writer.set(key, value);
-            order.push(key);
-          }
-          explicitOrder = order;
-        },
       };
-      const input = { sources, previous: read(false), next: read(true), writer };
+      const input = { sources, previous: read(false), next: read(true), output };
       if (build || !instance) {
         profile.materialized.rebuilt();
         instance = undefined;
@@ -212,24 +296,15 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
             : Object.freeze(order.slice());
       }
       orderChanged = nextIds !== ids;
-      if (added.size || removed.size || updated.size || orderChanged) {
-        let commonOrderChanged = false;
-        if (orderChanged) {
-          const before = ids.filter(key => !removed.has(key));
-          const after = nextIds.filter(key => !added.has(key));
-          commonOrderChanged = before.some((key, i) => after[i] !== key);
-        }
-        change = Object.freeze({
-          kind: 'incremental',
-          added: readonlySet(added),
-          removed: readonlySet(removed),
-          updated: readonlySet(updated),
-          orderChanged: commonOrderChanged,
-        });
-        [...added, ...removed, ...updated].forEach(key => changedKeys.add(key));
-        profile.projection('changedKeys', changedKeys.size);
-      }
-      const transitions: CollectionEntryTransition<K, V>[] = [];
+      [...added, ...removed, ...updated].forEach(key => changedKeys.add(key));
+      profile.projection('changedKeys', changedKeys.size);
+      const addedEntries: { readonly key: K; readonly after: V }[] = [];
+      const updatedEntries: {
+        readonly key: K;
+        readonly before: V;
+        readonly after: V;
+      }[] = [];
+      const removedEntries: { readonly key: K; readonly before: V }[] = [];
       for (const key of changedKeys) {
         const beforePresent = values.has(key);
         const afterPresent = hasNext(key);
@@ -238,73 +313,67 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
           if ((spec.isEqual ?? Object.is)(values.get(key) as V, getNext(key) as V)) continue;
         }
         if (!beforePresent) {
-          transitions.push({
-            key,
-            kind: 'added',
-            before: undefined,
-            after: getNext(key) as V,
-          });
+          addedEntries.push({ key, after: getNext(key) as V });
         } else if (!afterPresent) {
-          transitions.push({
-            key,
-            kind: 'removed',
-            before: values.get(key) as V,
-            after: undefined,
-          });
+          removedEntries.push({ key, before: values.get(key) as V });
         } else {
-          transitions.push({
+          updatedEntries.push({
             key,
-            kind: 'updated',
             before: values.get(key) as V,
             after: getNext(key) as V,
           });
         }
       }
-      publishedTransitions = Object.freeze(transitions);
+      if (build) change = Object.freeze({ kind: 'reset' as const });
+      else if (
+        addedEntries.length ||
+        updatedEntries.length ||
+        removedEntries.length ||
+        orderChanged
+      ) {
+        let commonOrderChanged = false;
+        if (orderChanged) {
+          const before = ids.filter(key => !removed.has(key));
+          const after = nextIds.filter(key => !added.has(key));
+          commonOrderChanged = before.some((key, i) => after[i] !== key);
+        }
+        change = Object.freeze({
+          kind: 'incremental' as const,
+          added: Object.freeze(addedEntries),
+          updated: Object.freeze(updatedEntries),
+          removed: Object.freeze(removedEntries),
+          ...(commonOrderChanged
+            ? {
+                order: Object.freeze({
+                  before: Object.freeze([...ids]),
+                  after: Object.freeze([...nextIds]),
+                }),
+              }
+            : {}),
+        });
+      }
       reset = build;
       return change !== undefined;
     },
     context: active => {
-      const transitions = (keys?: Iterable<K>): readonly CollectionEntryTransition<K, V>[] => {
-        assertScope(active);
-        const selected = keys ? new Set(keys) : undefined;
-        return Object.freeze(
-          publishedTransitions.filter(transition => !selected || selected.has(transition.key))
-        );
-      };
-      const previous: CollectionRead<K, V> = Object.freeze({
-        get: key => {
-          assertScope(active);
-          return values.get(key);
-        },
-        has: key => {
-          assertScope(active);
-          return values.has(key);
-        },
-        ids: () => {
-          assertScope(active);
-          return ids;
-        },
-      });
       const input: CollectionContext<K, V> = {
-        get: key => {
-          assertScope(active);
-          return getNext(key);
+        kind: 'collection',
+        read: {
+          get: key => {
+            assertScope(active);
+            return getNext(key);
+          },
+          has: key => {
+            assertScope(active);
+            return hasNext(key);
+          },
+          ids: () => {
+            assertScope(active);
+            return nextIds;
+          },
         },
-        has: key => {
-          assertScope(active);
-          return hasNext(key);
-        },
-        ids: () => {
-          assertScope(active);
-          return nextIds;
-        },
-        previous,
         change,
         revision: revision + (change ? 1 : 0),
-        reset,
-        transitions,
-        batch,
         cause,
       };
       return Object.freeze(input);
@@ -312,37 +381,34 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
     revision: () => revision,
     reset: () => reset,
     publish: () => {
+      if (change) {
+        if (change.kind === 'reset') {
+          const entries: [K, V][] = [];
+          for (const [key, entry] of staged) if (entry.present) entries.push([key, entry.value]);
+          entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+          publishedRoot = treeFromSorted(entries);
+        } else {
+          for (const [key, entry] of staged) {
+            publishedRoot = entry.present
+              ? treeSet(publishedRoot, key, entry.value)
+              : treeRemove(publishedRoot, key);
+          }
+        }
+      }
       for (const [key, entry] of staged) {
         if (entry.present) values.set(key, entry.value);
         else values.delete(key);
       }
       if (change) {
         if (initialized) revision++;
-        if (orderChanged && initialized) idsRevision++;
-        all = undefined;
-        changedKeys.forEach(key => {
-          const item = items.get(key);
-          if (item && initialized) item.revision++;
-        });
       }
       ids = nextIds;
       initialized = true;
     },
     emit: call => {
       profile.materialized.notification();
-      const fault = owner.node.fault !== undefined;
       const resetEvent = Object.freeze({ kind: 'reset' as const });
       Array.from(listeners).forEach(listener => call(() => listener(change ?? resetEvent)));
-      if (orderChanged || !change || fault || owner.node.statusChanged)
-        Array.from(idsListeners).forEach(listener => call(listener));
-      Array.from(allListeners).forEach(listener => call(listener));
-      if (!change || fault || owner.node.statusChanged) {
-        for (const item of subscribedItems)
-          Array.from(item.listeners ?? []).forEach(listener => call(listener));
-      } else {
-        for (const key of changedKeys)
-          Array.from(items.get(key)?.listeners ?? []).forEach(listener => call(listener));
-      }
     },
     clear: () => {
       staged.clear();
@@ -350,113 +416,36 @@ export const createCollection = <S extends GraphSources, K extends string, V>(
       change = undefined;
       reset = false;
       changedKeys.clear();
-      publishedTransitions = Object.freeze([]);
-      batch = undefined;
       cause = undefined;
       orderChanged = false;
     },
     release: () => {
       values.clear();
       staged.clear();
-      items.clear();
-      subscribedItems.clear();
-      idsListeners.clear();
-      allListeners.clear();
+      publishedRoot = undefined;
       listeners.clear();
       ids = nextIds = Object.freeze([]);
-      all = undefined;
       instance = undefined;
     },
   });
   const handle = {
+    kind: 'collection' as const,
     current: () => {
       owner.check();
-      return current;
-    },
-    ids: {
-      current: () => {
-        owner.check();
-        return ids;
-      },
-      revision: () => {
-        owner.check();
-        return idsRevision;
-      },
-      subscribe: (listener: () => void) => {
-        owner.check();
-        idsListeners.add(listener);
-        return () => {
-          idsListeners.delete(listener);
-        };
-      },
-    },
-    all: {
-      current: () => {
-        owner.check();
-        if (!all) {
-          profile.collectionView.arrayCopied();
-          all = Object.freeze(ids.map(key => values.get(key) as V));
-        }
-        return all;
-      },
-      revision: () => {
-        owner.check();
-        return revision;
-      },
-      subscribe: (listener: () => void) => {
-        owner.check();
-        allListeners.add(listener);
-        return () => {
-          allListeners.delete(listener);
-        };
-      },
-    },
-    item: (key: K) => {
-      owner.check();
-      const old = items.get(key);
-      if (old) return old.readable;
-      const readable: Readable<V | undefined> = Object.freeze({
-        current: () => {
-          owner.check();
-          return values.get(key);
-        },
-        revision: () => {
-          owner.check();
-          return item.revision;
-        },
-        subscribe: (listener: () => void) => {
-          owner.check();
-          const set = (item.listeners ??= new Set());
-          set.add(listener);
-          subscribedItems.add(item);
-          return () => {
-            set.delete(listener);
-            if (!set.size) subscribedItems.delete(item);
-          };
-        },
-      });
-      const item: Item = { readable, revision: 0 };
-      projectionHandles.add(readable);
-      items.set(key, item);
-      return readable;
+      return readPublished(publishedRoot, ids);
     },
     revision: () => {
       owner.check();
       return revision;
     },
-    subscribe: (listener: (change: CollectionImpact<K>) => void) => {
+    subscribe: (listener: (change: CollectionChange<K, V>) => void) => {
       owner.check();
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
     },
-    rebuild: owner.rebuild,
-    dispose: owner.dispose,
   } as CollectionNode<K, V>;
-  projectionHandles.add(handle.ids);
-  projectionHandles.add(handle.all);
-  collectionHandles.add(handle);
   owner.install(handle);
   return Object.freeze(handle);
 };

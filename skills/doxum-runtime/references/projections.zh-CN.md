@@ -22,7 +22,8 @@ source 通过 `kind: 'value'` 或 `kind: 'collection'` 区分语义，但调用�
 
 External event 不再复用 Runtime context：value event 提供新 `value` 和
 `revision`；collection event 提供稳定的 `previous` read、`revision` 和可选的
-keyed `change`。`changed` 与 transitions 由 Runtime 自己计算。
+`impact` hint。Runtime 自己计算精确的 `CollectionChange`，processor 不会直接收到
+impact。
 
 `derive(dependencies, compute, equality?)` 使用 tuple，依赖在定义创建时固定。
 Processor 不能通过读取另一个 Projection 隐式建立图依赖。
@@ -62,11 +63,13 @@ const doubled = incremental.collection([tasks], ({ sources, output }) => {
 标量依赖为 `undefined`，集合依赖则是 `reset`，或带完整 `before`/`after` 值的
 `added`/`updated`/`removed` 分组，并可选提供 `order.before`/`order.after`。初次
 build 对集合依赖报告 `reset`；一次已提交的 batch 已经合并成一个净 transition。
+`sources` 内的集合值是 callback-local 的惰性 `ReadonlyMap` 视图，不能保存或直接
+返回。`get`/`has` 保持按 key 读取，迭代才显式扫描整个集合。
 
 `incremental.collection(...)` 使用独立的 collection processor 协议，另外提供借用的
 `previous`/`next` keyed read，以及
-只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`、
-`replace`；Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
+只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`；
+Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
 一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。
 
 ## React selector 追踪

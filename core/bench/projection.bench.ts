@@ -10,7 +10,12 @@ import {
   table,
 } from '../src';
 const model = object({ rows: table(object({ value: field<number>() })) });
-const ids = Array.from({ length: 100000 }, (_, i) => String(i));
+// Keep the regular suite quick; run the 100k stress case with
+// DOXUM_PROJECTION_BENCH_SIZE=100000 when profiling a large collection.
+const benchmarkEnv = (process as unknown as { readonly env?: Record<string, string | undefined> })
+  .env;
+const collectionSize = Number(benchmarkEnv?.DOXUM_PROJECTION_BENCH_SIZE ?? 10000);
+const ids = Array.from({ length: collectionSize }, (_, i) => String(i));
 const runtime = createDocument({
   schema: model,
   history: false,
@@ -27,23 +32,39 @@ const summary = derive(
   [rows, viewport],
   (values, factor) => (values.get('42')?.value ?? 0) * factor
 );
+// Materialize the graph before timing updates so the benchmark measures
+// incremental publication rather than one-time collection construction.
+store.get(rows);
+store.get(summary);
 let revision = 0;
 describe('explicit projection runtime', () => {
-  bench('one mapped row in 100k without all', () => {
-    runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-    store.get(rows).get('42');
-  });
-  bench('document and external source in one batch', () => {
-    store.batch(() => {
+  bench(
+    `one mapped row in ${collectionSize} without all`,
+    () => {
       runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-      store.set(viewport, revision);
-    });
-    store.get(summary);
-  });
-  bench('lazy all after one update', () => {
-    runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-    store.get(rows).keys();
-  });
+      store.get(rows).get('42');
+    },
+    { iterations: 1, time: 1 }
+  );
+  bench(
+    'document and external source in one batch',
+    () => {
+      store.batch(() => {
+        runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
+        store.set(viewport, revision);
+      });
+      store.get(summary);
+    },
+    { iterations: 1, time: 1 }
+  );
+  bench(
+    'lazy all after one update',
+    () => {
+      runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
+      store.get(rows).keys();
+    },
+    { iterations: 1, time: 1 }
+  );
 });
 afterAll(() => {
   store.dispose();

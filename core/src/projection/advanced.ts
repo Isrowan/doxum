@@ -1,21 +1,19 @@
-import type {
-  Projection,
-  CollectionProjection,
-  ProjectionChanges,
-  ProjectionValues,
-  PublicCollection,
-} from './definition';
+import type { Projection } from './definition';
 import { defineIncrementalCollection, defineIncrementalValue } from './definition';
-import type {
-  CollectionChange,
-  CollectionDraft,
-  CollectionEntryTransition,
-  CollectionRead,
-  GraphSources,
-} from './contract';
+import type { CollectionChange, CollectionDraft, CollectionRead, GraphSources } from './contract';
 import { snapshot } from '../access/scope';
 
-export type IncrementalState = Record<string, unknown>;
+type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
+  readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
+};
+
+type ProjectionChanges<D extends readonly Projection<unknown, unknown>[]> = {
+  readonly [K in keyof D]: D[K] extends Projection<unknown, infer C>
+    ? [C] extends [undefined]
+      ? undefined
+      : C | undefined
+    : undefined;
+};
 
 export type IncrementalValueContext<D extends readonly Projection<unknown, unknown>[], T> = {
   readonly sources: ProjectionValues<D>;
@@ -23,15 +21,12 @@ export type IncrementalValueContext<D extends readonly Projection<unknown, unkno
   readonly previous: T | undefined;
   readonly reset: boolean;
   readonly cause: unknown;
-  readonly state: IncrementalState;
+  readonly state: Record<string, unknown>;
 };
 
 export type IncrementalValueProcessor<D extends readonly Projection<unknown, unknown>[], T> = (
   context: IncrementalValueContext<D, T>
-) =>
-  | T
-  | { readonly kind: 'value'; readonly value: T; readonly state?: IncrementalState }
-  | { readonly kind: 'rebuild' };
+) => T | { readonly kind: 'rebuild' };
 
 export type IncrementalCollectionContext<
   D extends readonly Projection<unknown, unknown>[],
@@ -44,7 +39,7 @@ export type IncrementalCollectionContext<
   readonly next: CollectionRead<K, V>;
   readonly reset: boolean;
   readonly cause: unknown;
-  readonly state: IncrementalState;
+  readonly state: Record<string, unknown>;
   readonly output: CollectionDraft<K, V>;
 };
 
@@ -58,103 +53,62 @@ type DependencyMap<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D as `d${Extract<K, number>}`]: D[K];
 };
 
-const dependenciesOf = <D extends readonly Projection<unknown, unknown>[]>(
-  dependencies: D
-): GraphSources =>
-  Object.fromEntries(
-    dependencies.map((dependency, index) => [`d${index}`, dependency])
-  ) as unknown as GraphSources;
-
-type RuntimeCollectionSource = {
-  readonly ids: () => readonly string[];
-  readonly previous: CollectionRead<string, unknown>;
-  readonly reset: boolean;
-  readonly change?: { readonly kind: 'reset' | 'incremental'; readonly orderChanged?: boolean };
-  readonly transitions: () => readonly CollectionEntryTransition<string, unknown>[];
-};
 const resetCollectionChange = Object.freeze({ kind: 'reset' as const });
-type IncrementalCollectionChange = Extract<
-  CollectionChange<string, unknown>,
-  { readonly kind: 'incremental' }
->;
 
-const isCollectionSource = (source: unknown): source is RuntimeCollectionSource =>
-  Boolean(
-    source &&
-    typeof source === 'object' &&
-    'ids' in source &&
-    typeof (source as { readonly ids?: unknown }).ids === 'function' &&
-    'previous' in source &&
-    'transitions' in source &&
-    typeof (source as { readonly transitions?: unknown }).transitions === 'function'
-  );
+const isRebuild = (value: unknown): value is { readonly kind: 'rebuild' } =>
+  value !== null &&
+  typeof value === 'object' &&
+  (value as { readonly kind?: unknown }).kind === 'rebuild';
 
 const collectionChange = (source: unknown): CollectionChange<string, unknown> | undefined => {
-  if (!isCollectionSource(source)) return undefined;
-  if (source.reset || source.change?.kind === 'reset') return resetCollectionChange;
-  const impact = source.change;
-  if (!impact) return undefined;
-  const added: IncrementalCollectionChange['added'][number][] = [];
-  const updated: IncrementalCollectionChange['updated'][number][] = [];
-  const removed: IncrementalCollectionChange['removed'][number][] = [];
-  for (const transition of source.transitions()) {
-    if (transition.kind === 'added')
-      added.push({ key: transition.key, kind: transition.kind, after: transition.after });
-    else if (transition.kind === 'updated') updated.push(transition);
-    else removed.push({ key: transition.key, kind: transition.kind, before: transition.before });
-  }
-  const order = impact.orderChanged
-    ? {
-        before: Object.freeze([...source.previous.ids()]),
-        after: Object.freeze([...source.ids()]),
-      }
-    : undefined;
-  if (!added.length && !updated.length && !removed.length && !order) return undefined;
-  return Object.freeze({
-    kind: 'incremental' as const,
-    added: Object.freeze(added),
-    updated: Object.freeze(updated),
-    removed: Object.freeze(removed),
-    ...(order ? { order: Object.freeze(order) } : {}),
-  });
+  if (!source || typeof source !== 'object' || !('kind' in source)) return undefined;
+  if (source.kind !== 'collection') return undefined;
+  return (source as { readonly change?: CollectionChange<string, unknown> }).change;
 };
 
 const sourceCause = (sources: Record<string, unknown>): unknown => {
   for (const source of Object.values(sources)) {
-    if (
-      source &&
-      typeof source === 'object' &&
-      'cause' in source &&
-      (source as { readonly cause?: unknown }).cause !== undefined
-    )
-      return (source as { readonly cause?: unknown }).cause;
+    if (source && typeof source === 'object' && 'kind' in source) {
+      const cause = (source as { readonly cause?: unknown }).cause;
+      if (cause !== undefined) return cause;
+    }
   }
   return undefined;
 };
 
+const collectionView = <K extends string, V>(read: CollectionRead<K, V>): ReadonlyMap<K, V> => {
+  const entries = function* (): IterableIterator<[K, V]> {
+    for (const key of read.ids()) yield [key, read.get(key) as V];
+  };
+  const values = function* (): IterableIterator<V> {
+    for (const key of read.ids()) yield read.get(key) as V;
+  };
+  const view: ReadonlyMap<K, V> = {
+    get: key => read.get(key),
+    has: key => read.has(key),
+    get size() {
+      return read.ids().length;
+    },
+    keys: () => read.ids()[Symbol.iterator](),
+    values,
+    entries,
+    forEach: (callback, thisArg) => {
+      for (const key of read.ids()) callback.call(thisArg, read.get(key) as V, key, view);
+    },
+    [Symbol.iterator]: entries,
+  };
+  return Object.freeze(view);
+};
+
 const publicSource = (source: unknown): unknown => {
   if (!source || typeof source !== 'object') return source;
-  if ('value' in source) return (source as { readonly value: unknown }).value;
-  if ('read' in source) {
-    const read = (source as { readonly read: unknown }).read;
-    if (
-      read &&
-      typeof read === 'object' &&
-      'ids' in read &&
-      typeof (read as { ids?: unknown }).ids === 'function'
-    ) {
-      const result = new Map<string, unknown>();
-      for (const id of (read as CollectionRead<string, unknown>).ids())
-        result.set(id, (read as CollectionRead<string, unknown>).get(id));
-      return result;
-    }
-    return snapshot(read);
-  }
-  if ('ids' in source && typeof (source as { ids?: unknown }).ids === 'function') {
-    const result = new Map<string, unknown>();
-    const read = source as CollectionRead<string, unknown>;
-    for (const id of read.ids()) result.set(id, read.get(id));
-    return result;
+  if (!('kind' in source)) return source;
+  if (source.kind === 'value') return (source as unknown as { readonly value: unknown }).value;
+  if (source.kind === 'document')
+    return snapshot((source as unknown as { readonly read: unknown }).read as never);
+  if (source.kind === 'collection') {
+    const read = (source as unknown as { readonly read: CollectionRead<string, unknown> }).read;
+    return collectionView(read);
   }
   return source;
 };
@@ -171,31 +125,27 @@ const publicInputs = (
     const source = sources[key];
     values.push(publicSource(source));
     changes.push(
-      initial && isCollectionSource(source) ? resetCollectionChange : collectionChange(source)
+      initial &&
+        source &&
+        typeof source === 'object' &&
+        'kind' in source &&
+        source.kind === 'collection'
+        ? resetCollectionChange
+        : collectionChange(source)
     );
   }
   return { values, changes };
 };
-
-const normalizeValue = <T>(
-  result: T | { readonly kind: 'value'; readonly value: T; readonly state?: IncrementalState }
-): { value: T; state?: IncrementalState } =>
-  result && typeof result === 'object' && (result as { readonly kind?: unknown }).kind === 'value'
-    ? {
-        value: (result as { readonly value: T }).value,
-        state: (result as { readonly state?: IncrementalState }).state,
-      }
-    : { value: result as T };
 
 function createIncrementalValue<const D extends readonly Projection<unknown, unknown>[], T>(
   dependencies: D,
   processor: IncrementalValueProcessor<D, T>
 ): Projection<T> {
   const dependencyMap = dependenciesOf(dependencies);
-  let state: IncrementalState = Object.create(null) as IncrementalState;
+  let state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let current!: T;
   const build = (sources: Record<string, unknown>) => {
-    state = Object.create(null) as IncrementalState;
+    state = Object.create(null) as Record<string, unknown>;
     const publicInputsForBuild = publicInputs(sources, true);
     const result = processor({
       sources: publicInputsForBuild.values as ProjectionValues<D>,
@@ -205,11 +155,8 @@ function createIncrementalValue<const D extends readonly Projection<unknown, unk
       cause: sourceCause(sources),
       state,
     });
-    if (result && typeof result === 'object' && 'kind' in result)
-      throw new TypeError('Initial incremental processor cannot rebuild.');
-    const normalized = normalizeValue(result as T);
-    current = normalized.value;
-    if (normalized.state) state = normalized.state;
+    if (isRebuild(result)) throw new TypeError('Initial incremental processor cannot rebuild.');
+    current = result as T;
     return {
       value: current,
       update: (nextSources: Record<string, unknown>) => {
@@ -222,10 +169,8 @@ function createIncrementalValue<const D extends readonly Projection<unknown, unk
           cause: sourceCause(nextSources),
           state,
         });
-        if (next && typeof next === 'object' && 'kind' in next) return next;
-        const nextValue = normalizeValue(next as T);
-        current = nextValue.value;
-        if (nextValue.state) state = nextValue.state;
+        if (isRebuild(next)) return next;
+        current = next as T;
         return { kind: 'changed', value: current } as const;
       },
     };
@@ -233,20 +178,31 @@ function createIncrementalValue<const D extends readonly Projection<unknown, unk
   return defineIncrementalValue({ dependencies: dependencyMap, build: build as never });
 }
 
+function dependenciesOf<D extends readonly Projection<unknown, unknown>[]>(
+  dependencies: D
+): GraphSources {
+  return Object.fromEntries(
+    dependencies.map((dependency, index) => [`d${index}`, dependency])
+  ) as unknown as GraphSources;
+}
+
 function createIncrementalCollection<
   const D extends readonly Projection<unknown, unknown>[],
   K extends string,
   V,
->(dependencies: D, processor: IncrementalCollectionProcessor<D, K, V>): CollectionProjection<K, V> {
+>(
+  dependencies: D,
+  processor: IncrementalCollectionProcessor<D, K, V>
+): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> {
   const dependencyMap = dependenciesOf(dependencies);
-  let state: IncrementalState = Object.create(null) as IncrementalState;
+  let state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const build = (input: {
     readonly sources: Record<string, unknown>;
     readonly previous: CollectionRead<K, V>;
     readonly next: CollectionRead<K, V>;
-    readonly writer: CollectionDraft<K, V>;
+    readonly output: CollectionDraft<K, V>;
   }) => {
-    state = Object.create(null) as IncrementalState;
+    state = Object.create(null) as Record<string, unknown>;
     const publicInputsForBuild = publicInputs(input.sources, true);
     const result = processor({
       sources: publicInputsForBuild.values as ProjectionValues<D>,
@@ -256,7 +212,7 @@ function createIncrementalCollection<
       reset: true,
       cause: sourceCause(input.sources),
       state,
-      output: input.writer,
+      output: input.output,
     });
     if (result?.kind === 'rebuild')
       throw new TypeError('Initial incremental collection processor cannot rebuild.');
@@ -271,7 +227,7 @@ function createIncrementalCollection<
           reset: false,
           cause: sourceCause(nextInput.sources),
           state,
-          output: nextInput.writer,
+          output: nextInput.output,
         });
       },
     };

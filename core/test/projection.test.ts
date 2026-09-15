@@ -12,7 +12,6 @@ import {
   table,
   type ExternalCollectionEvent,
   type ExternalValueEvent,
-  type PublicCollection,
 } from '../src';
 import { incremental } from '../src/projection/advanced';
 
@@ -85,7 +84,6 @@ describe('projection runtime', () => {
       updated: [
         {
           key: 'b',
-          kind: 'updated',
           before: { value: 2, label: 'B' },
           after: { value: 4, label: 'B' },
         },
@@ -147,18 +145,15 @@ describe('projection runtime', () => {
       removed: readonly { key: string; before: { value: number; label: string } }[];
     };
     expect(rowChange.kind).toBe('incremental');
-    expect(rowChange.added).toEqual([{ key: 'c', kind: 'added', after: { value: 3, label: 'C' } }]);
+    expect(rowChange.added).toEqual([{ key: 'c', after: { value: 3, label: 'C' } }]);
     expect(rowChange.updated).toEqual([
       {
         key: 'b',
-        kind: 'updated',
         before: { value: 2, label: 'B' },
         after: { value: 4, label: 'B' },
       },
     ]);
-    expect(rowChange.removed).toEqual([
-      { key: 'a', kind: 'removed', before: { value: 1, label: 'A' } },
-    ]);
+    expect(rowChange.removed).toEqual([{ key: 'a', before: { value: 1, label: 'A' } }]);
     expect(changes.at(-1)![1]).toBeUndefined();
     expect(changes.at(-1)![2]).toBeUndefined();
 
@@ -170,6 +165,37 @@ describe('projection runtime', () => {
     };
     expect(orderChange.kind).toBe('incremental');
     expect(orderChange.order).toEqual({ before: ['a', 'b'], after: ['b', 'a'] });
+
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('coalesces document collection commits to the net transition', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' } },
+        ordered: { ids: ['a'], byId: { a: { value: 1, label: 'A' } } },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const changes: unknown[] = [];
+    const projection = incremental([rows], ({ changes: next }) => {
+      changes.push(next[0]);
+      return 0;
+    });
+    const runtime = createProjectionRuntime();
+    runtime.get(projection);
+    runtime.batch(() => {
+      document.update(draft => {
+        draft.rows.get('a')!.value = 2;
+      });
+      document.update(draft => {
+        draft.rows.get('a')!.value = 1;
+      });
+    });
+    runtime.get(projection);
+    expect(changes).toHaveLength(1);
 
     document.dispose();
     runtime.dispose();
@@ -243,7 +269,7 @@ describe('projection runtime', () => {
           ids: () => ['a'],
         },
         revision: value,
-        change: {
+        impact: {
           kind: 'incremental',
           added: new Set(),
           removed: new Set(),
@@ -281,6 +307,36 @@ describe('projection runtime', () => {
     });
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('keeps published collection views immutable without copying unchanged entries', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const runtime = createProjectionRuntime();
+    const previous = runtime.get(rows);
+    const previousA = previous.get('a');
+
+    document.update(draft => {
+      draft.rows.get('b')!.value = 3;
+    });
+
+    const next = runtime.get(rows);
+    expect(next).not.toBe(previous);
+    expect(previous.get('b')?.value).toBe(2);
+    expect(next.get('b')?.value).toBe(3);
+    expect(next.get('a')).toBe(previousA);
+
     document.dispose();
     runtime.dispose();
   });
@@ -330,7 +386,7 @@ describe('projection runtime', () => {
     });
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
-    const select = vi.fn((value: PublicCollection<string, { value: number; label: string }>) =>
+    const select = vi.fn((value: ReadonlyMap<string, { value: number; label: string }>) =>
       value.get('a')
     );
     const selected = runtime.readable(rows, select);
@@ -401,7 +457,7 @@ describe('projection runtime', () => {
     });
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
-    const select = vi.fn((value: PublicCollection<string, { value: number; label: string }>) =>
+    const select = vi.fn((value: ReadonlyMap<string, { value: number; label: string }>) =>
       value.has('a') ? value.get('a') : value.get('b')
     );
     const selected = runtime.readable(rows, select);

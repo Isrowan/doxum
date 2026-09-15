@@ -23,8 +23,8 @@ sources use `kind: 'value'` or `kind: 'collection'`; the caller still uses only
 
 External events are smaller than Runtime contexts. A value event carries the new
 `value` and `revision`; a collection event carries a stable `previous` read,
-`revision`, and an optional keyed `change`. The Runtime derives `changed` and
-transitions itself.
+`revision`, and an optional `impact` hint. The Runtime derives the exact
+`CollectionChange`; processors never receive the impact directly.
 
 `derive(dependencies, compute, equality?)` takes a tuple. Dependencies are
 explicit and fixed when the definition is created. Processors must not discover
@@ -67,10 +67,13 @@ dependencies receive `reset` or grouped `added`/`updated`/`removed` entries with
 complete `before`/`after` values and optional `order.before`/`order.after`.
 The initial build reports `reset` for collection dependencies. A committed batch
 is already coalesced into one net transition.
+Collection values inside `sources` are callback-local lazy `ReadonlyMap` views;
+do not retain or return them. Keyed `get`/`has` avoids a scan, while iteration is
+an explicit full-collection read.
 
 `incremental.collection(...)` uses a separate collection processor protocol and additionally exposes borrowed
 `previous`/`next` keyed reads and a callback-local `output` draft. Draft methods are
-`set`, `remove`, `order`, and `replace`; the Runtime validates and seals them after
+`set`, `remove`, and `order`; the Runtime validates and seals them after
 the synchronous callback, computes keyed transitions and publishes one immutable
 map-like value. Reset or fault recovery is internal.
 

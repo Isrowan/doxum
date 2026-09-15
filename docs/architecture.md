@@ -294,8 +294,8 @@ revision for store integrations. Selector tracking and equality belong to a runt
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
-External events carry boundary metadata and, for collections, a stable previous
-read plus keyed change hint. The isolated advanced incremental boundary exposes
+External events carry only boundary cause/revision metadata and, for collections,
+a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
 the document runtime still owns the canonical ChangeSet and impact protocols.
 React's selector overload is implemented by `runtime.readable(projection, selector,
@@ -304,6 +304,11 @@ imperative code. Keyed invalidation prevents an unrelated entry update from
 executing the selector; equality filters the result only after a related update.
 This tracking does not construct processor dependencies, which remain explicit in
 `derive` and the advanced incremental entry point.
+Published collection snapshots share an internal persistent keyed index. A
+value-only update path-copies only the affected key paths and reuses the immutable
+id sequence; membership or order changes create a new id sequence because order is
+observable. Older `ReadonlyMap` views therefore stay stable without copying every
+unchanged value on each revision.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already accepted commit.
 

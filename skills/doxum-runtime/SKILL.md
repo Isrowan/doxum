@@ -33,7 +33,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   Use tuple `derive` for pure values. Advanced `incremental` processors declare every
   source, own any forward/reverse dependency indexes, derive from final batched source
   state, and recover from resets internally. Core projections never track reads
-  automatically; React selectors do through `useProjection(projection, selector)`.
+  automatically; React selectors do through `ProjectionProvider` and
+  `useProjection(projection, selector)`.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters use integration capabilities.
 - Local sync owns browser persistence/leadership. Network conflict policy and

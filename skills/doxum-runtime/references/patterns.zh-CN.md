@@ -94,8 +94,8 @@ runtime.get(scaled);
 const title = runtime.get(tasks).get(taskId);
 ```
 
-React 使用 Runtime 上下文中的 `useProjection` 读取 Projection，单键读取写成
+React 使用 `ProjectionProvider` 提供 Runtime，再用 `useProjection` 读取 Projection，单键读取写成
 `useProjection(projection, selector)`；`useInput` 返回值和 setter。高级集合 processor
 从 `doxum/advanced` 引入，在同步 callback 中使用
-`output.set/remove/order/replace` 与 previous/next。Processor 依赖仍显式声明，
+`output.set/remove/order` 与 previous/next。Processor 依赖仍显式声明，
 React selector 追踪只属于消费端。

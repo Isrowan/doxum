@@ -53,20 +53,15 @@ export type { Readable } from './projection/readable';
 export { read } from './projection/select';
 export type { DocumentSelector } from './projection/select';
 export { input, observe, derive } from './projection/definition';
-export { createProjectionRuntime } from './projection/store';
+export { createProjectionRuntime } from './projection/runtime';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
+export type { Projection, Input } from './projection/definition';
 export type {
-  Projection,
-  ProjectionChanges,
-  Input,
-  ProjectionValues,
-  PublicCollection,
-} from './projection/definition';
-export type {
+  CollectionChange,
   ExternalCollectionEvent,
   ExternalCollectionRead,
   ExternalCollectionSource,
   ExternalValueEvent,
   ExternalValueSource,
 } from './projection/contract';
-export type { ProjectionRuntime } from './projection/store';
+export type { ProjectionRuntime } from './projection/runtime';

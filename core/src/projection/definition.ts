@@ -11,27 +11,17 @@ import type {
 } from '../schema';
 import type { Readable } from './readable';
 import type {
-  BatchContext,
-  Cause,
-  CollectionContext,
   CollectionChange,
-  CollectionDraft,
-  CollectionRead,
-  CollectionEntryTransition,
-  DocumentContext,
   ExternalCollectionSource,
   ExternalValueSource,
   GraphSources,
-  InputHandles,
-  NodeUpdate,
-  ValueContext,
 } from './contract';
 
 declare const projectionDefinition: unique symbol;
 declare const projectionChanges: unique symbol;
 declare const writableInput: unique symbol;
 
-/** A lazy, reusable projection definition. Its value is materialized per runtime. */
+/** A lazy, reusable projection definition with no runtime-owned state. */
 export type Projection<T, C = undefined> = {
   readonly [projectionDefinition]: T;
   readonly [projectionChanges]: C;
@@ -40,23 +30,9 @@ export type Projection<T, C = undefined> = {
 /** A runtime-local writable projection definition. */
 export type Input<T> = Projection<T> & { readonly [writableInput]: true };
 
-export type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
+type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
 };
-
-export type ProjectionChanges<D extends readonly Projection<unknown, unknown>[]> = {
-  readonly [K in keyof D]: D[K] extends Projection<unknown, infer C>
-    ? [C] extends [undefined]
-      ? undefined
-      : C | undefined
-    : undefined;
-};
-
-export type PublicCollection<K extends string, V> = ReadonlyMap<K, V>;
-export type CollectionProjection<K extends string, V> = Projection<
-  PublicCollection<K, V>,
-  CollectionChange<K, V>
->;
 
 type Equality = (a: unknown, b: unknown) => boolean;
 type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unknown;
@@ -64,10 +40,10 @@ type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unkn
 type Definition =
   | { readonly kind: 'input'; readonly initial: unknown; readonly isEqual?: Equality }
   | { readonly kind: 'readable'; readonly readable: Readable<unknown>; readonly isEqual?: Equality }
-  | { readonly kind: 'source-value'; readonly source: ExternalValueSource<unknown, unknown> }
+  | { readonly kind: 'source-value'; readonly source: ExternalValueSource<unknown> }
   | {
       readonly kind: 'source-collection';
-      readonly source: ExternalCollectionSource<string, unknown, unknown>;
+      readonly source: ExternalCollectionSource<string, unknown>;
     }
   | {
       readonly kind: 'document';
@@ -115,21 +91,20 @@ export const input = <T>(
   equality: (previous: T, next: T) => boolean = Object.is
 ): Input<T> => define<T>({ kind: 'input', initial, isEqual: equality as Equality }) as Input<T>;
 
-/**
- * Establishes a reactive boundary from a document, readable, or external
- * source. The selector is compiled when the definition is materialized, so
- * declarations stay lazy and reusable.
- */
+/** Establish a lazy reactive boundary from a document, readable, or external source. */
 export function observe<S extends ObjectNode>(document: DocumentReadable<S>): Projection<Infer<S>>;
-export function observe<T, D>(source: ExternalValueSource<T, D>): Projection<T>;
-export function observe<K extends string, V, D>(
-  source: ExternalCollectionSource<K, V, D>
-): CollectionProjection<K, V>;
+export function observe<T>(source: ExternalValueSource<T>): Projection<T>;
+export function observe<K extends string, V>(
+  source: ExternalCollectionSource<K, V>
+): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>>;
 export function observe<T>(readable: Readable<T>): Projection<T>;
 export function observe<S extends ObjectNode, P extends CollectionPath>(
   document: DocumentReadable<S>,
   selector: (path: SchemaPath<S['shape']>) => P
-): CollectionProjection<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>;
+): Projection<
+  ReadonlyMap<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>,
+  CollectionChange<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>
+>;
 export function observe<S extends ObjectNode, P>(
   document: DocumentReadable<S>,
   selector: (path: SchemaPath<S['shape']>) => P
@@ -138,8 +113,8 @@ export function observe<S extends ObjectNode>(
   document:
     | DocumentReadable<S>
     | Readable<unknown>
-    | ExternalValueSource<unknown, unknown>
-    | ExternalCollectionSource<string, unknown, unknown>,
+    | ExternalValueSource<unknown>
+    | ExternalCollectionSource<string, unknown>,
   selector?: PathSelector<S>
 ): Projection<unknown, unknown> {
   if (isExternalSource(document))
@@ -157,8 +132,7 @@ export function observe<S extends ObjectNode>(
 
 const isExternalSource = (
   source: unknown
-): source is
-  ExternalValueSource<unknown, unknown> | ExternalCollectionSource<string, unknown, unknown> => {
+): source is ExternalValueSource<unknown> | ExternalCollectionSource<string, unknown> => {
   if (!source || typeof source !== 'object') return false;
   const candidate = source as {
     readonly kind?: unknown;
@@ -190,28 +164,21 @@ export function derive<const D extends readonly Projection<unknown, unknown>[], 
   });
 }
 
-/** Internal source adapters used by observe, not exported publicly. */
 export const defineReadable = <T>(
   readable: Readable<T>,
   equality: (a: T, b: T) => boolean = Object.is
 ): Projection<T> => define<T>({ kind: 'readable', readable, isEqual: equality as Equality });
 
-export const defineExternalValue = <T, D>(source: ExternalValueSource<T, D>): Projection<T> =>
-  define<T>({ kind: 'source-value', source: source as never });
+export const defineExternalValue = <T>(source: ExternalValueSource<T>): Projection<T> =>
+  define<T>({ kind: 'source-value', source: source as ExternalValueSource<unknown> });
 
-export const defineExternalCollection = <K extends string, V, D>(
-  source: ExternalCollectionSource<K, V, D>
-): CollectionProjection<K, V> =>
-  define<PublicCollection<K, V>, CollectionChange<K, V>>({
+export const defineExternalCollection = <K extends string, V>(
+  source: ExternalCollectionSource<K, V>
+): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> =>
+  define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
     kind: 'source-collection',
-    source: source as never,
+    source: source as unknown as ExternalCollectionSource<string, unknown>,
   });
-
-export type IncrementalValueDefinition = Extract<Definition, { kind: 'incremental-value' }>;
-export type IncrementalCollectionDefinition = Extract<
-  Definition,
-  { kind: 'incremental-collection' }
->;
 
 export const defineIncrementalValue = <T>(definition: {
   readonly dependencies: GraphSources;
@@ -232,23 +199,11 @@ export const defineIncrementalCollection = <K extends string, V>(definition: {
   readonly build: (...args: never[]) => unknown;
   readonly isEqual?: (a: V, b: V) => boolean;
   readonly name?: string;
-}): CollectionProjection<K, V> =>
-  define<PublicCollection<K, V>, CollectionChange<K, V>>({
+}): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> =>
+  define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
     kind: 'incremental-collection',
     dependencies: definition.dependencies,
     build: definition.build,
     isEqual: definition.isEqual as Equality | undefined,
     name: definition.name,
   });
-
-// Internal event names remain private implementation detail and are not root exports.
-export type InternalDocumentEvent<S extends ObjectNode> = DocumentContext<S>;
-export type InternalValueEvent<T, D = unknown> = ValueContext<T, D>;
-export type InternalCollectionEvent<K extends string, V, D = unknown> = CollectionContext<K, V, D>;
-export type InternalCollectionTransition<K extends string, V> = CollectionEntryTransition<K, V>;
-export type InternalCollectionDraft<K extends string, V> = CollectionDraft<K, V>;
-export type InternalBatchContext = BatchContext;
-export type InternalCause = Cause;
-export type InternalInputHandles<S extends GraphSources> = InputHandles<S>;
-export type InternalNodeUpdate<T> = NodeUpdate<T>;
-export type InternalCollectionRead<K extends string, V> = CollectionRead<K, V>;

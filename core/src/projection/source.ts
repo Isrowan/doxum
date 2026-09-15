@@ -1,12 +1,13 @@
-import { createAccess, collectionAccess } from '../access/scope';
+import { createAccess, collectionAccess, snapshot } from '../access/scope';
 import { affectsTarget, collectionImpact } from '../impact';
-import type { CollectionImpact } from '../impact';
 import * as target from '../impact-target';
+import { nodeAt } from '../address';
 import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
 import { compilePath } from '../schema';
+import { equalValue } from '../schema-value';
 import type {
   CollectionContext,
   CollectionRead,
@@ -17,7 +18,6 @@ import type {
   ValueContext,
 } from './contract';
 import { ProjectionError } from './contract';
-import { collectionHandles } from './collection';
 import type { Readable } from './readable';
 import { assertScope, projectionHandles, type Scheduler, type SourceRecord } from './scheduler';
 
@@ -33,8 +33,9 @@ export const createSources = (scheduler: Scheduler) => {
       }
     >
   >();
-  const collections = new WeakSet<object>();
   const externalSources = new WeakMap<object, object>();
+  const isCollectionSource = (value: object): boolean =>
+    (value as { readonly kind?: unknown }).kind === 'collection';
   const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentHandle<S> => {
     scheduler.assertIdle();
     const state = accessOf(runtime);
@@ -61,17 +62,27 @@ export const createSources = (scheduler: Scheduler) => {
       });
       const old = bindings.find(
         entry =>
-          Boolean(collection) === collections.has(entry.handle) &&
+          Boolean(collection) === isCollectionSource(entry.handle) &&
           entry.targets.length === targets.length &&
           entry.targets.every((value, i) => target.same(value, targets[i]))
       );
       if (old) return old.handle;
-      let commits: DocumentCommit<S>[] = [];
       let reset = false;
-      let orderDirty = false;
+      let orderChanged = false;
       const keys = new Set<string>();
-      let candidates:
-        { readonly keys: readonly string[]; readonly orderDirty: boolean } | undefined;
+      let baseline: Map<string, unknown> | undefined;
+      let baselineIds: readonly string[] = Object.freeze([]);
+      let nextBaseline: Map<string, unknown> | undefined;
+      let nextBaselineIds: readonly string[] = Object.freeze([]);
+      const collectionNode = collection
+        ? nodeAt(state.schema, collection.address, state.document)
+        : undefined;
+      const entryNode =
+        collectionNode && (collectionNode.kind === 'map' || collectionNode.kind === 'table')
+          ? collectionNode.value
+          : undefined;
+      const sameEntry = (left: unknown, right: unknown): boolean =>
+        entryNode ? equalValue(entryNode, left, right) : Object.is(left, right);
       const record: SourceRecord = {
         consumers: new Set(),
         disposed: false,
@@ -79,39 +90,135 @@ export const createSources = (scheduler: Scheduler) => {
         revision: runtime.revision,
         reset: () => reset,
         clear: () => {
-          commits = [];
-          reset = orderDirty = false;
+          if (collection && nextBaseline) {
+            baseline = nextBaseline;
+            baselineIds = nextBaselineIds;
+          }
+          reset = false;
+          orderChanged = false;
           batch = undefined;
           keys.clear();
-          candidates = undefined;
+          nextBaseline = undefined;
+          nextBaselineIds = Object.freeze([]);
         },
         context: active => {
           assertScope(active);
           if (state.disposed) throw new Error('Document has been disposed.');
           const context = { state, active };
+          const rawRead = collection
+            ? (collectionAccess(context, collection.address) as CollectionRead<string, unknown>)
+            : undefined;
+          const snapshots = collection ? new Map<string, unknown>() : undefined;
           const read = collection
-            ? collectionAccess(context, collection.address)
+            ? Object.freeze({
+                get: (key: string) => {
+                  assertScope(active);
+                  if (!snapshots!.has(key)) snapshots!.set(key, snapshot(rawRead!.get(key)));
+                  return snapshots!.get(key);
+                },
+                has: (key: string) => {
+                  assertScope(active);
+                  return rawRead!.has(key);
+                },
+                ids: () => {
+                  assertScope(active);
+                  return rawRead!.ids();
+                },
+              })
             : createAccess(context);
+          if (!collection)
+            return Object.freeze({
+              kind: 'document' as const,
+              read,
+              revision: runtime.revision(),
+              reset: record.reset(),
+              cause: batch?.cause,
+            });
+
+          if (!baseline) {
+            const collectionRead = read as CollectionRead<string, unknown>;
+            baseline = new Map<string, unknown>();
+            baselineIds = Object.freeze(
+              collectionAccess(context, collection.address).ids().slice()
+            );
+            for (const key of baselineIds) {
+              const value = collectionRead.get(key);
+              baseline.set(key, value);
+            }
+          }
+          const changed = [...keys];
+          const added: { readonly key: string; readonly after: unknown }[] = [];
+          const updated: {
+            readonly key: string;
+            readonly before: unknown;
+            readonly after: unknown;
+          }[] = [];
+          const removed: {
+            readonly key: string;
+            readonly before: unknown;
+          }[] = [];
+          const next = new Map(baseline);
+          const collectionRead = read as CollectionRead<string, unknown>;
+          for (const key of changed) {
+            const beforePresent = baseline.has(key);
+            const afterPresent = collectionRead.has(key);
+            const afterValue = afterPresent ? collectionRead.get(key) : undefined;
+            if (!beforePresent && afterPresent) {
+              added.push({ key, after: afterValue });
+              next.set(key, afterValue);
+            } else if (beforePresent && !afterPresent) {
+              removed.push({ key, before: baseline.get(key) });
+              next.delete(key);
+            } else if (beforePresent && afterPresent) {
+              const beforeValue = baseline.get(key);
+              if (!sameEntry(beforeValue, afterValue))
+                updated.push({ key, before: beforeValue, after: afterValue });
+              next.set(key, afterValue);
+            }
+          }
+          const ids =
+            record.reset() || orderChanged ? Object.freeze([...collectionRead.ids()]) : baselineIds;
+          if (record.reset()) {
+            next.clear();
+            for (const key of ids) {
+              const value = collectionRead.get(key);
+              next.set(key, value);
+            }
+          }
+          let order:
+            { readonly before: readonly string[]; readonly after: readonly string[] } | undefined;
+          if (orderChanged) {
+            const beforeKeys = new Set(baselineIds);
+            const afterKeys = new Set(ids);
+            const beforeCommon = baselineIds.filter(key => afterKeys.has(key));
+            const afterCommon = ids.filter(key => beforeKeys.has(key));
+            if (beforeCommon.some((key, index) => afterCommon[index] !== key))
+              order = { before: Object.freeze([...baselineIds]), after: ids };
+          }
+          const change = record.reset()
+            ? Object.freeze({ kind: 'reset' as const })
+            : added.length || updated.length || removed.length || order
+              ? Object.freeze({
+                  kind: 'incremental' as const,
+                  added: Object.freeze(added),
+                  updated: Object.freeze(updated),
+                  removed: Object.freeze(removed),
+                  ...(order ? { order: Object.freeze(order) } : {}),
+                })
+              : undefined;
+          nextBaseline = next;
+          nextBaselineIds = ids;
           return Object.freeze({
+            kind: 'collection' as const,
             read,
+            change,
             revision: runtime.revision(),
-            commits: Object.freeze(commits.slice()),
-            reset: record.reset(),
-            batch,
             cause: batch?.cause,
-            ...(collection
-              ? {
-                  candidates: (candidates ??= Object.freeze({
-                    keys: Object.freeze([...keys]),
-                    orderDirty,
-                  })),
-                }
-              : {}),
           });
         },
       };
       const handle = collection
-        ? {}
+        ? { kind: 'collection' as const }
         : {
             collection: (pick: PathPick<S>) => {
               scheduler.assertIdle();
@@ -131,11 +238,9 @@ export const createSources = (scheduler: Scheduler) => {
             },
           };
       Object.freeze(handle);
-      if (collection) collections.add(handle);
       scheduler.register(handle, record);
       // The attachment delivers to all local bindings without extra document subscriptions.
       const receive = (commit: DocumentCommit<S>) => {
-        commits.push(commit);
         reset ||= commit.impact.kind === 'reset';
         if (collection) {
           const change = collectionImpact(commit.impact, collection);
@@ -144,9 +249,10 @@ export const createSources = (scheduler: Scheduler) => {
             change.added.forEach(key => keys.add(key));
             change.removed.forEach(key => keys.add(key));
             change.updated.forEach(key => keys.add(key));
-            orderDirty ||= Boolean(change.added.size || change.removed.size || change.orderChanged);
+            orderChanged ||= Boolean(
+              change.added.size || change.removed.size || change.orderChanged
+            );
           }
-          candidates = undefined;
         }
       };
       bindings.push({ handle, targets, record, receive });
@@ -192,16 +298,12 @@ export const createSources = (scheduler: Scheduler) => {
     documents.set(state, handle);
     return handle;
   };
-  const valueSource = <T, D = unknown>(initial: T, equal: (a: T, b: T) => boolean) => {
+  const valueSource = <T>(initial: T, equal: (a: T, b: T) => boolean) => {
     let value = initial;
-    let previous = initial;
     let revision = 0;
-    let detail: D | undefined;
-    let cause: import('./contract').Cause | undefined;
-    let batch: import('./contract').BatchContext | undefined;
+    let cause: unknown;
     let reset = false;
-    let pending = false;
-    const handle = Object.freeze({}) as GraphSource<ValueContext<T, D>>;
+    const handle = Object.freeze({}) as GraphSource<ValueContext<T>>;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
@@ -209,49 +311,36 @@ export const createSources = (scheduler: Scheduler) => {
       revision: () => revision,
       reset: () => reset,
       clear: () => {
-        previous = value;
-        pending = false;
-        detail = undefined;
         cause = undefined;
-        batch = undefined;
         reset = false;
       },
       context: active => {
         assertScope(active);
         return Object.freeze({
+          kind: 'value' as const,
           value,
-          previous,
           revision,
-          changed: !equal(previous, value),
           reset,
-          detail,
           cause,
-          batch,
         });
       },
     };
     scheduler.register(handle, record);
-    const accept = (next: T, metadata?: Partial<ValueContext<T, D>>) => {
+    const accept = (next: T, metadata?: Pick<ValueContext<T>, 'revision' | 'reset' | 'cause'>) => {
       scheduler.assertIdle();
       const recovering = record.fault !== undefined;
       const eventful =
         metadata !== undefined &&
         (metadata.reset === true ||
           (metadata.revision !== undefined && metadata.revision !== revision) ||
-          metadata.detail !== undefined ||
-          metadata.cause !== undefined ||
-          metadata.batch !== undefined);
+          metadata.cause !== undefined);
       if (equal(value, next) && !recovering && !eventful) return;
       record.fault = undefined;
-      if (!pending) previous = value;
       value = next;
       revision = metadata?.revision ?? revision + 1;
-      detail = metadata?.detail;
-      cause = metadata?.cause ?? cause;
-      batch = scheduler.batchContext() ?? metadata?.batch ?? batch;
+      cause = metadata?.cause ?? scheduler.batchContext()?.cause ?? cause;
       reset ||= metadata?.reset ?? false;
       scheduler.capture(record);
-      pending = true;
     };
     return {
       source: handle,
@@ -262,14 +351,14 @@ export const createSources = (scheduler: Scheduler) => {
       },
     };
   };
-  const externalValueSource = <T, D>(
-    port: ExternalValueSource<T, D>,
+  const externalValueSource = <T>(
+    port: ExternalValueSource<T>,
     equal: (a: T, b: T) => boolean
-  ): GraphSource<ValueContext<T, D>> => {
+  ): GraphSource<ValueContext<T>> => {
     scheduler.assertIdle();
     const old = externalSources.get(port);
-    if (old) return old as GraphSource<ValueContext<T, D>>;
-    const input = valueSource<T, D>(port.current(), equal);
+    if (old) return old as GraphSource<ValueContext<T>>;
+    const input = valueSource<T>(port.current(), equal);
     const fail = (cause: unknown) => {
       const record = scheduler.source(input.source);
       record.fault = new ProjectionError('source', 'external source', [record.revision()], cause);
@@ -281,10 +370,8 @@ export const createSources = (scheduler: Scheduler) => {
         try {
           input.accept(event.value, {
             revision: event.revision,
-            reset: event.reset,
-            detail: event.detail,
+            reset: event.reset ?? false,
             cause: event.cause,
-            batch: event.batch,
           });
         } catch (cause) {
           fail(cause);
@@ -300,25 +387,24 @@ export const createSources = (scheduler: Scheduler) => {
     externalSources.set(port, input.source);
     return input.source;
   };
-  const externalCollectionSource = <K extends string, V, D>(
-    port: ExternalCollectionSource<K, V, D>
-  ): GraphSource<CollectionContext<K, V, D>> => {
+  const externalCollectionSource = <K extends string, V>(
+    port: ExternalCollectionSource<K, V>
+  ): GraphSource<CollectionContext<K, V>> => {
     scheduler.assertIdle();
     const old = externalSources.get(port);
-    if (old) return old as GraphSource<CollectionContext<K, V, D>>;
+    if (old) return old as GraphSource<CollectionContext<K, V>>;
     let read = port.current();
     let previous = read;
     let revision = port.revision();
-    let change: CollectionContext<K, V, D>['change'];
+    let change: CollectionContext<K, V>['change'];
     let reset = false;
-    let detail: D | undefined;
-    let cause: import('./contract').Cause | undefined;
-    let batch: import('./contract').BatchContext | undefined;
-    let publishedTransitions: readonly import('./contract').CollectionEntryTransition<K, V>[] =
-      Object.freeze([]);
+    let orderChanged = false;
+    let cause: unknown;
     let transitionKeys = new Set<K>();
     let pending = false;
-    const handle = Object.freeze({}) as GraphSource<CollectionContext<K, V, D>>;
+    const handle = Object.freeze({ kind: 'collection' as const }) as unknown as GraphSource<
+      CollectionContext<K, V>
+    >;
     const record: SourceRecord = {
       consumers: new Set(),
       disposed: false,
@@ -330,10 +416,8 @@ export const createSources = (scheduler: Scheduler) => {
         pending = false;
         change = undefined;
         reset = false;
-        detail = undefined;
+        orderChanged = false;
         cause = undefined;
-        batch = undefined;
-        publishedTransitions = Object.freeze([]);
         transitionKeys.clear();
       },
       context: active => {
@@ -352,92 +436,61 @@ export const createSources = (scheduler: Scheduler) => {
             return read.ids();
           },
         });
-        const previousRead: CollectionRead<K, V> = Object.freeze({
-          get: key => {
-            assertScope(active);
-            return previous.get(key);
-          },
-          has: key => {
-            assertScope(active);
-            return previous.has(key);
-          },
-          ids: () => {
-            assertScope(active);
-            return previous.ids();
-          },
-        });
         return Object.freeze({
-          ...currentRead,
-          previous: previousRead,
+          kind: 'collection' as const,
+          read: currentRead,
           change,
           revision,
-          reset,
-          transitions: (keys?: Iterable<K>) => {
-            assertScope(active);
-            const selected = keys ? new Set(keys) : undefined;
-            return Object.freeze(
-              publishedTransitions.filter(transition => !selected || selected.has(transition.key))
-            );
-          },
-          detail,
           cause,
-          batch,
         });
       },
     };
     scheduler.register(handle, record);
-    collections.add(handle);
     const fail = (error: unknown) => {
       record.fault = new ProjectionError('source', 'external collection source', [revision], error);
       scheduler.capture(record);
     };
-    const addTransitionKeys = (impact: CollectionContext<K, V>['change']) => {
-      if (impact?.kind === 'incremental') {
-        impact.added.forEach(key => transitionKeys.add(key));
-        impact.removed.forEach(key => transitionKeys.add(key));
-        impact.updated.forEach(key => transitionKeys.add(key));
-      }
-    };
-    const recomputeTransitions = () => {
-      const transitions: import('./contract').CollectionEntryTransition<K, V>[] = [];
+    const deriveChange = (): CollectionContext<K, V>['change'] => {
+      if (reset) return Object.freeze({ kind: 'reset' as const });
+      const added: { readonly key: K; readonly after: V }[] = [];
+      const updated: {
+        readonly key: K;
+        readonly before: V;
+        readonly after: V;
+      }[] = [];
+      const removed: { readonly key: K; readonly before: V }[] = [];
       for (const key of transitionKeys) {
         const beforePresent = previous.has(key);
         const afterPresent = read.has(key);
         const before = beforePresent ? previous.get(key) : undefined;
         const after = afterPresent ? read.get(key) : undefined;
         if (beforePresent === afterPresent && Object.is(before, after)) continue;
-        if (!beforePresent)
-          transitions.push({ key, kind: 'added', before: undefined, after: after as V });
-        else if (!afterPresent)
-          transitions.push({ key, kind: 'removed', before: before as V, after: undefined });
-        else transitions.push({ key, kind: 'updated', before: before as V, after: after as V });
+        if (!beforePresent && afterPresent) added.push({ key, after: after as V });
+        else if (beforePresent && !afterPresent) removed.push({ key, before: before as V });
+        else if (beforePresent && afterPresent)
+          updated.push({ key, before: before as V, after: after as V });
       }
-      publishedTransitions = Object.freeze(transitions);
-    };
-    const deriveChange = (): CollectionImpact<K> | undefined => {
-      if (reset) return Object.freeze({ kind: 'reset' as const });
-      const added = new Set<K>();
-      const removed = new Set<K>();
-      const updated = new Set<K>();
-      publishedTransitions.forEach(transition => {
-        if (transition.kind === 'added') added.add(transition.key);
-        else if (transition.kind === 'removed') removed.add(transition.key);
-        else updated.add(transition.key);
-      });
-      const beforeIds = previous.ids();
-      const afterIds = read.ids();
-      const beforeCommon = beforeIds.filter(key => read.has(key));
-      const afterCommon = afterIds.filter(key => previous.has(key));
-      const orderChanged =
-        beforeCommon.length !== afterCommon.length ||
-        beforeCommon.some((key, index) => afterCommon[index] !== key);
-      if (!added.size && !removed.size && !updated.size && !orderChanged) return undefined;
+      let order: { readonly before: readonly K[]; readonly after: readonly K[] } | undefined;
+      if (orderChanged) {
+        const beforeIds = previous.ids();
+        const afterIds = read.ids();
+        const beforeKeys = new Set(beforeIds);
+        const afterKeys = new Set(afterIds);
+        const beforeCommon = beforeIds.filter(key => afterKeys.has(key));
+        const afterCommon = afterIds.filter(key => beforeKeys.has(key));
+        if (beforeCommon.some((key, index) => afterCommon[index] !== key))
+          order = Object.freeze({
+            before: Object.freeze([...beforeIds]),
+            after: Object.freeze([...afterIds]),
+          });
+      }
+      if (!added.length && !removed.length && !updated.length && !order) return undefined;
       return Object.freeze({
         kind: 'incremental' as const,
-        added,
-        removed,
-        updated,
-        orderChanged,
+        added: Object.freeze(added),
+        updated: Object.freeze(updated),
+        removed: Object.freeze(removed),
+        ...(order ? { order } : {}),
       });
     };
     let unsubscribe: (() => void) | undefined;
@@ -448,12 +501,20 @@ export const createSources = (scheduler: Scheduler) => {
           if (!pending) previous = event.previous;
           read = port.current();
           revision = event.revision;
-          addTransitionKeys(event.change);
-          reset ||= event.reset || event.change?.kind === 'reset';
-          detail = event.detail;
-          cause = event.cause ?? cause;
-          batch = scheduler.batchContext() ?? event.batch;
-          recomputeTransitions();
+          if (event.impact?.kind === 'incremental') {
+            event.impact.added.forEach(key => transitionKeys.add(key));
+            event.impact.removed.forEach(key => transitionKeys.add(key));
+            event.impact.updated.forEach(key => transitionKeys.add(key));
+            orderChanged ||= Boolean(
+              event.impact.added.size || event.impact.removed.size || event.impact.orderChanged
+            );
+          } else if (!event.impact) {
+            previous.ids().forEach(key => transitionKeys.add(key));
+            read.ids().forEach(key => transitionKeys.add(key));
+            orderChanged = true;
+          }
+          reset ||= event.impact?.kind === 'reset';
+          cause = event.cause ?? scheduler.batchContext()?.cause ?? cause;
           change = deriveChange();
           record.fault = undefined;
           scheduler.capture(record);
@@ -478,11 +539,11 @@ export const createSources = (scheduler: Scheduler) => {
       readables.clear();
     },
     document,
-    fromSource: <T, D>(
-      source: ExternalValueSource<T, D>,
+    fromSource: <T>(
+      source: ExternalValueSource<T>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }
     ) => externalValueSource(source, options?.isEqual ?? Object.is),
-    fromCollectionSource: <K extends string, V, D>(source: ExternalCollectionSource<K, V, D>) =>
+    fromCollectionSource: <K extends string, V>(source: ExternalCollectionSource<K, V>) =>
       externalCollectionSource(source),
     input: <T>(initial: T, options?: { readonly isEqual?: (a: T, b: T) => boolean }) => {
       const { source, set } = valueSource(initial, options?.isEqual ?? Object.is);
@@ -587,8 +648,7 @@ export const createSources = (scheduler: Scheduler) => {
     },
     assertCollection: (handle: object) => {
       scheduler.source(handle);
-      if (!collections.has(handle) && !collectionHandles.has(handle))
-        throw new Error('map requires a collection source.');
+      if (!isCollectionSource(handle)) throw new Error('map requires a collection source.');
     },
   };
 };

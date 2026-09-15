@@ -4,7 +4,6 @@ export {
   useHistory,
   useProjection,
   useInput,
-  ProjectionContext,
   ProjectionProvider,
   type DocumentSelectorOptions,
 } from './hooks';
