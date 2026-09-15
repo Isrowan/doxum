@@ -1,6 +1,6 @@
 {
   "name": "doxum",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": false,
   "license": "MIT",
   "description": "Doxum is a typed runtime for complex mutable documents.",
