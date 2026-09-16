@@ -64,4 +64,4 @@ export type {
   ExternalValueEvent,
   ExternalValueSource,
 } from './projection/contract';
-export type { ProjectionRuntime } from './projection/runtime';
+export type { ProjectionRuntime, ProjectionScope } from './projection/runtime';

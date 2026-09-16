@@ -9,6 +9,7 @@ export type SourceRecord = {
   context(active: () => boolean): unknown;
   revision(): number;
   reset(): boolean;
+  shouldSettle?(): boolean;
   fault: ProjectionError | undefined;
   disposed: boolean;
   clear(): void;
@@ -114,7 +115,9 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     phase = 'compute';
     lock(true);
     try {
-      pending.forEach(source => source.consumers.forEach(enqueue));
+      pending.forEach(source => {
+        if (source.shouldSettle?.() ?? true) source.consumers.forEach(enqueue);
+      });
       while (heap.length) {
         const node = pop();
         if (node.disposed) continue;
@@ -272,11 +275,28 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     unregisterSource(handle: object) {
       const record = records.get(handle);
       if (record) {
+        assertIdle();
+        if (record.consumers.size) throw new Error('Projection source is still used by a node.');
         record.disposed = true;
         pending.delete(record);
         record.clear();
         records.delete(handle);
       }
+    },
+    releaseNode(handle: object) {
+      assertIdle();
+      const node = records.get(handle) as NodeRecord | undefined;
+      if (!node || !nodes.has(node)) throw new Error('Unknown projection node.');
+      if (node.consumers.size) throw new Error('Projection node is still used by another node.');
+      node.disposed = true;
+      node.sources.forEach(source => source.consumers.delete(node));
+      node.release();
+      node.clear();
+      nodes.delete(node);
+      records.delete(handle);
+      pending.delete(node);
+      queued.delete(node);
+      emissions.delete(node);
     },
     source(handle: object) {
       assertActive();

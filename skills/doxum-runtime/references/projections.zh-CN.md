@@ -1,6 +1,6 @@
 # Projection 参考
 
-Projection 定义是惰性、可复用的。默认入口只保留 `Projection<T>`、
+根 Projection 定义惰性且可跨 Runtime 复用；scope 定义惰性但只属于其局部生命周期。默认入口包含 `Projection<T>`、
 `ProjectionRuntime`、`input`、`observe` 和 tuple 形式的 `derive`。
 
 ```ts
@@ -35,9 +35,17 @@ runtime.get(projection);
 const selected = runtime.readable(projection, value => value.get(id));
 selected.subscribe(listener);
 runtime.set(input, value);
+runtime.update(collectionInput, draft => draft.set(id, value));
 runtime.batch({ cause }, run);
+const scope = runtime.scope();
+scope.dispose();
 runtime.dispose();
 ```
+
+`input.collection<K, V>(initial?)` 声明 Runtime 本地 keyed 状态。`update` 的借用 draft
+提供 `get`、`has`、`set`、`remove`；单次 callback 同步且原子，Runtime batch 发布一次
+精确的净 `CollectionChange`。scope 用 `scope.input`、`scope.derive`、
+`scope.incremental` 声明局部投影，直接依赖同一张图中的根投影；dispose 只释放局部状态和订阅。
 
 Runtime graph revision、item handle、rebuild、release 都是内部事实，不是应用层操作；
 只有 `Readable` 自己的 publication revision 为 store 集成保留为公开事实。

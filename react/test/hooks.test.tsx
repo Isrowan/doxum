@@ -79,4 +79,29 @@ describe('projection React adapter', () => {
     document.dispose();
     runtime.dispose();
   });
+
+  it('reads and writes a scope-owned projection through the same provider', () => {
+    const runtime = createProjectionRuntime();
+    const scope = runtime.scope();
+    const count = scope.input(1);
+    const doubled = scope.derive([count], value => value * 2);
+    let setCount!: (value: number) => void;
+    const Probe = () => {
+      const [value, set] = useInput(count);
+      setCount = set;
+      return React.createElement('span', null, `${value}:${useProjection(doubled)}`);
+    };
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(
+        React.createElement(ProjectionProvider, { value: scope }, React.createElement(Probe))
+      );
+    });
+    expect(renderer.toJSON()).toMatchObject({ children: ['1:2'] });
+    act(() => setCount(3));
+    expect(renderer.toJSON()).toMatchObject({ children: ['3:6'] });
+    act(() => renderer.unmount());
+    scope.dispose();
+    runtime.dispose();
+  });
 });

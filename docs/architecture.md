@@ -286,7 +286,16 @@ Local root reset is reversible. Remote commits invalidate local history.
 Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
-`get`, `readable`, `set`, `batch` and `dispose`. Collection values are immutable
+`get`, `readable`, scalar `set`, keyed `update`, `scope`, `batch` and `dispose`.
+`runtime.scope()` creates a local definition and subscription lifetime inside
+that same graph, not a child Runtime. Local input, derive and incremental nodes
+can depend directly on root document or session projections. Scope disposal
+unsubscribes its readables and releases local nodes in reverse dependency order;
+root nodes continue to live until Runtime disposal. A scoped definition cannot
+be materialized by another scope or by the root. Collection inputs are graph
+collection sources: their synchronous `update` draft stages keyed set/remove
+commands and publishes a net `CollectionChange` at the Runtime batch boundary.
+Collection values are immutable
 map-like snapshots, while keyed storage, graph revisions and transition indexes
 remain private to the runtime. A readable exposes only its own publication
 revision for store integrations. Selector tracking and equality belong to a runtime-owned

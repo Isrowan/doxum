@@ -10,12 +10,32 @@ import type {
   ValueNode,
   GraphSource,
 } from './contract';
+import { ProjectionDisposedError } from './contract';
 import type { Readable } from './readable';
-import { definitionOf, type Input, type Projection } from './definition';
+import {
+  definitionOf,
+  derive,
+  input,
+  ownDefinition,
+  ownerOf,
+  type Input,
+  type Projection,
+} from './definition';
+import {
+  incremental,
+  type IncrementalCollectionProcessor,
+  type IncrementalValueProcessor,
+} from './advanced';
 import { createProjectionGraph } from './graph';
 
 type RuntimeNode = ValueNode<unknown> | CollectionNode<string, unknown>;
 type RuntimeValue = RuntimeNode;
+type KeyedDraft<K extends string, V> = {
+  get(key: K): V | undefined;
+  has(key: K): boolean;
+  set(key: K, value: V): void;
+  remove(key: K): void;
+};
 type SelectionTracker = {
   readonly keys: Set<string>;
   all: boolean;
@@ -37,8 +57,33 @@ export type ProjectionRuntime = {
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
   set<T>(input: Input<T>, value: T): void;
+  update<K extends string, V>(
+    input: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
+    run: (draft: KeyedDraft<K, V>) => void
+  ): void;
   batch<T>(run: () => T): T;
   batch<T>(options: { readonly cause?: unknown }, run: () => T): T;
+  scope(): ProjectionScope;
+  dispose(): void;
+};
+
+export type ProjectionScope = {
+  readonly input: typeof input;
+  readonly derive: typeof derive;
+  readonly incremental: typeof incremental;
+  get<T>(projection: Projection<T, unknown>): T;
+  readable<T>(projection: Projection<T, unknown>): Readable<T>;
+  readable<T, R>(
+    projection: Projection<T, unknown>,
+    selector: (value: T) => R,
+    equality?: (previous: R, next: R) => boolean
+  ): Readable<R>;
+  set<T>(input: Input<T>, value: T): void;
+  update<K extends string, V>(
+    input: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
+    run: (draft: KeyedDraft<K, V>) => void
+  ): void;
+  batch: ProjectionRuntime['batch'];
   dispose(): void;
 };
 
@@ -246,23 +291,50 @@ export const createProjectionRuntime = (options?: {
   readonly onError?: (error: import('./contract').ProjectionError) => void;
 }): ProjectionRuntime => {
   const runtime = createProjectionGraph({ onError: options?.onError ?? (() => undefined) });
-  type Materialized = {
+  type MaterializedBase = {
     readonly node: RuntimeValue;
-    readonly set?: (value: unknown) => void;
     collection?: { revision: number; value: ReadonlyMap<string, unknown> };
   };
+  type CollectionWrite = {
+    readonly kind: 'collection-input';
+    readonly source: object;
+    readonly update: (run: (draft: KeyedDraft<string, unknown>) => void) => void;
+  };
+  type InputWrite =
+    | {
+        readonly kind: 'value-input';
+        readonly source: object;
+        readonly set: (value: unknown) => void;
+      }
+    | CollectionWrite;
+  type Materialized = MaterializedBase & ({ readonly kind: 'projection' } | InputWrite);
   const materialized = new WeakMap<object, Materialized>();
+  let disposed = false;
+  type ScopeState = {
+    active: boolean;
+    readonly materialized: object[];
+    readonly subscriptions: Set<Unsubscribe>;
+  };
+  const scopes = new Set<ScopeState>();
 
-  const materialize = (projection: Projection<unknown, unknown>): RuntimeValue => {
+  const materialize = (
+    projection: Projection<unknown, unknown>,
+    requester?: ScopeState
+  ): RuntimeValue => {
+    const owner = ownerOf(projection);
+    if (owner) {
+      if (owner !== requester) throw new TypeError('Projection belongs to another scope.');
+      if (!requester.active) throw new ProjectionDisposedError();
+    }
     const old = materialized.get(projection);
     if (old) return old.node;
     const definition = definitionOf(projection);
     let instance: RuntimeValue;
-    let setter: ((value: unknown) => void) | undefined;
+    let write: InputWrite | undefined;
     switch (definition.kind) {
       case 'input': {
         const input = runtime.input(definition.initial, { isEqual: definition.isEqual });
-        setter = input.set;
+        write = { kind: 'value-input', source: input.source, set: input.set };
         instance = runtime.value({
           sources: { input: input.source },
           build: values => ({
@@ -270,6 +342,16 @@ export const createProjectionRuntime = (options?: {
             update: next => ({ kind: 'changed', value: next.input.value }),
           }),
         });
+        break;
+      }
+      case 'collection-input': {
+        const source = runtime.collectionInput(definition.initial);
+        write = {
+          kind: 'collection-input',
+          source: source.source,
+          update: source.update as CollectionWrite['update'],
+        };
+        instance = runtime.map(source.source, (_key, value) => value);
         break;
       }
       case 'readable': {
@@ -337,7 +419,7 @@ export const createProjectionRuntime = (options?: {
         const sources = Object.fromEntries(
           definition.dependencies.map((dependency, index) => [
             `d${index}`,
-            sourceOf(materialize(dependency)),
+            sourceOf(materialize(dependency, owner as ScopeState | undefined)),
           ])
         );
         instance = runtime.value(
@@ -359,7 +441,7 @@ export const createProjectionRuntime = (options?: {
         const sources = Object.fromEntries(
           Object.entries(definition.dependencies).map(([key, dependency]) => [
             key,
-            sourceOf(materialize(dependency as never)),
+            sourceOf(materialize(dependency as never, owner as ScopeState | undefined)),
           ])
         );
         instance = runtime.value(
@@ -372,7 +454,7 @@ export const createProjectionRuntime = (options?: {
         const sources = Object.fromEntries(
           Object.entries(definition.dependencies).map(([key, dependency]) => [
             key,
-            sourceOf(materialize(dependency as never)),
+            sourceOf(materialize(dependency as never, owner as ScopeState | undefined)),
           ])
         );
         instance = runtime.collection({
@@ -384,12 +466,16 @@ export const createProjectionRuntime = (options?: {
         break;
       }
     }
-    materialized.set(projection, { node: instance, set: setter });
+    const record: Materialized = write
+      ? { node: instance, ...write }
+      : { kind: 'projection', node: instance };
+    materialized.set(projection, record);
+    if (owner) (owner as ScopeState).materialized.push(projection);
     return instance;
   };
 
-  const get = <T>(projection: Projection<T, unknown>): T => {
-    const instance = materialize(projection as Projection<unknown, unknown>);
+  const get = <T>(projection: Projection<T, unknown>, requester?: ScopeState): T => {
+    const instance = materialize(projection as Projection<unknown, unknown>, requester);
     const current: unknown = instance.current();
     if (instance.kind === 'collection') {
       const record = materialized.get(projection) ?? materialized.get(instance);
@@ -412,22 +498,18 @@ export const createProjectionRuntime = (options?: {
     return current as T;
   };
 
-  function readable<T>(projection: Projection<T, unknown>): Readable<T>;
-  function readable<T, R>(
-    projection: Projection<T, unknown>,
-    selector: (value: T) => R,
-    equality?: (previous: R, next: R) => boolean
-  ): Readable<R>;
-  function readable<T, R>(
+  const makeReadable = <T, R>(
     projection: Projection<T, unknown>,
     selector?: (value: T) => R,
-    equality: (previous: R, next: R) => boolean = Object.is
-  ): Readable<T | R> {
+    equality: (previous: R, next: R) => boolean = Object.is,
+    requester?: ScopeState
+  ): Readable<T | R> => {
     if (!selector) {
       return Object.freeze({
-        current: () => get(projection),
-        revision: () => materialize(projection).revision(),
-        subscribe: (listener: () => void) => materialize(projection).subscribe(listener as never),
+        current: () => get(projection, requester),
+        revision: () => materialize(projection, requester).revision(),
+        subscribe: (listener: () => void) =>
+          materialize(projection, requester).subscribe(listener as never),
       });
     }
 
@@ -445,7 +527,7 @@ export const createProjectionRuntime = (options?: {
     const listeners = new Set<() => void>();
 
     const updateCollectionSnapshot = () => {
-      const current = get(projection);
+      const current = get(projection, requester);
       previousCollection = isMapLike(current) ? current : undefined;
     };
 
@@ -456,7 +538,7 @@ export const createProjectionRuntime = (options?: {
       let source: T;
       let next: R;
       try {
-        source = get(projection);
+        source = get(projection, requester);
         next = selector(source);
       } finally {
         activeTracker = previousTracker;
@@ -473,13 +555,13 @@ export const createProjectionRuntime = (options?: {
       }
       selection = nextSelection;
       initialized = true;
-      sourceRevision = materialize(projection).revision();
+      sourceRevision = materialize(projection, requester).revision();
       updateCollectionSnapshot();
       return changed;
     };
 
     const ensureCurrent = (): R => {
-      const revision = materialize(projection).revision();
+      const revision = materialize(projection, requester).revision();
       if (!initialized || (!unsubscribeSource && sourceRevision !== revision)) evaluate();
       return value;
     };
@@ -487,18 +569,18 @@ export const createProjectionRuntime = (options?: {
     const onProjectionChange = (incoming?: CollectionChange<string, unknown>) => {
       let change = incoming;
       if (!change && previousCollection) {
-        const current = get(projection);
+        const current = get(projection, requester);
         if (isMapLike(current)) {
           change = mapChange(previousCollection, current);
           previousCollection = current;
           if (!change) {
-            sourceRevision = materialize(projection).revision();
+            sourceRevision = materialize(projection, requester).revision();
             return;
           }
         } else previousCollection = undefined;
       }
       if (!selectionAffects(selection, change)) {
-        sourceRevision = materialize(projection).revision();
+        sourceRevision = materialize(projection, requester).revision();
         updateCollectionSnapshot();
         return;
       }
@@ -506,14 +588,18 @@ export const createProjectionRuntime = (options?: {
       const changed = evaluate();
       if (unsubscribeSource && !sameSelection(previousSelection, selection)) {
         unsubscribeSource();
-        unsubscribeSource = materialize(projection).subscribe(onProjectionChange as never);
+        unsubscribeSource = materialize(projection, requester).subscribe(
+          onProjectionChange as never
+        );
       }
       if (changed) Array.from(listeners).forEach(listener => listener());
     };
 
     const installSource = () => {
       if (!unsubscribeSource) {
-        unsubscribeSource = materialize(projection).subscribe(onProjectionChange as never);
+        unsubscribeSource = materialize(projection, requester).subscribe(
+          onProjectionChange as never
+        );
       }
     };
 
@@ -537,19 +623,199 @@ export const createProjectionRuntime = (options?: {
       },
     };
     return Object.freeze(handle);
+  };
+
+  function readable<T>(projection: Projection<T, unknown>): Readable<T>;
+  function readable<T, R>(
+    projection: Projection<T, unknown>,
+    selector: (value: T) => R,
+    equality?: (previous: R, next: R) => boolean
+  ): Readable<R>;
+  function readable<T, R>(
+    projection: Projection<T, unknown>,
+    selector?: (value: T) => R,
+    equality?: (previous: R, next: R) => boolean
+  ): Readable<T | R> {
+    return makeReadable(projection, selector, equality);
   }
+
+  const setInput = <T>(target: Input<T>, value: T, requester?: ScopeState): void => {
+    materialize(target as Projection<unknown, unknown>, requester);
+    const record = materialized.get(target);
+    if (record?.kind !== 'value-input') throw new TypeError('Projection is not a value input.');
+    record.set(value);
+  };
+
+  const updateInput = <K extends string, V>(
+    target: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
+    run: (draft: KeyedDraft<K, V>) => void,
+    requester?: ScopeState
+  ): void => {
+    materialize(target as Projection<unknown, unknown>, requester);
+    const record = materialized.get(target);
+    if (record?.kind !== 'collection-input')
+      throw new TypeError('Projection is not a collection input.');
+    record.update(run as Parameters<typeof record.update>[0]);
+  };
+
+  const createScope = (): ProjectionScope => {
+    runtime.assertIdle();
+    const state: ScopeState = {
+      active: true,
+      materialized: [],
+      subscriptions: new Set(),
+    };
+    scopes.add(state);
+    const assertActive = () => {
+      if (!state.active) throw new ProjectionDisposedError();
+    };
+    const own = <P extends Projection<unknown, unknown>>(projection: P): P => {
+      assertActive();
+      const definition = definitionOf(projection);
+      const dependencies =
+        definition.kind === 'derive'
+          ? definition.dependencies
+          : definition.kind === 'incremental-value' || definition.kind === 'incremental-collection'
+            ? Object.values(definition.dependencies)
+            : [];
+      for (const dependency of dependencies) {
+        const dependencyOwner = ownerOf(dependency as Projection<unknown, unknown>);
+        if (dependencyOwner && dependencyOwner !== state)
+          throw new TypeError('A scope cannot depend on another scope.');
+      }
+      ownDefinition(projection, state);
+      return projection;
+    };
+    const scopedInput: typeof input = Object.assign(
+      <T>(initial: T, equality?: (previous: T, next: T) => boolean) =>
+        own(input(initial, equality)),
+      {
+        collection: <K extends string, V>(initial?: ReadonlyMap<K, V>) =>
+          own(input.collection(initial)),
+      }
+    );
+    const scopedDerive: typeof derive = (dependencies, compute, equality) =>
+      own(derive(dependencies, compute, equality));
+    const scopedIncremental: typeof incremental = Object.assign(
+      <const D extends readonly Projection<unknown, unknown>[], T>(
+        dependencies: D,
+        processor: IncrementalValueProcessor<D, T>
+      ) => own(incremental(dependencies, processor)),
+      {
+        collection: <const D extends readonly Projection<unknown, unknown>[], K extends string, V>(
+          dependencies: D,
+          processor: IncrementalCollectionProcessor<D, K, V>
+        ) => own(incremental.collection(dependencies, processor)),
+      }
+    );
+    function scopeReadable<T>(projection: Projection<T, unknown>): Readable<T>;
+    function scopeReadable<T, R>(
+      projection: Projection<T, unknown>,
+      selector: (value: T) => R,
+      equality?: (previous: R, next: R) => boolean
+    ): Readable<R>;
+    function scopeReadable<T, R>(
+      projection: Projection<T, unknown>,
+      selector?: (value: T) => R,
+      equality?: (previous: R, next: R) => boolean
+    ): Readable<T | R> {
+      assertActive();
+      materialize(projection, state);
+      const source = makeReadable(projection, selector, equality, state);
+      return Object.freeze({
+        current: () => {
+          assertActive();
+          return source.current();
+        },
+        revision: () => {
+          assertActive();
+          return source.revision();
+        },
+        subscribe: (listener: () => void) => {
+          assertActive();
+          const stop = source.subscribe(listener);
+          let subscribed = true;
+          const unsubscribe = () => {
+            if (!subscribed) return;
+            subscribed = false;
+            state.subscriptions.delete(unsubscribe);
+            stop();
+          };
+          state.subscriptions.add(unsubscribe);
+          return unsubscribe;
+        },
+      });
+    }
+    function scopeBatch<T>(run: () => T): T;
+    function scopeBatch<T>(options: { readonly cause?: unknown }, run: () => T): T;
+    function scopeBatch<T>(
+      optionsOrCallback: { readonly cause?: unknown } | (() => T),
+      maybeCallback?: () => T
+    ): T {
+      assertActive();
+      return typeof optionsOrCallback === 'function'
+        ? runtime.batch(optionsOrCallback)
+        : runtime.batch(optionsOrCallback, maybeCallback!);
+    }
+    return Object.freeze({
+      input: scopedInput,
+      derive: scopedDerive,
+      incremental: scopedIncremental,
+      get: <T>(projection: Projection<T, unknown>) => {
+        assertActive();
+        return get(projection, state);
+      },
+      readable: scopeReadable,
+      set: <T>(target: Input<T>, value: T) => {
+        assertActive();
+        setInput(target, value, state);
+      },
+      update: <K extends string, V>(
+        target: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
+        run: (draft: KeyedDraft<K, V>) => void
+      ) => {
+        assertActive();
+        updateInput(target, run, state);
+      },
+      batch: scopeBatch,
+      dispose: () => {
+        if (!state.active) return;
+        runtime.assertIdle();
+        state.active = false;
+        state.subscriptions.forEach(unsubscribe => unsubscribe());
+        for (const definition of state.materialized.reverse()) {
+          const record = materialized.get(definition);
+          if (!record) continue;
+          runtime.releaseNode(record.node);
+          if (record.kind !== 'projection') runtime.releaseInput(record.source);
+          materialized.delete(definition);
+        }
+        state.materialized.length = 0;
+        scopes.delete(state);
+      },
+    });
+  };
 
   const store: ProjectionRuntime = {
     get,
     readable,
-    set: ((input: Input<unknown>, value: unknown) => {
-      materialize(input as Projection<unknown, unknown>);
-      const target = materialized.get(input);
-      if (!target?.set) throw new TypeError('Projection is not an input.');
-      target.set(value);
-    }) as ProjectionRuntime['set'],
+    set: setInput,
+    update: updateInput,
     batch: runtime.batch,
-    dispose: runtime.dispose,
+    scope: createScope,
+    dispose: () => {
+      if (disposed) return;
+      runtime.assertIdle();
+      disposed = true;
+      for (const scope of scopes) {
+        scope.active = false;
+        scope.subscriptions.forEach(unsubscribe => unsubscribe());
+        scope.subscriptions.clear();
+        scope.materialized.length = 0;
+      }
+      scopes.clear();
+      runtime.dispose();
+    },
   };
   return Object.freeze(store);
 };

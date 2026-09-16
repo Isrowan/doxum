@@ -1,6 +1,7 @@
 # Projection Reference
 
-Projection definitions are lazy and reusable. The public core consists of
+Root projection definitions are lazy and reusable; scoped definitions are lazy
+and bound to one scope. The public core consists of
 `Projection<T>`, `ProjectionRuntime`, `input`, `observe`, and tuple `derive`.
 
 ```ts
@@ -37,9 +38,20 @@ runtime.get(projection);
 const selected = runtime.readable(projection, value => value.get(id));
 selected.subscribe(listener);
 runtime.set(input, value);
+runtime.update(collectionInput, draft => draft.set(id, value));
 runtime.batch({ cause }, run);
+const scope = runtime.scope();
+scope.dispose();
 runtime.dispose();
 ```
+
+`input.collection<K, V>(initial?)` declares keyed Runtime-local state. Its
+`update` draft has `get`, `has`, `set`, and `remove`; edits are synchronous and
+atomic per callback, and a Runtime batch publishes one exact net
+`CollectionChange`. A scope declares local inputs, derives, and incremental
+processors through `scope.input`, `scope.derive`, and `scope.incremental`. They
+depend directly on root projections in the same graph. Disposing the scope
+releases local state and subscriptions without disposing its root dependencies.
 
 The Runtime exposes no graph revision, item handle, rebuild or release operation;
 only a `Readable`'s own publication revision is public for store integrations.

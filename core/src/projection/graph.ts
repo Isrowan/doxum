@@ -81,6 +81,7 @@ export const createProjectionGraph = (options: {
     fromCollectionSource: <K extends string, V>(source: ExternalCollectionSource<K, V>) =>
       sources.fromCollectionSource(source),
     input: sources.input,
+    collectionInput: sources.collectionInput,
     fromReadable: sources.fromReadable,
     value,
     collection: <S extends GraphSources, K extends string, V>(
@@ -88,6 +89,9 @@ export const createProjectionGraph = (options: {
     ) => createCollection(scheduler, spec),
     map,
     batch: scheduler.batch,
+    assertIdle: scheduler.assertIdle,
+    releaseNode: scheduler.releaseNode,
+    releaseInput: scheduler.unregisterSource,
     dispose: () => {
       try {
         scheduler.dispose();

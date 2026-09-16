@@ -232,11 +232,38 @@ runtime.batch({ cause: { action: 'refresh' } }, () => {
 stop();
 ```
 
-Projection declarations are lazy and reusable. The only Runtime operations are
-`get`, `readable`, `set`, `batch` and `dispose`; materialization, incremental
-state, publication and recovery stay inside the Runtime. Collection values are
+Root projection declarations are lazy and reusable; scoped declarations are
+lazy but tied to their scope. The Runtime owns `get`,
+`readable`, scalar `set`, keyed `update`, `batch`, `scope` and `dispose`;
+materialization, incremental state, publication and recovery stay inside that
+one Runtime. Collection values are
 immutable `ReadonlyMap`-like snapshots, while a `Readable` owns selector
 tracking, equality and subscription lifecycle.
+
+Local projections live in the same graph as their parent definitions:
+
+```ts
+const scope = runtime.scope();
+const localFilter = scope.input<'all' | 'open'>('all');
+const localVisible = scope.derive([tasks, localFilter], (tasks, filter) =>
+  filter === 'all' ? tasks : new Map([...tasks].filter(([, task]) => !task.done))
+);
+scope.get(localVisible);
+scope.dispose(); // Releases local nodes, state and subscriptions; parent tasks remain.
+```
+
+For Runtime-local keyed state, `input.collection` publishes the same exact
+`CollectionChange` as document collections. One `update` edits one or many keys
+atomically; the enclosing Runtime batch coalesces accepted edits into one net
+change:
+
+```ts
+const overrides = input.collection<string, Task>();
+runtime.update(overrides, draft => {
+  draft.set(taskId, task);
+  draft.remove(oldTaskId);
+});
+```
 
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external sources. External sources declare `kind: 'value'` or

@@ -14,6 +14,7 @@ import {
   type ExternalValueEvent,
 } from '../src';
 import { incremental } from '../src/projection/advanced';
+import { measureProfile } from '../src/profile';
 
 const row = object({ value: field<number>(), label: field<string>() });
 const model = object({ rows: map(row), ordered: table(row) });
@@ -43,6 +44,190 @@ describe('projection runtime', () => {
     expect(runtime.get(calls)).toBe(2);
     runtime.set(source, 2);
     expect(runtime.get(calls)).toBe(4);
+    runtime.dispose();
+  });
+
+  it('isolates retained incremental state between runtimes and rebuilds', () => {
+    const source = input(1);
+    const projection = incremental([source], ({ state, sources }) => {
+      state.count = Number(state.count ?? 0) + 1;
+      return Number(sources[0]) + Number(state.count);
+    });
+    const left = createProjectionRuntime();
+    const right = createProjectionRuntime();
+    expect(left.get(projection)).toBe(2);
+    expect(right.get(projection)).toBe(2);
+    left.set(source, 2);
+    expect(left.get(projection)).toBe(4);
+    expect(right.get(projection)).toBe(2);
+    left.dispose();
+    right.dispose();
+  });
+
+  it('keeps local scope nodes in the parent graph and releases only their lifetime', () => {
+    const parent = input(2);
+    const runtime = createProjectionRuntime();
+    const scope = runtime.scope();
+    const local = scope.input(3);
+    const value = scope.derive([parent, local], (a, b) => a * b);
+    const calls = vi.fn();
+    const selected = scope.readable(value);
+    selected.subscribe(calls);
+    expect(selected.current()).toBe(6);
+    runtime.set(parent, 4);
+    expect(selected.current()).toBe(12);
+    expect(calls).toHaveBeenCalledTimes(1);
+    scope.set(local, 5);
+    expect(selected.current()).toBe(20);
+    expect(calls).toHaveBeenCalledTimes(2);
+    expect(() => runtime.get(value)).toThrow('another scope');
+    scope.dispose();
+    scope.dispose();
+    expect(() => selected.current()).toThrow(ProjectionDisposedError);
+    expect(() => scope.set(local, 7)).toThrow(ProjectionDisposedError);
+    runtime.set(parent, 6);
+    expect(runtime.get(parent)).toBe(6);
+    expect(calls).toHaveBeenCalledTimes(2);
+    runtime.dispose();
+    runtime.dispose();
+    expect(() => runtime.scope()).toThrow(ProjectionDisposedError);
+  });
+
+  it('supports scope-owned incremental collections and rejects sibling dependencies', () => {
+    const parent = input.collection(new Map([['a', 1]]));
+    const runtime = createProjectionRuntime();
+    const first = runtime.scope();
+    const second = runtime.scope();
+    const factor = first.input(2);
+    const projection = first.incremental.collection([parent, factor], ({ sources, output }) => {
+      for (const [key, value] of sources[0]) output.set(key, value * sources[1]);
+    });
+    expect(first.get(projection).get('a')).toBe(2);
+    runtime.update(parent, draft => draft.set('a', 3));
+    expect(first.get(projection).get('a')).toBe(6);
+    expect(() => second.derive([factor], value => value + 1)).toThrow('another scope');
+    first.dispose();
+    second.dispose();
+    expect(runtime.get(parent).get('a')).toBe(3);
+    runtime.dispose();
+  });
+
+  it('publishes exact net keyed input changes without touching unrelated selectors', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+      ])
+    );
+    const seen: unknown[] = [];
+    const observed = incremental([rows], ({ changes, sources }) => {
+      seen.push(changes[0]);
+      return sources[0].size;
+    });
+    const runtime = createProjectionRuntime();
+    const selected = runtime.readable(rows, values => values.get('a'));
+    const onSelected = vi.fn();
+    selected.subscribe(onSelected);
+    expect(runtime.get(observed)).toBe(2);
+    const first = runtime.get(rows);
+    runtime.batch(() => {
+      runtime.update(rows, draft => draft.set('b', 3));
+      runtime.update(rows, draft => {
+        draft.set('c', 4);
+        draft.remove('b');
+      });
+    });
+    expect(seen[1]).toEqual({
+      kind: 'incremental',
+      added: [{ key: 'c', after: 4 }],
+      updated: [],
+      removed: [{ key: 'b', before: 2 }],
+    });
+    expect(runtime.get(rows).get('a')).toBe(1);
+    expect(runtime.get(rows)).not.toBe(first);
+    expect(onSelected).not.toHaveBeenCalled();
+    runtime.batch(() => {
+      runtime.update(rows, draft => draft.set('a', 9));
+      runtime.update(rows, draft => draft.set('a', 1));
+    });
+    expect(seen).toHaveLength(2);
+    expect(onSelected).not.toHaveBeenCalled();
+    runtime.update(rows, draft => draft.set('a', 5));
+    expect(onSelected).toHaveBeenCalledTimes(1);
+    expect(selected.current()).toBe(5);
+    runtime.dispose();
+  });
+
+  it('keeps a keyed input edit atomic when its callback fails', () => {
+    const rows = input.collection(new Map([['a', 1]]));
+    const runtime = createProjectionRuntime();
+    let escaped!: { get(key: string): number | undefined; set(key: string, value: number): void };
+    runtime.update(rows, draft => {
+      escaped = draft;
+      draft.set('a', 4);
+      expect(draft.get('a')).toBe(4);
+      expect(draft.has('a')).toBe(true);
+      draft.remove('a');
+      expect(draft.has('a')).toBe(false);
+    });
+    expect(() => escaped.get('a')).toThrow('no longer active');
+    expect(() => escaped.set('a', 5)).toThrow('no longer active');
+    expect([...runtime.get(rows)]).toEqual([]);
+    expect(() =>
+      runtime.update(rows, draft => {
+        draft.set('a', 2);
+        draft.set('b', 3);
+        throw new Error('failed');
+      })
+    ).toThrow('failed');
+    expect([...runtime.get(rows)]).toEqual([]);
+    runtime.dispose();
+  });
+
+  it('updates one keyed entry without remapping or enumerating unrelated entries', () => {
+    const rows = input.collection(
+      new Map(Array.from({ length: 2_000 }, (_, index) => [`key-${index}`, index] as const))
+    );
+    const runtime = createProjectionRuntime();
+    runtime.get(rows);
+    const { profile } = measureProfile(() =>
+      runtime.update(rows, draft => draft.set('key-1000', 42))
+    );
+    expect(profile.collectionView.mappedItems).toBe(1);
+    expect(profile.collectionView.idsScanned).toBe(0);
+    expect(runtime.get(rows).get('key-1000')).toBe(42);
+    runtime.dispose();
+  });
+
+  it('preserves observable order when a keyed input removes and re-adds a key', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+      ])
+    );
+    const changes: unknown[] = [];
+    const observed = incremental([rows], ({ changes: next }) => {
+      changes.push(next[0]);
+      return 0;
+    });
+    const runtime = createProjectionRuntime();
+    runtime.get(observed);
+    const earlier = runtime.get(rows);
+    runtime.batch(() => {
+      runtime.update(rows, draft => draft.remove('a'));
+      runtime.update(rows, draft => draft.set('a', 1));
+    });
+    expect([...earlier.keys()]).toEqual(['a', 'b', 'c']);
+    expect([...runtime.get(rows).keys()]).toEqual(['b', 'c', 'a']);
+    expect(changes[1]).toMatchObject({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [],
+      order: { before: ['a', 'b', 'c'], after: ['b', 'c', 'a'] },
+    });
     runtime.dispose();
   });
 

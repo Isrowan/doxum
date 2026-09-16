@@ -21,14 +21,14 @@ declare const projectionDefinition: unique symbol;
 declare const projectionChanges: unique symbol;
 declare const writableInput: unique symbol;
 
-/** A lazy, reusable projection definition with no runtime-owned state. */
+/** A lazy definition with no materialized state; root definitions are reusable. */
 export type Projection<T, C = undefined> = {
   readonly [projectionDefinition]: T;
   readonly [projectionChanges]: C;
 };
 
 /** A runtime-local writable projection definition. */
-export type Input<T> = Projection<T> & { readonly [writableInput]: true };
+export type Input<T, C = undefined> = Projection<T, C> & { readonly [writableInput]: true };
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
@@ -39,6 +39,7 @@ type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unkn
 
 type Definition =
   | { readonly kind: 'input'; readonly initial: unknown; readonly isEqual?: Equality }
+  | { readonly kind: 'collection-input'; readonly initial: ReadonlyMap<string, unknown> }
   | { readonly kind: 'readable'; readonly readable: Readable<unknown>; readonly isEqual?: Equality }
   | { readonly kind: 'source-value'; readonly source: ExternalValueSource<unknown> }
   | {
@@ -73,6 +74,7 @@ type Definition =
 
 type DefinitionProjection = Projection<unknown, unknown>;
 const definitions = new WeakMap<object, Definition>();
+const owners = new WeakMap<object, object>();
 
 const define = <T, C = undefined>(definition: Definition): Projection<T, C> => {
   const handle = Object.freeze({}) as Projection<T, C>;
@@ -86,10 +88,39 @@ export const definitionOf = (projection: DefinitionProjection): Definition => {
   return definition;
 };
 
-export const input = <T>(
+export const ownerOf = (projection: DefinitionProjection): object | undefined =>
+  owners.get(projection);
+
+export const ownDefinition = <T, C>(
+  projection: Projection<T, C>,
+  owner: object
+): Projection<T, C> => {
+  if (!definitions.has(projection) || owners.has(projection))
+    throw new TypeError('Projection definition already has an owner.');
+  owners.set(projection, owner);
+  return projection;
+};
+
+const valueInput = <T>(
   initial: T,
   equality: (previous: T, next: T) => boolean = Object.is
 ): Input<T> => define<T>({ kind: 'input', initial, isEqual: equality as Equality }) as Input<T>;
+
+const collectionInput = <K extends string, V>(
+  initial: ReadonlyMap<K, V> = new Map<K, V>()
+): Input<ReadonlyMap<K, V>, CollectionChange<K, V>> => {
+  const entries = new Map<K, V>();
+  for (const [key, value] of initial) {
+    if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+    entries.set(key, value);
+  }
+  return define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
+    kind: 'collection-input',
+    initial: entries,
+  }) as Input<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+};
+
+export const input = Object.assign(valueInput, { collection: collectionInput });
 
 /** Establish a lazy reactive boundary from a document, readable, or external source. */
 export function observe<S extends ObjectNode>(document: DocumentReadable<S>): Projection<Infer<S>>;

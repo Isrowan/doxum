@@ -27,6 +27,7 @@ const store = createProjectionRuntime({
   },
 });
 const rows = observe(runtime, path => path.rows);
+const keyedInput = input.collection(new Map(ids.map((id, index) => [id, index] as const)));
 const viewport = input(1);
 const summary = derive(
   [rows, viewport],
@@ -35,6 +36,7 @@ const summary = derive(
 // Materialize the graph before timing updates so the benchmark measures
 // incremental publication rather than one-time collection construction.
 store.get(rows);
+store.get(keyedInput);
 store.get(summary);
 let revision = 0;
 describe('explicit projection runtime', () => {
@@ -54,6 +56,14 @@ describe('explicit projection runtime', () => {
         store.set(viewport, revision);
       });
       store.get(summary);
+    },
+    { iterations: 1, time: 1 }
+  );
+  bench(
+    `one keyed input in ${collectionSize} without all`,
+    () => {
+      store.update(keyedInput, draft => draft.set('42', ++revision));
+      store.get(keyedInput).get('42');
     },
     { iterations: 1, time: 1 }
   );

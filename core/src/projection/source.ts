@@ -10,6 +10,7 @@ import { compilePath } from '../schema';
 import { equalValue } from '../schema-value';
 import type {
   CollectionContext,
+  CollectionChange,
   CollectionRead,
   DocumentHandle,
   GraphSource,
@@ -19,7 +20,13 @@ import type {
 } from './contract';
 import { ProjectionError } from './contract';
 import type { Readable } from './readable';
-import { assertScope, projectionHandles, type Scheduler, type SourceRecord } from './scheduler';
+import {
+  assertScope,
+  assertSynchronous,
+  projectionHandles,
+  type Scheduler,
+  type SourceRecord,
+} from './scheduler';
 
 export const createSources = (scheduler: Scheduler) => {
   const documents = new Map<object, object>();
@@ -351,6 +358,149 @@ export const createSources = (scheduler: Scheduler) => {
       },
     };
   };
+  const collectionInput = <K extends string, V>(initial: ReadonlyMap<K, V>) => {
+    const values = new Map(initial);
+    const touched = new Map<K, { readonly present: boolean; readonly value?: V }>();
+    let beforeIds: readonly K[] | undefined;
+    let revision = 0;
+    let cause: unknown;
+    const handle = Object.freeze({ kind: 'collection' as const }) as unknown as GraphSource<
+      CollectionContext<K, V>
+    >;
+    const change = (): CollectionChange<K, V> | undefined => {
+      const added: { readonly key: K; readonly after: V }[] = [];
+      const updated: { readonly key: K; readonly before: V; readonly after: V }[] = [];
+      const removed: { readonly key: K; readonly before: V }[] = [];
+      for (const [key, before] of touched) {
+        const afterPresent = values.has(key);
+        if (!before.present && afterPresent) added.push({ key, after: values.get(key) as V });
+        else if (before.present && !afterPresent) removed.push({ key, before: before.value as V });
+        else if (before.present && afterPresent && !Object.is(before.value, values.get(key)))
+          updated.push({ key, before: before.value as V, after: values.get(key) as V });
+      }
+      let order: { readonly before: readonly K[]; readonly after: readonly K[] } | undefined;
+      if (beforeIds) {
+        const afterIds = [...values.keys()];
+        const beforeKeys = new Set(beforeIds);
+        const afterKeys = new Set(afterIds);
+        const beforeCommon = beforeIds.filter(key => afterKeys.has(key));
+        const afterCommon = afterIds.filter(key => beforeKeys.has(key));
+        if (beforeCommon.some((key, index) => key !== afterCommon[index]))
+          order = Object.freeze({
+            before: beforeIds,
+            after: Object.freeze(afterIds),
+          });
+      }
+      if (!added.length && !updated.length && !removed.length && !order) return undefined;
+      return Object.freeze({
+        kind: 'incremental' as const,
+        added: Object.freeze(added),
+        updated: Object.freeze(updated),
+        removed: Object.freeze(removed),
+        ...(order ? { order } : {}),
+      });
+    };
+    const record: SourceRecord = {
+      consumers: new Set(),
+      disposed: false,
+      fault: undefined,
+      revision: () => revision,
+      reset: () => false,
+      shouldSettle: () => change() !== undefined,
+      clear: () => {
+        touched.clear();
+        beforeIds = undefined;
+        cause = undefined;
+      },
+      context: active => {
+        assertScope(active);
+        const read: CollectionRead<K, V> = Object.freeze({
+          get: (key: K) => {
+            assertScope(active);
+            return values.get(key);
+          },
+          has: (key: K) => {
+            assertScope(active);
+            return values.has(key);
+          },
+          ids: () => {
+            assertScope(active);
+            return Object.freeze([...values.keys()]);
+          },
+        });
+        return Object.freeze({
+          kind: 'collection' as const,
+          read,
+          change: change(),
+          revision,
+          cause,
+        });
+      },
+    };
+    scheduler.register(handle, record);
+    return {
+      source: handle,
+      update(
+        run: (draft: {
+          get(key: K): V | undefined;
+          has(key: K): boolean;
+          set(key: K, value: V): void;
+          remove(key: K): void;
+        }) => void
+      ) {
+        scheduler.assertIdle();
+        const staged = new Map<
+          K,
+          { readonly present: true; readonly value: V } | { readonly present: false }
+        >();
+        let active = true;
+        const draft = Object.freeze({
+          get: (key: K) => {
+            assertScope(() => active);
+            const entry = staged.get(key);
+            return entry ? (entry.present ? entry.value : undefined) : values.get(key);
+          },
+          has: (key: K) => {
+            assertScope(() => active);
+            const entry = staged.get(key);
+            return entry ? entry.present : values.has(key);
+          },
+          set: (key: K, value: V) => {
+            assertScope(() => active);
+            if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+            staged.set(key, { present: true, value });
+          },
+          remove: (key: K) => {
+            assertScope(() => active);
+            if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+            staged.set(key, { present: false });
+          },
+        });
+        try {
+          assertSynchronous(run(draft));
+        } finally {
+          active = false;
+        }
+        let changed = false;
+        for (const [key, entry] of staged) {
+          const present = values.has(key);
+          if (entry.present ? present && Object.is(values.get(key), entry.value) : !present)
+            continue;
+          if (!touched.has(key)) touched.set(key, { present, value: values.get(key) });
+          if (!beforeIds && present !== entry.present)
+            beforeIds = Object.freeze([...values.keys()]);
+          if (entry.present) values.set(key, entry.value);
+          else values.delete(key);
+          changed = true;
+        }
+        if (!changed) return;
+        revision++;
+        cause = scheduler.batchContext()?.cause ?? cause;
+        scheduler.capture(record);
+        scheduler.run();
+      },
+    };
+  };
   const externalValueSource = <T>(
     port: ExternalValueSource<T>,
     equal: (a: T, b: T) => boolean
@@ -549,6 +699,7 @@ export const createSources = (scheduler: Scheduler) => {
       const { source, set } = valueSource(initial, options?.isEqual ?? Object.is);
       return Object.freeze({ source, set });
     },
+    collectionInput,
     fromReadable: <T>(
       readable: Readable<T>,
       options?: { readonly isEqual?: (a: T, b: T) => boolean }

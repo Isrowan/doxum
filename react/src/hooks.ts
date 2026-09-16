@@ -7,6 +7,7 @@ import type {
   OperationResult,
   Readable,
   ProjectionRuntime,
+  ProjectionScope,
   Projection,
   Input,
 } from 'doxum';
@@ -20,7 +21,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 
-const ProjectionContext = createContext<ProjectionRuntime | undefined>(undefined);
+const ProjectionContext = createContext<ProjectionRuntime | ProjectionScope | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
 export function useProjection<T>(projection: Projection<T, unknown>): T;

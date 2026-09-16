@@ -142,10 +142,9 @@ function createIncrementalValue<const D extends readonly Projection<unknown, unk
   processor: IncrementalValueProcessor<D, T>
 ): Projection<T> {
   const dependencyMap = dependenciesOf(dependencies);
-  let state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  let current!: T;
   const build = (sources: Record<string, unknown>) => {
-    state = Object.create(null) as Record<string, unknown>;
+    const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    let current!: T;
     const publicInputsForBuild = publicInputs(sources, true);
     const result = processor({
       sources: publicInputsForBuild.values as ProjectionValues<D>,
@@ -195,14 +194,13 @@ function createIncrementalCollection<
   processor: IncrementalCollectionProcessor<D, K, V>
 ): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> {
   const dependencyMap = dependenciesOf(dependencies);
-  let state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const build = (input: {
     readonly sources: Record<string, unknown>;
     readonly previous: CollectionRead<K, V>;
     readonly next: CollectionRead<K, V>;
     readonly output: CollectionDraft<K, V>;
   }) => {
-    state = Object.create(null) as Record<string, unknown>;
+    const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const publicInputsForBuild = publicInputs(input.sources, true);
     const result = processor({
       sources: publicInputsForBuild.values as ProjectionValues<D>,

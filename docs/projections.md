@@ -1,6 +1,7 @@
 # Projection API
 
-Projection definitions are lazy and reusable. A `Projection` contains no
+Projection definitions are lazy. Root declarations are reusable across Runtimes;
+scope declarations belong to one local lifetime. A `Projection` contains no
 materialized value, retained processor state, subscription or disposal state.
 Each `ProjectionRuntime` owns those facts for its own materialization.
 
@@ -20,8 +21,9 @@ There are three declaration functions:
 - `observe(...)` establishes a document, Doxum `Readable`, or external source boundary.
 - `derive(dependencies, compute, equality?)` declares a pure projection with explicit dependencies.
 
-The same definition can be materialized by multiple runtimes without sharing
-its current value, retained state, subscriptions or errors.
+The same root definition can be materialized by multiple runtimes without
+sharing its current value, retained state, subscriptions or errors. A scoped
+definition cannot be materialized by another Runtime or scope.
 
 `observe` is the only source declaration entry point. A document selector that
 resolves to a collection produces an immutable `ReadonlyMap` projection;
@@ -85,19 +87,65 @@ stop();
 runtime.dispose();
 ```
 
-`ProjectionRuntime` deliberately has only five operations:
+The Runtime has one graph and these application-facing operations:
 
 | Operation                                    | Meaning                                        |
 | -------------------------------------------- | ---------------------------------------------- |
 | `get(projection)`                            | Read the last published value.                 |
 | `readable(projection, selector?, equality?)` | Create a live Runtime-owned readable boundary. |
 | `set(input, value)`                          | Write a Runtime-local input.                   |
+| `update(collectionInput, edit)`              | Atomically edit keyed input entries.           |
 | `batch(options?, run)`                       | Settle one complete application action once.   |
+| `scope()`                                    | Create a local lifetime inside the same graph. |
 | `dispose()`                                  | Release graph nodes and source attachments.    |
 
 Graph revisions, rebuild controls, per-item handles, manual flush and release
 operations are internal publication facts. A `Readable` exposes only its own
 publication revision for external-store integrations.
+
+### Local scope
+
+```ts
+const scope = runtime.scope();
+const filter = scope.input<'all' | 'open'>('all');
+const visible = scope.derive([tasks, filter], (tasks, mode) =>
+  mode === 'all' ? tasks : filterTasks(tasks)
+);
+const index = scope.incremental.collection([tasks, filter], processor);
+const row = scope.readable(visible, tasks => tasks.get(taskId));
+scope.set(filter, 'open');
+scope.dispose();
+```
+
+The scope provides the same `get`, `readable`, `set`, `update` and `batch`
+operations, but delegates to its parent Runtime's one graph and one scheduler.
+Only definitions made through `scope.input`, `scope.derive`, and
+`scope.incremental` belong to that scope. They may depend directly on root
+definitions; sibling and root projections cannot depend on scoped definitions.
+Disposal invalidates scoped handles, unsubscribes scope readables, and releases
+only local materialized nodes and processor state. It does not dispose their
+root-owned dependencies. `ProjectionProvider` also accepts a scope as its value.
+
+### Keyed input
+
+```ts
+const overrides = input.collection<string, Task>();
+runtime.update(overrides, draft => {
+  if (draft.has(taskId)) draft.remove(taskId);
+  else draft.set(taskId, task);
+});
+```
+
+The input owns an initially empty keyed collection (or a copied initial
+`ReadonlyMap`). Its borrowed edit draft exposes `get`, `has`, `set`, and
+`remove`; it expires when the synchronous callback returns. `set` preserves an
+existing key's position and appends a new key. Runtime batches publish the net
+added/updated/removed values and any observable reorder once. Unchanged keys
+keep their references, and unrelated keyed selectors are not evaluated.
+Outside a batch, each `update` publishes synchronously. A throwing edit callback
+leaves that edit unapplied; a Runtime batch is not a rollback transaction for
+earlier accepted edits. Readers inside a batch still see the last published
+snapshot, while each edit draft reads the latest staged input state.
 
 Inside a Runtime batch, projection readers see the last published value until
 the batch settles. Document commits and document listeners are not delayed by a
