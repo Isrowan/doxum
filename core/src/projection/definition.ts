@@ -14,6 +14,7 @@ import type {
   CollectionChange,
   ExternalCollectionSource,
   ExternalValueSource,
+  GroupOutputSpec,
   GraphSources,
 } from './contract';
 
@@ -39,15 +40,9 @@ type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unkn
 
 export type IncrementalGroupDefinition = {
   readonly dependencies: GraphSources;
-  readonly outputs: readonly {
-    readonly path: readonly string[];
-    readonly isEqual?: Equality;
-  }[];
+  readonly outputs: readonly GroupOutputSpec[];
   readonly build: (...args: never[]) => unknown;
-  readonly projections: readonly Projection<
-    ReadonlyMap<string, unknown>,
-    CollectionChange<string, unknown>
-  >[];
+  readonly projections: readonly Projection<unknown, unknown>[];
 };
 
 type Definition =
@@ -262,31 +257,31 @@ export const defineIncrementalCollection = <K extends string, V>(definition: {
 
 export const defineIncrementalGroup = (definition: {
   readonly dependencies: GraphSources;
-  readonly outputs: readonly {
-    readonly path: readonly string[];
-    readonly isEqual?: Equality;
-  }[];
+  readonly outputs: readonly GroupOutputSpec[];
   readonly build: (...args: never[]) => unknown;
 }): IncrementalGroupDefinition => {
   const group = {
     dependencies: definition.dependencies,
     outputs: Object.freeze(
       definition.outputs.map(output =>
-        Object.freeze({ path: Object.freeze([...output.path]), isEqual: output.isEqual })
+        Object.freeze({
+          kind: output.kind,
+          path: Object.freeze([...output.path]),
+          isEqual: output.isEqual,
+        })
       )
     ),
     build: definition.build,
-    projections: [] as Projection<
-      ReadonlyMap<string, unknown>,
-      CollectionChange<string, unknown>
-    >[],
+    projections: [] as Projection<unknown, unknown>[],
   };
-  const projections = group.outputs.map((_, output) =>
-    define<ReadonlyMap<string, unknown>, CollectionChange<string, unknown>>({
-      kind: 'incremental-group-output',
-      group,
-      output,
-    })
+  const projections = group.outputs.map((leaf, output) =>
+    leaf.kind === 'collection'
+      ? define<ReadonlyMap<string, unknown>, CollectionChange<string, unknown>>({
+          kind: 'incremental-group-output',
+          group,
+          output,
+        })
+      : define<unknown>({ kind: 'incremental-group-output', group, output })
   );
   group.projections = Object.freeze(projections) as typeof group.projections;
   return Object.freeze(group);

@@ -6,7 +6,7 @@ import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
 import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
-import { compilePath } from '../schema';
+import { collectionEntryNode, compilePath } from '../schema';
 import { equalValue } from '../schema-value';
 import type {
   CollectionContext,
@@ -84,10 +84,7 @@ export const createSources = (scheduler: Scheduler) => {
       const collectionNode = collection
         ? nodeAt(state.schema, collection.address, state.document)
         : undefined;
-      const entryNode =
-        collectionNode && (collectionNode.kind === 'map' || collectionNode.kind === 'table')
-          ? collectionNode.value
-          : undefined;
+      const entryNode = collectionNode ? collectionEntryNode(collectionNode) : undefined;
       const sameEntry = (left: unknown, right: unknown): boolean =>
         entryNode ? equalValue(entryNode, left, right) : Object.is(left, right);
       const record: SourceRecord = {

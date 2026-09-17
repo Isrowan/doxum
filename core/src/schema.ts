@@ -72,7 +72,7 @@ export type MapNode<
   readonly key?: Validator<TKey>;
 };
 export type ListNode<TItem> = BaseNode<'list'> & {
-  readonly value: FieldNode<TItem, boolean>;
+  readonly value: FieldNode<TItem, false>;
   keyOf(item: ReadonlyValue<TItem>): string;
 };
 export type TreeNode<TValue> = BaseNode<'tree'> & {
@@ -210,7 +210,9 @@ type PathValue<N extends DocumentNode> =
         ? CollectionPath<V, Infer<N>, K>
         : N extends MapNode<infer V, infer K>
           ? CollectionPath<V, Infer<N>, K>
-          : PathMarker<Infer<N>>;
+          : N extends ListNode<infer I>
+            ? CollectionPath<FieldNode<I, false>, Infer<N>, string>
+            : PathMarker<Infer<N>>;
 type CollectionInfo<T> = T extends {
   readonly [collectionNode]: infer TNode extends ValueSchemaNode;
   readonly [collectionKey]: infer K extends string;
@@ -223,6 +225,9 @@ export type CollectionNode<T> =
   CollectionInfo<T> extends { readonly node: infer TNode extends ValueSchemaNode }
     ? TNode
     : ValueSchemaNode;
+
+export const collectionEntryNode = (node: DocumentNode): ValueSchemaNode | undefined =>
+  node.kind === 'map' || node.kind === 'table' || node.kind === 'list' ? node.value : undefined;
 
 const node = <T extends DocumentNode>(value: T): T => Object.freeze(value);
 export const field = <T>(validator?: Validator<T>): FieldNode<T> =>
@@ -253,7 +258,7 @@ export const map = <V extends ValueSchemaNode, K extends string = string>(
   options?: { readonly key: Validator<K> }
 ): MapNode<V, K> => node({ kind: 'map', value, ...options });
 export const list = <TItem>(
-  value: FieldNode<TItem, boolean>,
+  value: FieldNode<TItem, false>,
   config: DocumentListConfig<TItem>
 ): ListNode<TItem> => node({ kind: 'list', keyOf: config.keyOf, value });
 export const tree = <TValue>(value: FieldNode<TValue, boolean>): TreeNode<TValue> =>
@@ -278,7 +283,7 @@ const pathProxy = (
     {
       get: (_target, property: string | symbol) => {
         if (typeof property !== 'string') return undefined;
-        const collection = nodes.every(node => node.kind === 'table' || node.kind === 'map');
+        const collection = nodes.every(node => collectionEntryNode(node) !== undefined);
         if (collection && property === 'item')
           return (id: string) => {
             if (typeof id !== 'string') throw new TypeError('Collection keys must be strings.');
@@ -288,7 +293,7 @@ const pathProxy = (
                 if (invalid) throw new TypeError(invalid.message);
               }
             return pathProxy(
-              nodes.map(node => (node as TableNode<EntitySchemaNode>).value),
+              nodes.map(node => collectionEntryNode(node)!),
               [...address, id],
               owner
             );
@@ -313,7 +318,7 @@ const pathProxy = (
 
 export const compilePath = <S extends ObjectShape>(
   owner: ObjectNode<S>,
-  kind: 'collection' | 'value',
+  kind: 'collection' | 'value' | 'auto',
   pick: (path: SchemaPath<S>) => unknown
 ): CollectionSelector | ValueSelector => {
   const scope = {};
@@ -321,13 +326,12 @@ export const compilePath = <S extends ObjectShape>(
   const selected = typeof value === 'object' && value !== null ? paths.get(value) : undefined;
   if (!selected || selected.owner !== scope)
     throw new TypeError('Selector must return a path from its callback.');
-  if (
-    kind === 'collection' &&
-    !selected.nodes.every(node => node.kind === 'table' || node.kind === 'map')
-  )
-    throw new TypeError('Collection selectors require a table or map path.');
+  const collection = selected.nodes.every(node => collectionEntryNode(node) !== undefined);
+  if (kind === 'collection' && !collection)
+    throw new TypeError('Collection selectors require a map, table or list path.');
+  const resolvedKind = kind === 'auto' ? (collection ? 'collection' : 'value') : kind;
   const result = Object.freeze({
-    kind,
+    kind: resolvedKind,
     schema: owner,
     address: Object.freeze([...selected.address]),
   }) as CollectionSelector | ValueSelector;

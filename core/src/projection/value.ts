@@ -1,7 +1,8 @@
 import type { GraphSources, ValueNode, ValueNodeSpec } from './contract';
 import { createNode } from './node';
-import { assertScope, assertSynchronous, type Scheduler } from './scheduler';
+import { assertSynchronous, type Scheduler } from './scheduler';
 import { profile } from '../profile';
+import { createValueState } from './value-state';
 
 export const createValue = <S extends GraphSources, T>(
   scheduler: Scheduler,
@@ -9,16 +10,10 @@ export const createValue = <S extends GraphSources, T>(
   options?: { readonly isEqual?: (a: T, b: T) => boolean }
 ): ValueNode<T> => {
   let instance: ReturnType<typeof spec.build> | undefined;
-  let value!: T;
-  let next!: T;
-  let initialized = false;
-  let revision = 0;
-  let changed = false;
-  let reset = false;
   let cause: unknown;
-  const listeners = new Set<() => void>();
+  const state = createValueState<T>();
   const owner = createNode(scheduler, spec, {
-    evaluate: (sources, build) => {
+    evaluate: (sources, build, active) => {
       const metadata = Object.values(sources as Record<string, unknown>).find(
         value =>
           value &&
@@ -27,81 +22,55 @@ export const createValue = <S extends GraphSources, T>(
           (value as { readonly cause?: unknown }).cause !== undefined
       ) as { readonly cause?: unknown } | undefined;
       cause = metadata?.cause ?? scheduler.batchContext()?.cause;
-      let candidate: T;
+      let evaluation = state.begin(active, build);
       if (build || !instance) {
         profile.materialized.rebuilt();
         instance = undefined;
         const built = spec.build(sources);
         assertSynchronous(built);
         instance = built;
-        candidate = built.value;
+        evaluation.output.set(built.value);
       } else {
         profile.materialized.updated();
         const result = instance.update(sources);
         assertSynchronous(result);
         if (result.kind === 'rebuild') {
+          evaluation = state.begin(active, true);
           instance = undefined;
           const built = spec.build(sources);
           assertSynchronous(built);
           instance = built;
-          candidate = built.value;
+          evaluation.output.set(built.value);
           build = true;
-        } else candidate = result.kind === 'changed' ? result.value : value;
+        } else if (result.kind === 'changed') evaluation.output.set(result.value);
       }
-      changed = !initialized || !(options?.isEqual ?? Object.is)(value, candidate);
-      next = changed ? candidate : value;
-      reset = build;
-      return changed;
+      return state.seal(build, options?.isEqual ?? Object.is);
     },
-    context: active => {
-      assertScope(active);
-      return Object.freeze({
-        kind: 'value' as const,
-        value: next,
-        revision: revision + (changed ? 1 : 0),
-        reset,
-        cause,
-      });
-    },
-    revision: () => revision,
-    reset: () => reset,
-    publish: () => {
-      if (changed && initialized) revision++;
-      value = next;
-      initialized = true;
-    },
-    emit: call => {
-      profile.materialized.notification();
-      Array.from(listeners).forEach(listener => call(listener));
-    },
+    context: active => state.context(active, cause),
+    revision: state.revision,
+    reset: state.reset,
+    publish: state.publish,
+    emit: state.emit,
     clear: () => {
-      next = value;
-      changed = false;
-      reset = false;
+      state.clear();
       cause = undefined;
     },
     release: () => {
-      listeners.clear();
+      state.release();
       instance = undefined;
-      value = next = undefined as T;
     },
   });
   const handle = Object.freeze({
     kind: 'value' as const,
-    current: () => {
-      owner.check();
-      return value;
-    },
+    current: () => state.current(owner.check),
     revision: () => {
       owner.check();
-      return revision;
+      return state.revision();
     },
     subscribe: (listener: () => void) => {
       owner.check();
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      state.subscribe(listener);
+      return () => state.unsubscribe(listener);
     },
   }) as ValueNode<T>;
   owner.install(handle);

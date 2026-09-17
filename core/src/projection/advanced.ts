@@ -5,7 +5,14 @@ import {
   defineIncrementalValue,
   definitionOf,
 } from './definition';
-import type { CollectionChange, CollectionDraft, CollectionRead, GraphSources } from './contract';
+import type {
+  CollectionChange,
+  CollectionDraft,
+  CollectionRead,
+  GroupProcess,
+  GroupOutputSpec,
+  GraphSources,
+} from './contract';
 import { snapshot } from '../access/scope';
 import { assertSynchronous } from './scheduler';
 
@@ -61,36 +68,50 @@ type DependencyMap<D extends readonly Projection<unknown, unknown>[]> = {
 
 declare const groupOutput: unique symbol;
 
-type GroupOutput<K extends string, V> = {
-  readonly [groupOutput]: { readonly key: K; readonly value: V };
+type GroupCollectionOutput<K extends string, V> = {
+  readonly [groupOutput]: { readonly kind: 'collection'; readonly key: K; readonly value: V };
+};
+
+type GroupValueOutput<T> = {
+  readonly [groupOutput]: { readonly kind: 'value'; readonly value: T };
 };
 
 type GroupOutputShape = {
-  readonly [name: string]: GroupOutput<string, unknown> | GroupOutputShape;
+  readonly [name: string]:
+    GroupCollectionOutput<string, unknown> | GroupValueOutput<unknown> | GroupOutputShape;
 };
 
 export type IncrementalGroupOutputTree = GroupOutputShape;
 
 type GroupOutputBuilder = {
-  collection<K extends string, V>(equality?: (previous: V, next: V) => boolean): GroupOutput<K, V>;
+  collection<K extends string, V>(
+    equality?: (previous: V, next: V) => boolean
+  ): GroupCollectionOutput<K, V>;
+  value<T>(equality?: (previous: T, next: T) => boolean): GroupValueOutput<T>;
 };
 
 export type IncrementalGroupDefine = GroupOutputBuilder;
 
 export type GroupProjections<O> =
-  O extends GroupOutput<infer K, infer V>
+  O extends GroupCollectionOutput<infer K, infer V>
     ? Projection<ReadonlyMap<K, V>, CollectionChange<K, V>>
-    : { readonly [P in keyof O]: GroupProjections<O[P]> };
+    : O extends GroupValueOutput<infer T>
+      ? Projection<T>
+      : { readonly [P in keyof O]: GroupProjections<O[P]> };
 
 type GroupReads<O> =
-  O extends GroupOutput<infer K, infer V>
+  O extends GroupCollectionOutput<infer K, infer V>
     ? CollectionRead<K, V>
-    : { readonly [P in keyof O]: GroupReads<O[P]> };
+    : O extends GroupValueOutput<infer T>
+      ? T | undefined
+      : { readonly [P in keyof O]: GroupReads<O[P]> };
 
 type GroupDrafts<O> =
-  O extends GroupOutput<infer K, infer V>
+  O extends GroupCollectionOutput<infer K, infer V>
     ? CollectionDraft<K, V>
-    : { readonly [P in keyof O]: GroupDrafts<O[P]> };
+    : O extends GroupValueOutput<infer T>
+      ? { set(value: T): void }
+      : { readonly [P in keyof O]: GroupDrafts<O[P]> };
 
 export type IncrementalGroupContext<
   D extends readonly Projection<unknown, unknown>[],
@@ -297,7 +318,7 @@ function createIncrementalCollection<
 type GroupShape = number | { readonly [key: string]: GroupShape };
 const groupOutputMetadata = new WeakMap<
   object,
-  { readonly isEqual?: (a: unknown, b: unknown) => boolean }
+  { readonly kind: GroupOutputSpec['kind']; readonly isEqual?: (a: unknown, b: unknown) => boolean }
 >();
 
 const isPlainGroupNamespace = (value: unknown): value is Record<string, unknown> =>
@@ -312,10 +333,7 @@ const compileGroupShape = (
   path: readonly string[],
   declaredOutputs: ReadonlySet<object>,
   used: Set<object>,
-  outputs: {
-    readonly path: readonly string[];
-    readonly isEqual?: (a: unknown, b: unknown) => boolean;
-  }[]
+  outputs: GroupOutputSpec[]
 ): GroupShape => {
   if (value !== null && typeof value === 'object') {
     const metadata = groupOutputMetadata.get(value);
@@ -325,7 +343,11 @@ const compileGroupShape = (
       if (used.has(value)) throw new TypeError('An incremental group output cannot be reused.');
       used.add(value);
       const index = outputs.length;
-      outputs.push({ path: Object.freeze([...path]), isEqual: metadata.isEqual });
+      outputs.push({
+        kind: metadata.kind,
+        path: Object.freeze([...path]),
+        isEqual: metadata.isEqual,
+      });
       return index;
     }
   }
@@ -364,6 +386,21 @@ const hydrateGroupShape = <T>(shape: GroupShape, values: readonly T[]): unknown 
   return Object.freeze(result);
 };
 
+const hydrateGroupReads = (shape: GroupShape, read: (index: number) => unknown): unknown => {
+  if (typeof shape === 'number') return read(shape);
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(shape)) {
+    if (typeof child === 'number') {
+      Object.defineProperty(result, key, {
+        enumerable: true,
+        configurable: false,
+        get: () => read(child),
+      });
+    } else result[key] = hydrateGroupReads(child, read);
+  }
+  return Object.freeze(result);
+};
+
 function createIncrementalGroup<
   const D extends readonly Projection<unknown, unknown>[],
   const O extends GroupOutputShape,
@@ -384,19 +421,27 @@ function createIncrementalGroup<
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
       const descriptor = Object.freeze({});
       groupOutputMetadata.set(descriptor, {
+        kind: 'collection',
         isEqual: equality as ((a: unknown, b: unknown) => boolean) | undefined,
       });
       declaredOutputs.add(descriptor);
-      return descriptor as GroupOutput<K, V>;
+      return descriptor as GroupCollectionOutput<K, V>;
+    },
+    value: <T>(equality?: (previous: T, next: T) => boolean) => {
+      if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
+      const descriptor = Object.freeze({});
+      groupOutputMetadata.set(descriptor, {
+        kind: 'value',
+        isEqual: equality as ((a: unknown, b: unknown) => boolean) | undefined,
+      });
+      declaredOutputs.add(descriptor);
+      return descriptor as GroupValueOutput<T>;
     },
   };
   const declared = defineOutputs(defineOutput);
   assertSynchronous(declared);
   active = false;
-  const outputs: {
-    readonly path: readonly string[];
-    readonly isEqual?: (a: unknown, b: unknown) => boolean;
-  }[] = [];
+  const outputs: GroupOutputSpec[] = [];
   const used = new Set<object>();
   const shape = compileGroupShape(declared, [], declaredOutputs, used, outputs);
   if (typeof shape === 'number')
@@ -404,12 +449,7 @@ function createIncrementalGroup<
   if (used.size === 0 || used.size !== declaredOutputs.size)
     throw new TypeError('Every incremental group output must be returned by the declaration.');
   const stateFactory = () => Object.create(null) as Record<string, unknown>;
-  const build = (input: {
-    readonly sources: Record<string, unknown>;
-    readonly previous: readonly CollectionRead<string, unknown>[];
-    readonly next: readonly CollectionRead<string, unknown>[];
-    readonly outputs: readonly CollectionDraft<string, unknown>[];
-  }) => {
+  const build = (input: GroupProcess) => {
     const state = stateFactory();
     const run = (nextInput: typeof input, reset: boolean) => {
       const publicInput = publicInputs(nextInput.sources, reset);
@@ -417,7 +457,7 @@ function createIncrementalGroup<
         sources: publicInput.values as ProjectionValues<D>,
         changes: publicInput.changes as ProjectionChanges<D>,
         previous: hydrateGroupShape(shape, nextInput.previous) as GroupReads<O>,
-        next: hydrateGroupShape(shape, nextInput.next) as GroupReads<O>,
+        next: hydrateGroupReads(shape, index => nextInput.next[index]()) as GroupReads<O>,
         outputs: hydrateGroupShape(shape, nextInput.outputs) as GroupDrafts<O>,
         reset,
         cause: sourceCause(nextInput.sources),

@@ -267,7 +267,10 @@ runtime.update(overrides, draft => {
 
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external sources. External sources declare `kind: 'value'` or
-`kind: 'collection'`; collection invalidation remains keyed internally.
+`kind: 'collection'`; collection invalidation remains keyed internally. Schema
+`map`, `table`, and `list(field, { keyOf })` paths are all observed as keyed
+collection projections. A schema `list` uses its `keyOf` identity and publishes
+in document order; ordinary array-valued `field(...)` nodes remain scalar values.
 
 For retained state, reverse indexes and keyed patches, use the isolated advanced
 entry point. Whole-value processors use `incremental(...)`; keyed collection
@@ -288,6 +291,8 @@ const render = incremental.group(
       content: define.collection<string, string>(),
     },
     labels: define.collection<string, string>(),
+    chrome: define.value<{ readonly count: number }>(),
+    revision: define.value<number>(),
   }),
   ({ sources, outputs }) => {
     for (const [id, task] of sources[0]) {
@@ -295,6 +300,8 @@ const render = incremental.group(
       outputs.node.content.set(id, task.title);
       outputs.labels.set(id, task.title);
     }
+    outputs.chrome.set({ count: sources[0].size });
+    outputs.revision.set(sources[0].size);
   }
 );
 ```
@@ -304,12 +311,16 @@ entries carry `added`/`updated`/`removed` transitions with complete
 `before`/`after` values, so a processor can patch indexes without rescanning the
 collection; scalar dependencies use `undefined` and the initial collection build
 reports `{ kind: 'reset' }`.
-`incremental.group` runs one processor for several named keyed collection outputs.
-Its static nested namespace is only API organization: every leaf is an ordinary
-`Projection`, all leaves publish atomically in one causal settle, and downstream
-processors depend directly on those leaves. A group materializes as a whole when
-any leaf is first read; split groups when outputs do not share computation or
-atomicity requirements. There is no output event bus or per-output runtime.
+`incremental.group` runs one processor for several named value and keyed collection
+outputs. `define.collection<K, V>(equality?)` creates a keyed leaf;
+`define.value<T>(equality?)` creates an ordinary scalar projection leaf. On an
+initial build or rebuild every value leaf must be set; on an incremental update an
+untouched value leaf keeps its published value. Its static nested namespace is only
+API organization: every leaf is an ordinary `Projection`, all changed leaves publish
+atomically in one causal settle, and downstream processors depend directly on those
+leaves. A group materializes as a whole when any leaf is first read; split groups
+when outputs do not share computation or atomicity requirements. There is no output
+event bus or per-output runtime.
 
 In React, `useProjection(projection)` reads a value and
 `useProjection(projection, selector, equality?)` tracks keyed reads such as

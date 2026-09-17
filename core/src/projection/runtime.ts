@@ -316,7 +316,7 @@ export const createProjectionRuntime = (options?: {
   const materialized = new WeakMap<object, Materialized>();
   type MaterializedGroup = {
     readonly definition: IncrementalGroupDefinition;
-    readonly nodes: readonly CollectionNode<string, unknown>[];
+    readonly nodes: readonly RuntimeNode[];
   };
   const groups = new WeakMap<object, MaterializedGroup>();
   let disposed = false;
@@ -445,24 +445,23 @@ export const createProjectionRuntime = (options?: {
           break;
         }
         const state = accessOf(definition.document);
-        try {
+        const selected = compilePath(state.schema, 'auto', definition.selector as never);
+        if (selected.kind === 'collection') {
           const collection = document.collection(definition.selector as never);
           instance = runtime.map(collection, (_id, entry) => entry);
           break;
-        } catch {
-          const selected = document.targets(definition.selector as never);
-          const address = compilePath(state.schema, 'value', definition.selector as never).address;
-          instance = runtime.value({
-            sources: { selected },
-            build: () => ({
-              value: readAddress(snapshot(state.document), address, state.schema),
-              update: () => ({
-                kind: 'changed',
-                value: readAddress(snapshot(state.document), address, state.schema),
-              }),
-            }),
-          });
         }
+        const target = document.targets(definition.selector as never);
+        instance = runtime.value({
+          sources: { selected: target },
+          build: () => ({
+            value: readAddress(snapshot(state.document), selected.address, state.schema),
+            update: () => ({
+              kind: 'changed',
+              value: readAddress(snapshot(state.document), selected.address, state.schema),
+            }),
+          }),
+        });
         break;
       }
       case 'derive': {

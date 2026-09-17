@@ -5,6 +5,7 @@ import {
   derive,
   field,
   input,
+  list,
   map,
   object,
   observe,
@@ -44,6 +45,26 @@ describe('projection runtime', () => {
     expect(runtime.get(calls)).toBe(2);
     runtime.set(source, 2);
     expect(runtime.get(calls)).toBe(4);
+    runtime.dispose();
+  });
+
+  it('does not publish an equal value after a processor rebuild', () => {
+    const source = input(1);
+    const projection = incremental([source], ({ sources, reset }) => {
+      if (!reset && sources[0] === 2) return { kind: 'rebuild' } as const;
+      return 'stable';
+    });
+    const runtime = createProjectionRuntime();
+    const readable = runtime.readable(projection);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    expect(readable.current()).toBe('stable');
+    const revision = readable.revision();
+
+    runtime.set(source, 2);
+    expect(runtime.get(projection)).toBe('stable');
+    expect(readable.revision()).toBe(revision);
+    expect(listener).not.toHaveBeenCalled();
     runtime.dispose();
   });
 
@@ -273,6 +294,92 @@ describe('projection runtime', () => {
           after: { value: 4, label: 'B' },
         },
       ],
+    });
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('observes keyed lists through the native collection protocol', () => {
+    const schema = object({
+      items: list(field<{ id: string; n: number }>(), { keyOf: item => item.id }),
+      title: field<string>(),
+    });
+    const document = createDocument({
+      schema,
+      initial: {
+        items: [
+          { id: 'a', n: 1 },
+          { id: 'b', n: 2 },
+        ],
+        title: 'before',
+      },
+    });
+    const items = observe(document, path => path.items);
+    const changes: unknown[] = [];
+    const probe = incremental([items], ({ changes: next }) => {
+      changes.push(next[0]);
+      return changes.length;
+    });
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(probe)).toBe(1);
+    expect([...runtime.get(items).keys()]).toEqual(['a', 'b']);
+    expect(changes[0]).toEqual({ kind: 'reset' });
+
+    document.update(draft => draft.items.replace('b', { id: 'b', n: 3 }));
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      added: [],
+      updated: [{ key: 'b', before: { id: 'b', n: 2 }, after: { id: 'b', n: 3 } }],
+      removed: [],
+    });
+
+    document.update(draft => draft.items.insert({ id: 'c', n: 4 }));
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      added: [{ key: 'c', after: { id: 'c', n: 4 } }],
+      updated: [],
+      removed: [],
+    });
+    expect((changes.at(-1) as { order?: unknown }).order).toBeUndefined();
+
+    document.update(draft => draft.items.move('c', { at: 'start' }));
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [],
+      order: { before: ['a', 'b', 'c'], after: ['c', 'a', 'b'] },
+    });
+    expect([...runtime.get(items).keys()]).toEqual(['c', 'a', 'b']);
+
+    document.update(draft => draft.items.remove('b'));
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [{ key: 'b', before: { id: 'b', n: 3 } }],
+    });
+    expect((changes.at(-1) as { order?: unknown }).order).toBeUndefined();
+
+    const selector = vi.fn(
+      (value: ReadonlyMap<string, { readonly id: string; readonly n: number }>) => value.get('a')?.n
+    );
+    const selected = runtime.readable(items, selector);
+    const listener = vi.fn();
+    selected.subscribe(listener);
+    expect(selected.current()).toBe(1);
+    const calls = selector.mock.calls.length;
+    document.update(draft => draft.items.replace('c', { id: 'c', n: 5 }));
+    expect(selector).toHaveBeenCalledTimes(calls);
+    expect(listener).not.toHaveBeenCalled();
+
+    document.update(draft => {
+      draft.title = 'after';
+    });
+    expect(selector).toHaveBeenCalledTimes(calls);
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      updated: [{ key: 'c', after: { id: 'c', n: 5 } }],
     });
     document.dispose();
     runtime.dispose();
@@ -741,6 +848,166 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
+  it('composes value and collection leaves in one atomic group', () => {
+    const source = input(1);
+    const calls = vi.fn();
+    const nextValues: Array<string | undefined> = [];
+    const previousValues: Array<string | undefined> = [];
+    const scene = incremental.group(
+      [source],
+      define => ({
+        graph: define.collection<string, number>(),
+        scene: {
+          chrome: define.value<string>(),
+          revision: define.value<number>(),
+        },
+      }),
+      ({ sources, previous, next, outputs }) => {
+        calls();
+        previousValues.push(previous.scene.chrome);
+        outputs.graph.set('value', sources[0]);
+        outputs.scene.chrome.set('stable');
+        nextValues.push(next.scene.chrome);
+        outputs.scene.revision.set(sources[0]);
+      }
+    );
+    const downstreamCalls = vi.fn();
+    const downstream = derive([scene.graph, scene.scene.revision], (graph, revision) => {
+      downstreamCalls();
+      return `${graph.get('value')}:${revision}`;
+    });
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(scene.scene.chrome)).toBe('stable');
+    expect(runtime.get(scene.graph).get('value')).toBe(1);
+    expect(runtime.get(downstream)).toBe('1:1');
+    expect(calls).toHaveBeenCalledTimes(1);
+    expect(downstreamCalls).toHaveBeenCalledTimes(1);
+    expect(previousValues).toEqual([undefined]);
+    expect(nextValues).toEqual(['stable']);
+
+    const chromeListener = vi.fn();
+    const revisionListener = vi.fn();
+    runtime.readable(scene.scene.chrome).subscribe(chromeListener);
+    runtime.readable(scene.scene.revision).subscribe(revisionListener);
+    runtime.set(source, 2);
+    expect(runtime.get(scene.scene.chrome)).toBe('stable');
+    expect(runtime.get(scene.scene.revision)).toBe(2);
+    expect(runtime.get(scene.graph).get('value')).toBe(2);
+    expect(runtime.get(downstream)).toBe('2:2');
+    expect(calls).toHaveBeenCalledTimes(2);
+    expect(downstreamCalls).toHaveBeenCalledTimes(2);
+    expect(chromeListener).not.toHaveBeenCalled();
+    expect(revisionListener).toHaveBeenCalledTimes(1);
+    expect(previousValues).toEqual([undefined, 'stable']);
+    expect(nextValues).toEqual(['stable', 'stable']);
+    runtime.dispose();
+  });
+
+  it('requires value leaves on reset and distinguishes an explicit undefined value', () => {
+    const source = input(1);
+    const missing = incremental.group(
+      [source],
+      define => ({ value: define.value<number>() }),
+      () => undefined
+    );
+    const runtime = createProjectionRuntime();
+    expect(() => runtime.get(missing.value)).toThrow('Value output must be initialized on reset');
+    runtime.dispose();
+
+    const optional = incremental.group(
+      [] as const,
+      define => ({ value: define.value<number | undefined>() }),
+      ({ outputs, next }) => {
+        outputs.value.set(undefined);
+        expect(next.value).toBeUndefined();
+      }
+    );
+    const second = createProjectionRuntime();
+    expect(second.get(optional.value)).toBeUndefined();
+    second.dispose();
+  });
+
+  it('keeps untouched group value leaves stable', () => {
+    const source = input(1);
+    const group = incremental.group(
+      [source],
+      define => ({
+        current: define.value<number>(),
+        initializedOnce: define.value<string>(),
+      }),
+      ({ sources, outputs, reset }) => {
+        outputs.current.set(sources[0]);
+        if (reset) outputs.initializedOnce.set('ready');
+      }
+    );
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(group.initializedOnce)).toBe('ready');
+    const listener = vi.fn();
+    const readable = runtime.readable(group.initializedOnce);
+    readable.subscribe(listener);
+    const beforeRevision = readable.revision();
+    runtime.set(source, 2);
+    expect(runtime.get(group.current)).toBe(2);
+    expect(runtime.get(group.initializedOnce)).toBe('ready');
+    expect(readable.revision()).toBe(beforeRevision);
+    expect(listener).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it('uses per-value-leaf equality before publishing', () => {
+    const source = input(1);
+    const group = incremental.group(
+      [source],
+      define => ({
+        bucket: define.value<{ readonly value: number }>(
+          (previous, next) => previous.value === next.value
+        ),
+      }),
+      ({ sources, outputs }) => outputs.bucket.set({ value: Math.floor(sources[0] / 10) })
+    );
+    const runtime = createProjectionRuntime();
+    const first = runtime.get(group.bucket);
+    const readable = runtime.readable(group.bucket);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    const revision = readable.revision();
+
+    runtime.set(source, 2);
+    expect(runtime.get(group.bucket)).toBe(first);
+    expect(readable.revision()).toBe(revision);
+    expect(listener).not.toHaveBeenCalled();
+
+    runtime.set(source, 12);
+    expect(runtime.get(group.bucket)).toEqual({ value: 1 });
+    expect(readable.revision()).toBe(revision + 1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
+  it('does not publish an equal group value leaf after rebuild', () => {
+    const source = input(1);
+    const group = incremental.group(
+      [source],
+      define => ({ value: define.value<string>() }),
+      ({ sources, outputs, reset }) => {
+        outputs.value.set('stable');
+        if (!reset && sources[0] === 2) return { kind: 'rebuild' } as const;
+      }
+    );
+    const runtime = createProjectionRuntime();
+    const readable = runtime.readable(group.value);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    expect(readable.current()).toBe('stable');
+    const revision = readable.revision();
+
+    runtime.set(source, 2);
+    expect(runtime.get(group.value)).toBe('stable');
+    expect(readable.revision()).toBe(revision);
+    expect(listener).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
   it('keeps all group outputs unchanged when a processor fails', () => {
     const source = input(1);
     const errors: unknown[] = [];
@@ -748,27 +1015,27 @@ describe('projection runtime', () => {
       [source],
       define => ({
         first: define.collection<string, number>(),
-        second: define.collection<string, number>(),
+        second: define.value<number>(),
       }),
       ({ sources, outputs }) => {
         outputs.first.set('value', sources[0]);
         if (sources[0] === 2) throw new Error('processor failed');
-        outputs.second.set('value', sources[0] * 10);
+        outputs.second.set(sources[0] * 10);
       }
     );
     const runtime = createProjectionRuntime({ onError: error => errors.push(error) });
     expect(runtime.get(group.first).get('value')).toBe(1);
-    expect(runtime.get(group.second).get('value')).toBe(10);
+    expect(runtime.get(group.second)).toBe(10);
     runtime.set(source, 2);
     expect(errors).toHaveLength(1);
     expect(() => runtime.get(group.first)).toThrow();
     expect(() => runtime.get(group.second)).toThrow();
     runtime.set(source, 3);
     expect(runtime.get(group.first).get('value')).toBe(3);
-    expect(runtime.get(group.second).get('value')).toBe(30);
+    expect(runtime.get(group.second)).toBe(30);
     runtime.set(source, 1);
     expect(runtime.get(group.first).get('value')).toBe(1);
-    expect(runtime.get(group.second).get('value')).toBe(10);
+    expect(runtime.get(group.second)).toBe(10);
     runtime.dispose();
   });
 
@@ -781,17 +1048,21 @@ describe('projection runtime', () => {
       define => ({
         values: define.collection<string, number>(),
         doubled: define.collection<string, number>(),
+        count: define.value<number>(),
       }),
       ({ sources, outputs }) => {
         for (const [key, value] of sources[0]) {
           outputs.values.set(key, value);
           outputs.doubled.set(key, value * 2);
         }
+        outputs.count.set(sources[0].size);
       }
     );
     expect(scope.get(group.doubled).get('a')).toBe(2);
+    expect(scope.get(group.count)).toBe(1);
     scope.dispose();
     expect(() => scope.get(group.values)).toThrow(ProjectionDisposedError);
+    expect(() => scope.get(group.count)).toThrow(ProjectionDisposedError);
     expect(runtime.get(source).get('a')).toBe(1);
     runtime.dispose();
   });

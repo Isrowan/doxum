@@ -303,6 +303,10 @@ revision for store integrations. Selector tracking and equality belong to a runt
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
+Schema map, table and list nodes with schema-owned stable keys all resolve through
+the same collection selector/source boundary. Lists use `keyOf` identity and keep
+document order in the collection read; ordinary array-valued fields remain scalar
+value observations.
 External events carry only boundary cause/revision metadata and, for collections,
 a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
@@ -313,12 +317,15 @@ imperative code. Keyed invalidation prevents an unrelated entry update from
 executing the selector; equality filters the result only after a related update.
 This tracking does not construct processor dependencies, which remain explicit in
 `derive` and the advanced incremental entry point. Advanced processors may
-declare one static `incremental.group` with nested named keyed collection leaves.
-The group is one scheduler node and one retained-state owner; each leaf is still
-an ordinary projection source with its own `CollectionChange`, revision and
-listeners. All changed leaves publish atomically before downstream nodes are
-enqueued. The namespace is not a graph node, runtime, scheduler, transaction or
-event bus, and any leaf first materialization materializes the whole group.
+declare one static `incremental.group` with nested named value and keyed collection
+leaves. The group is one scheduler node and one retained-state owner. Value leaves
+reuse the ordinary value publication kernel; collection leaves reuse the keyed
+collection publication kernel. Every leaf is still an ordinary projection source
+with its own revision/listeners, and collection leaves additionally publish
+`CollectionChange`. All changed leaves seal before the group publishes atomically,
+then only consumers of changed leaves are enqueued. The namespace is not a graph
+node, runtime, scheduler, transaction or event bus, and any leaf first
+materialization materializes the whole group.
 Published collection snapshots share an internal persistent keyed index. A
 value-only update path-copies only the affected key paths and reuses the immutable
 id sequence; membership or order changes create a new id sequence because order is

@@ -1,7 +1,7 @@
 # Projection API
 
-多输出 processor composition 的最终目标态、实现边界和删除清单见根目录的
-[Projection Processor Composition 最终方案](../PROJECTION_COMPOSITION_TARGET_STATE.md)。
+Projection composition 与 collection observation 的最终目标态、实现边界和删除清单见根目录的
+[Projection Composition & Collection Observation 最终方案](../PROJECTION_COMPOSITION_TARGET_STATE.md)。
 
 Projection definitions are lazy. Root declarations are reusable across Runtimes;
 scope declarations belong to one local lifetime. A `Projection` contains no
@@ -32,6 +32,21 @@ definition cannot be materialized by another Runtime or scope.
 resolves to a collection produces an immutable `ReadonlyMap` projection;
 ordinary document selectors produce snapshots. External sources are selected by
 their required `kind: 'value' | 'collection'` discriminant.
+
+Schema `map`, `table`, and `list(field, { keyOf })` nodes are collection paths.
+A list projection uses the schema `keyOf` result as its stable string key and
+preserves document list order in `ReadonlyMap` iteration. It never uses the array
+index as identity. An ordinary array-valued `field(...)` remains a scalar value.
+
+```ts
+const order = observe(document, path => path.order);
+const item = runtime.readable(order, items => items.get(itemId));
+```
+
+List insert/remove/replace/move operations therefore publish the same
+`CollectionChange` used by map and table sources. `order.before/order.after` is
+present only when keys that exist on both sides change relative order; membership
+changes are already represented by `added` and `removed`.
 
 ## External source contracts
 
@@ -229,10 +244,9 @@ const doubled = incremental.collection([tasks], ({ sources, changes, output }) =
 });
 ```
 
-When several keyed outputs share one processor, declare them as one static
-group. The processor executes once per causal batch; all output leaves publish
-atomically, while each leaf still exposes the ordinary `Projection` and
-`CollectionChange` contract:
+When several outputs share one processor, declare them as one static group. The
+processor executes once per causal batch; value and keyed collection leaves publish
+atomically, while every leaf remains an ordinary `Projection`:
 
 ```ts
 const render = incremental.group(
@@ -243,6 +257,8 @@ const render = incremental.group(
       content: define.collection<string, Content>(),
     },
     labels: define.collection<string, Label>(),
+    chrome: define.value<Chrome>(),
+    revision: define.value<number>(),
   }),
   ({ sources, outputs }) => {
     for (const [id, task] of sources[0]) {
@@ -250,6 +266,8 @@ const render = incremental.group(
       outputs.node.content.set(id, makeContent(task));
       outputs.labels.set(id, makeLabel(task));
     }
+    outputs.chrome.set(makeChrome(sources[0]));
+    outputs.revision.set(sources[0].size);
   }
 );
 
@@ -265,6 +283,15 @@ processor cannot expose different output generations. Split groups when
 outputs do not share computation or atomicity requirements. Group outputs can
 also be declared through `scope.incremental.group`; scope disposal releases the
 whole group and its retained state together.
+
+`define.value<T>(equality?)` has one borrowed draft operation: `set(value)`.
+During the initial build and every rebuild each value leaf must be set exactly as
+part of that processor run; on an ordinary incremental update an untouched value
+leaf retains its published value and revision. Calling `set` with an equal value
+also leaves the leaf unpublished. `T | undefined` is the explicit way to model an
+optional value; `set(undefined)` is distinct from not touching the leaf. Group
+`previous` and `next` expose scalar values alongside collection reads, and `next`
+reflects a staged `set` immediately inside the processor callback.
 
 Both processors receive `sources`, dependency-aligned `changes`, `previous`,
 `reset`, `cause` and a Runtime-local retained `state` object. Collection

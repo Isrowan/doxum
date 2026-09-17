@@ -11,7 +11,7 @@ import { assertSynchronous, createScheduler } from './scheduler';
 import { createSources } from './source';
 import { createValue } from './value';
 import { createCollection } from './collection';
-import { createCollectionGroup } from './group';
+import { createGroup } from './group';
 import type { ProjectionError } from './contract';
 import { profile } from '../profile';
 export const createProjectionGraph = (options: {
@@ -88,8 +88,7 @@ export const createProjectionGraph = (options: {
     collection: <S extends GraphSources, K extends string, V>(
       spec: import('./contract').CollectionNodeSpec<S, K, V>
     ) => createCollection(scheduler, spec),
-    group: (spec: import('./contract').CollectionGroupSpec) =>
-      createCollectionGroup(scheduler, spec),
+    group: (spec: import('./contract').GroupSpec) => createGroup(scheduler, spec),
     map,
     batch: scheduler.batch,
     assertIdle: scheduler.assertIdle,

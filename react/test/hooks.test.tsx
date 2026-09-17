@@ -6,6 +6,7 @@ import {
   createProjectionRuntime,
   field,
   input,
+  list,
   map,
   object,
   observe,
@@ -75,6 +76,51 @@ describe('projection React adapter', () => {
       });
     });
     expect(renders).toBe(initialRenders + 1);
+    renderer.unmount();
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('tracks keyed list selectors with the same collection semantics', () => {
+    const model = object({
+      rows: list(field<{ id: string; value: number }>(), { keyOf: row => row.id }),
+    });
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: [
+          { id: 'a', value: 1 },
+          { id: 'b', value: 2 },
+        ],
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const runtime = createProjectionRuntime();
+    let renders = 0;
+    const Probe = () => {
+      renders += 1;
+      return React.createElement(
+        'span',
+        null,
+        String(useProjection(rows, value => value.get('a')?.value))
+      );
+    };
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(
+        React.createElement(ProjectionProvider, { value: runtime }, React.createElement(Probe))
+      );
+    });
+    const initialRenders = renders;
+    act(() => {
+      document.update(draft => draft.rows.replace('b', { id: 'b', value: 3 }));
+    });
+    expect(renders).toBe(initialRenders);
+    act(() => {
+      document.update(draft => draft.rows.replace('a', { id: 'a', value: 4 }));
+    });
+    expect(renders).toBe(initialRenders + 1);
+    expect(renderer.toJSON()).toMatchObject({ children: ['4'] });
     renderer.unmount();
     document.dispose();
     runtime.dispose();

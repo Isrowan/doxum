@@ -20,6 +20,10 @@ runtime.get(visible);
 source 通过 `kind: 'value'` 或 `kind: 'collection'` 区分语义，但调用方统一使用
 `observe(source)`。
 
+schema map、table 和 `list(field, { keyOf })` 都是 keyed collection path。list
+直接使用 schema 的 `keyOf` 作为稳定 identity，并按文档顺序迭代；数组类型的普通
+`field(...)` 仍然是 scalar value observation。
+
 External event 不再复用 Runtime context：value event 提供新 `value` 和
 `revision`；collection event 提供稳定的 `previous` read、`revision` 和可选的
 `impact` hint。Runtime 自己计算精确的 `CollectionChange`，processor 不会直接收到
@@ -73,6 +77,8 @@ const render = incremental.group(
       content: define.collection<string, Content>(),
     },
     labels: define.collection<string, Label>(),
+    chrome: define.value<Chrome>(),
+    revision: define.value<number>(),
   }),
   ({ sources, outputs }) => {
     for (const [id, task] of sources[0]) {
@@ -80,6 +86,8 @@ const render = incremental.group(
       outputs.node.content.set(id, makeContent(task));
       outputs.labels.set(id, makeLabel(task));
     }
+    outputs.chrome.set(makeChrome(sources[0]));
+    outputs.revision.set(sources[0].size);
   }
 );
 ```
@@ -97,10 +105,13 @@ build 对集合依赖报告 `reset`；一次已提交的 batch 已经合并成�
 只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`；
 Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
 一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。
-`incremental.group(...)` 是多个命名 keyed output 的组合边界。嵌套 namespace
-只是静态 API 组织，不是新的图、Runtime 或事件协议。每个叶子都是普通
-`Projection`；一次 processor 执行会把所有变化的叶子原子发布，下游直接依赖这些
-叶子。首次读取任一叶子会物化整个 group；scope dispose 会一起释放 group 和其保留状态。
+`incremental.group(...)` 是多个命名 value / keyed collection output 的组合边界。
+`define.value<T>(equality?)` 声明 scalar leaf，`define.collection<K, V>(equality?)`
+声明 keyed leaf。嵌套 namespace 只是静态 API 组织，不是新的图、Runtime 或事件协议。
+每个叶子都是普通 `Projection`；一次 processor 执行先 seal 所有 leaf，再原子发布真正
+变化的 leaf，下游直接依赖这些叶子。initial build / rebuild 必须 set 每个 value leaf；
+普通增量轮次可以不触碰 value leaf，此时保留其现值和 revision。首次读取任一叶子会物化
+整个 group；scope dispose 会一起释放 group 和其保留状态。
 
 ## React selector 追踪
 

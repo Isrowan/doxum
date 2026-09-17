@@ -22,6 +22,10 @@ and eventful external sources can also be observed at this boundary. External
 sources use `kind: 'value'` or `kind: 'collection'`; the caller still uses only
 `observe(source)`.
 
+Schema maps, tables, and `list(field, { keyOf })` nodes are all keyed collection
+paths. A list uses its schema `keyOf` identity and preserves document order in
+iteration; array-valued fields remain scalar value observations.
+
 External events are smaller than Runtime contexts. A value event carries the new
 `value` and `revision`; a collection event carries a stable `previous` read,
 `revision`, and an optional `impact` hint. The Runtime derives the exact
@@ -79,6 +83,8 @@ const render = incremental.group(
       content: define.collection<string, Content>(),
     },
     labels: define.collection<string, Label>(),
+    chrome: define.value<Chrome>(),
+    revision: define.value<number>(),
   }),
   ({ sources, outputs }) => {
     for (const [id, task] of sources[0]) {
@@ -86,6 +92,8 @@ const render = incremental.group(
       outputs.node.content.set(id, makeContent(task));
       outputs.labels.set(id, makeLabel(task));
     }
+    outputs.chrome.set(makeChrome(sources[0]));
+    outputs.revision.set(sources[0].size);
   }
 );
 ```
@@ -106,12 +114,16 @@ an explicit full-collection read.
 `set`, `remove`, and `order`; the Runtime validates and seals them after
 the synchronous callback, computes keyed transitions and publishes one immutable
 map-like value. Reset or fault recovery is internal.
-`incremental.group(...)` is the composition boundary for several named keyed
-outputs. Its nested namespace is static API organization, not another graph or
-runtime concept. Every leaf is an ordinary `Projection`; one processor execution
-publishes all changed leaves atomically, and downstream processors depend on
-those leaves directly. Reading any leaf materializes the whole group, while
-scope disposal releases the group and its retained state together.
+`incremental.group(...)` is the composition boundary for several named value and
+keyed collection outputs. `define.value<T>(equality?)` creates a scalar leaf and
+`define.collection<K, V>(equality?)` creates a keyed leaf. Its nested namespace is
+static API organization, not another graph or runtime concept. Every leaf is an
+ordinary `Projection`; one processor execution seals and publishes all changed
+leaves atomically, and downstream processors depend on those leaves directly.
+Initial builds and rebuilds must set every value leaf; ordinary incremental runs
+may leave a value leaf untouched to preserve its current value and revision.
+Reading any leaf materializes the whole group, while scope disposal releases the
+group and its retained state together.
 
 ## React selector tracking
 

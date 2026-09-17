@@ -165,25 +165,31 @@ export type CollectionNodeSpec<S extends GraphSources, K extends string, V> = {
   };
 };
 
-/** Internal graph boundary for one atomic multi-output collection processor. */
-export type CollectionGroupSpec = {
+export type GroupOutputSpec =
+  | {
+      readonly kind: 'value';
+      readonly path: readonly string[];
+      readonly isEqual?: (previous: unknown, next: unknown) => boolean;
+    }
+  | {
+      readonly kind: 'collection';
+      readonly path: readonly string[];
+      readonly isEqual?: (previous: unknown, next: unknown) => boolean;
+    };
+
+export type GroupProcess = {
+  readonly sources: Record<string, unknown>;
+  readonly previous: readonly unknown[];
+  readonly next: readonly (() => unknown)[];
+  readonly outputs: readonly unknown[];
+};
+
+/** Internal graph boundary for one atomic multi-output processor. */
+export type GroupSpec = {
   readonly sources: GraphSources;
-  readonly outputs: readonly {
-    readonly path: readonly string[];
-    readonly isEqual?: (previous: unknown, next: unknown) => boolean;
-  }[];
-  readonly build: (input: {
-    readonly sources: Record<string, unknown>;
-    readonly previous: readonly CollectionRead<string, unknown>[];
-    readonly next: readonly CollectionRead<string, unknown>[];
-    readonly outputs: readonly CollectionDraft<string, unknown>[];
-  }) => {
-    readonly update: (input: {
-      readonly sources: Record<string, unknown>;
-      readonly previous: readonly CollectionRead<string, unknown>[];
-      readonly next: readonly CollectionRead<string, unknown>[];
-      readonly outputs: readonly CollectionDraft<string, unknown>[];
-    }) => void | { readonly kind: 'rebuild' };
+  readonly outputs: readonly GroupOutputSpec[];
+  readonly build: (input: GroupProcess) => {
+    readonly update: (input: GroupProcess) => void | { readonly kind: 'rebuild' };
   };
 };
 
