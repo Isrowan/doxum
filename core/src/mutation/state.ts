@@ -28,7 +28,8 @@ export const installMember = (
 };
 
 export const orderOf = (node: DocumentNode, value: unknown): string[] => {
-  if (node.kind === 'list') return (value as unknown[]).map(node.keyOf);
+  if (node.kind === 'list')
+    return anchor.toArray(anchor.indexedKeys(value as unknown[], node.keyOf));
   if (node.kind === 'table') return [...(value as { ids: string[] }).ids];
   throw new Error('Order requires a table or list.');
 };

@@ -100,9 +100,9 @@ capabilities while retaining selection, subscription and projection support.
 - `map(field(...))`, `map(object(...))`, `map(variant(...))` expose
   `get/has/ids/put/remove/replace`. `put` is an upsert; removing a missing key is a no-op.
 - `table(object(...))` retains `{ ids, byId }` data and exposes
-  `get/has/ids/create/remove/move/replace`.
+  `get/has/ids/create/remove/move/reorder/replace`.
 - `list(field(...), { keyOf })` retains a plain array and exposes
-  `get/has/ids/insert/remove/move/replace`.
+  `get/has/ids/insert/remove/move/reorder/replace`.
 - `tree(field(...))` retains `{ rootId?, nodes }` and exposes topology reads plus
   `insert/remove/move/replace`.
 - `variant(tag, branches)` has a readonly discriminant and whole-value branch replacement.
@@ -115,6 +115,14 @@ and their successful output is ignored. Perform transformations before calling
 Doxum; it does not detect validator mutation or conversion. `parse(model, unknown)`
 validates and copies schema structure while sharing readonly payloads. Strict parsing
 requires validators for atomic fields; typed in-memory fields can omit them.
+
+Ordered table/list drafts accept either one key or a key selection in
+`move(key | readonly key[], anchor?)`. A selection is moved as one block while
+preserving its current canonical relative order; the anchor is resolved after the
+selection is removed. Use `reorder(keys)` when the caller already owns the complete
+final order: it requires an exact permutation of current membership and changes no
+member values. Whole-collection `replace(value)` remains a distinct replacement
+operation and is not an order primitive.
 
 Collection `replace` has two forms: `replace(id, value)` replaces one existing
 table/list/tree member without changing order or topology, while `replace(value)`

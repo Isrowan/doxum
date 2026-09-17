@@ -18,6 +18,17 @@ export type KeyOrder = {
 
 type Keys = readonly string[] | KeyOrder;
 
+type ListSequence = {
+  readonly order: readonly string[];
+  readonly values: ReadonlyMap<string, unknown>;
+};
+
+type MoveSelection =
+  | { readonly kind: 'ok'; readonly order: readonly string[] }
+  | { readonly kind: 'duplicate' }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'invalid-anchor' };
+
 const length = (keys: Keys): number => keys.length;
 const keyAt = (keys: Keys, index: number): string | undefined =>
   Array.isArray(keys) ? keys[index] : keys.at(index);
@@ -38,6 +49,30 @@ const listIndexes = new WeakMap<
   readonly unknown[],
   { keyOf: (value: unknown) => string; order: KeyOrder }
 >();
+
+const knownKeys = (keys: readonly string[]): KeyOrder => {
+  let positions: Map<string, number> | undefined;
+  return {
+    length: keys.length,
+    at: index => keys[index],
+    index: key => {
+      if (!positions) {
+        positions = new Map();
+        for (let index = 0; index < keys.length; index++) positions.set(keys[index], index);
+        profile.address.listIndex(keys.length);
+      }
+      return positions.get(key) ?? -1;
+    },
+  };
+};
+
+const cacheKnownKeys = (
+  values: readonly unknown[],
+  keyOf: (value: unknown) => string,
+  keys: readonly string[]
+): void => {
+  listIndexes.set(values, { keyOf, order: knownKeys(keys) });
+};
 
 /** Canonical lists keep their key positions until a structural write invalidates them. */
 export const indexedKeys = (
@@ -63,6 +98,53 @@ export const indexedKeys = (
   return order;
 };
 
+export const toArray = (keys: Keys): string[] => {
+  const result = new Array<string>(length(keys));
+  for (let index = 0; index < result.length; index++) result[index] = keyAt(keys, index) as string;
+  return result;
+};
+
+/** One operation-local list scan provides both stable keys and item association. */
+export const listSequence = (
+  values: readonly unknown[],
+  keyOf: (value: unknown) => string
+): ListSequence => {
+  const current = indexedKeys(values, keyOf);
+  const order = new Array<string>(values.length);
+  const byKey = new Map<string, unknown>();
+  for (let index = 0; index < values.length; index++) {
+    const key = current.at(index) as string;
+    order[index] = key;
+    byKey.set(key, values[index]);
+  }
+  cacheKnownKeys(values, keyOf, order);
+  return { order, values: byKey };
+};
+
+/** Plan one relative move against the order that remains after removing the selection. */
+export const moveSelection = (
+  current: readonly string[],
+  selection: readonly string[],
+  position?: DocumentAnchor
+): MoveSelection => {
+  if (!selection.length) return { kind: 'ok', order: current };
+  const selected = new Set<string>();
+  for (const key of selection) {
+    if (selected.has(key)) return { kind: 'duplicate' };
+    selected.add(key);
+  }
+  const moved: string[] = [];
+  const remaining: string[] = [];
+  for (const key of current) (selected.has(key) ? moved : remaining).push(key);
+  if (moved.length !== selected.size) return { kind: 'missing' };
+  if (!valid(remaining, position)) return { kind: 'invalid-anchor' };
+  const insertion = index(remaining, position);
+  return {
+    kind: 'ok',
+    order: [...remaining.slice(0, insertion), ...moved, ...remaining.slice(insertion)],
+  };
+};
+
 /** Structural sequence writes own invalidation, including rollback writes. */
 export const insert = (values: unknown[], index: number, value: unknown): void => {
   values.splice(index, 0, value);
@@ -74,10 +156,23 @@ export const remove = (values: unknown[], index: number): void => {
   listIndexes.delete(values);
 };
 
-export const move = (values: unknown[], from: number, to: number): void => {
-  const [value] = values.splice(from, 1);
-  values.splice(to, 0, value);
-  listIndexes.delete(values);
+/** Install an exact string-key sequence such as table ids in one structural write. */
+export const installKeys = (values: string[], order: readonly string[]): void => {
+  values.length = order.length;
+  for (let index = 0; index < order.length; index++) values[index] = order[index];
+};
+
+/** Install a pre-resolved list sequence without running keyOf again. */
+export const installList = (
+  values: unknown[],
+  keyOf: (value: unknown) => string,
+  sequence: ListSequence,
+  order: readonly string[]
+): void => {
+  values.length = order.length;
+  for (let index = 0; index < order.length; index++)
+    values[index] = sequence.values.get(order[index]);
+  cacheKnownKeys(values, keyOf, order);
 };
 
 export const install = (
@@ -85,11 +180,7 @@ export const install = (
   keyOf: (value: unknown) => string,
   order: readonly string[]
 ): void => {
-  const byKey = new Map<string, unknown>();
-  for (const value of values) byKey.set(keyOf(value), value);
-  values.length = order.length;
-  for (let index = 0; index < order.length; index++) values[index] = byKey.get(order[index]);
-  listIndexes.delete(values);
+  installList(values, keyOf, listSequence(values, keyOf), order);
 };
 
 export const matches = (order: readonly string[], members: readonly string[]): boolean => {
@@ -115,11 +206,6 @@ export const valid = (keys: Keys, anchor?: DocumentAnchor): boolean => {
     return false;
   if ('at' in anchor) return anchor.at === 'start' || anchor.at === 'end';
   return keyIndex(keys, 'before' in anchor ? anchor.before : anchor.after) >= 0;
-};
-
-export const afterRemove = (keys: Keys, removedIndex: number, anchor?: DocumentAnchor): number => {
-  const position = index(keys, anchor);
-  return position > removedIndex ? position - 1 : position;
 };
 
 export const validPositions = (length: number, positions: readonly number[]): boolean => {

@@ -196,6 +196,82 @@ describe('mutation scaling and ownership', () => {
     runtime.dispose();
   });
 
+  it('bulk-moves a large list with one bounded key scan and one order capture', () => {
+    const count = 10_000;
+    const movedCount = 1_000;
+    let keyCalls = 0;
+    const key = (id: string | number) => `node\0${id}`;
+    const schema = object({
+      rows: list(field<{ kind: string; id: string }>(), {
+        keyOf: value => {
+          keyCalls++;
+          return key(value.id);
+        },
+      }),
+    });
+    const values = Array.from({ length: count }, (_, index) => ({
+      kind: 'node',
+      id: String(index),
+    }));
+    const runtime = createDocument({ schema, initial: { rows: values } });
+    const moved = Array.from({ length: movedCount }, (_, index) => key(movedCount - index - 1));
+    keyCalls = 0;
+    const profile = startProfile();
+    const result = runtime.update(d => d.rows.move(moved, { before: key(9000) }));
+    const measured = profile.stop();
+    expect(result.status).toBe('committed');
+    expect(keyCalls).toBe(count);
+    expect(measured.address).toMatchObject({ listIndexes: 0, listItems: 0 });
+    expect(measured.recorder).toMatchObject({
+      orderCaptures: 1,
+      orderSnapshots: 1,
+      orderItems: count,
+      publishedOrderItems: count,
+    });
+    if (result.status !== 'committed') throw new Error('move');
+    const order = result.commit.changes.changes[0];
+    expect(order).toMatchObject({ kind: 'members', at: ['rows'], members: [] });
+    if (order.kind !== 'members' || !order.order) throw new Error('order');
+    expect(order.order.after.slice(7_998, 8_005)).toEqual([
+      key(8998),
+      key(8999),
+      key(0),
+      key(1),
+      key(2),
+      key(3),
+      key(4),
+    ]);
+    expect(order.order.after.at(-1)).toBe(key(9999));
+    runtime.dispose();
+  });
+
+  it('reorders a large list without repeated keyOf scans', () => {
+    const count = 10_000;
+    let keyCalls = 0;
+    const schema = object({
+      rows: list(field<{ id: string }>(), {
+        keyOf: value => {
+          keyCalls++;
+          return value.id;
+        },
+      }),
+    });
+    const ids = Array.from({ length: count }, (_, index) => String(index));
+    const runtime = createDocument({
+      schema,
+      initial: { rows: ids.map(id => ({ id })) },
+    });
+    keyCalls = 0;
+    const profile = startProfile();
+    const result = runtime.update(d => d.rows.reorder([...ids].reverse()));
+    const measured = profile.stop();
+    expect(result.status).toBe('committed');
+    expect(keyCalls).toBe(count);
+    expect(measured.address.listIndexes).toBe(0);
+    expect(measured.recorder).toMatchObject({ orderCaptures: 1, orderSnapshots: 1 });
+    runtime.dispose();
+  });
+
   it.each([false, true])(
     'keeps unrelated order changes out of the scalar coverage index (first=%s)',
     first => {

@@ -132,6 +132,97 @@ describe('complete container changes', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('moves table selections as one canonical block and reorders exact membership', () => {
+    const model = object({
+      rows: table(object({ n: field<number>() })),
+    });
+    const initialRows = {
+      ids: ['a', 'b', 'c', 'd', 'e'],
+      byId: Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((id, index) => [id, { n: index }])),
+    };
+    const runtime = createDocument({ schema: model, initial: { rows: initialRows } });
+
+    const moved = runtime.update(d => d.rows.move(['d', 'b'], { before: 'e' }));
+    if (moved.status !== 'committed') throw new Error('move');
+    expect(runtime.snapshot().rows.ids).toEqual(['a', 'c', 'b', 'd', 'e']);
+    expect(moved.commit.changes.changes).toEqual([
+      {
+        kind: 'members',
+        at: ['rows'],
+        members: [],
+        order: { before: ['a', 'b', 'c', 'd', 'e'], after: ['a', 'c', 'b', 'd', 'e'] },
+      },
+    ]);
+    expect(moved.commit.impact.collection(p => p.rows)).toEqual({
+      kind: 'incremental',
+      added: new Set(),
+      removed: new Set(),
+      updated: new Set(),
+      orderChanged: true,
+    });
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot().rows.ids).toEqual(initialRows.ids);
+    expect(runtime.history.redo().status).toBe('committed');
+    expect(runtime.snapshot().rows.ids).toEqual(['a', 'c', 'b', 'd', 'e']);
+
+    const reordered = runtime.update(d => d.rows.reorder(['e', 'd', 'c', 'b', 'a']));
+    if (reordered.status !== 'committed') throw new Error('reorder');
+    expect(reordered.commit.changes.changes).toEqual([
+      {
+        kind: 'members',
+        at: ['rows'],
+        members: [],
+        order: { before: ['a', 'c', 'b', 'd', 'e'], after: ['e', 'd', 'c', 'b', 'a'] },
+      },
+    ]);
+    expect(runtime.history.undo().status).toBe('committed');
+    expect(runtime.snapshot().rows.ids).toEqual(['a', 'c', 'b', 'd', 'e']);
+    runtime.dispose();
+  });
+
+  it('preserves list canonical relative order and validates bulk order intents before writing', () => {
+    const model = object({
+      rows: list(field<{ id: string; n: number }>(), { keyOf: value => value.id }),
+      marker: field<number>(),
+    });
+    const initialRows = ['a', 'b', 'c', 'd', 'e'].map((id, n) => ({ id, n }));
+    const runtime = createDocument({ schema: model, initial: { rows: initialRows, marker: 0 } });
+
+    expect(runtime.update(d => d.rows.move(['d', 'b'], { before: 'e' })).status).toBe('committed');
+    expect(runtime.snapshot().rows.map(value => value.id)).toEqual(['a', 'c', 'b', 'd', 'e']);
+    expect(runtime.update(d => d.rows.reorder(['e', 'a', 'c', 'b', 'd'])).status).toBe('committed');
+    expect(runtime.snapshot().rows.map(value => value.id)).toEqual(['e', 'a', 'c', 'b', 'd']);
+
+    const beforeRejected = runtime.snapshot();
+    expect(runtime.update(d => d.rows.move(['a', 'a']))).toMatchObject({
+      status: 'rejected',
+      issues: [{ code: 'invalid-key' }],
+    });
+    expect(runtime.update(d => d.rows.move(['a', 'missing']))).toMatchObject({
+      status: 'rejected',
+      issues: [{ code: 'missing-entity' }],
+    });
+    expect(runtime.update(d => d.rows.move(['a', 'b'], { before: 'b' }))).toMatchObject({
+      status: 'rejected',
+      issues: [{ code: 'invalid-anchor' }],
+    });
+    expect(runtime.update(d => d.rows.reorder(['e', 'a', 'c', 'b', 'b']))).toMatchObject({
+      status: 'rejected',
+      issues: [{ code: 'invalid-collection' }],
+    });
+    expect(
+      runtime.update(d => {
+        d.marker = 1;
+        d.rows.move(['a', 'missing']);
+      })
+    ).toMatchObject({ status: 'rejected', issues: [{ code: 'missing-entity' }] });
+    expect(runtime.snapshot()).toEqual(beforeRejected);
+
+    expect(runtime.update(d => d.rows.move([], { before: 'missing' })).status).toBe('unchanged');
+    expect(runtime.update(d => d.rows.reorder(['e', 'a', 'c', 'b', 'd'])).status).toBe('unchanged');
+    runtime.dispose();
+  });
+
   it.each([1, 1000])('resolves a bulk table operation independently of its %i entries', count => {
     const model = object({ nested: object({ rows: table(object({ n: field<number>() })) }) });
     const runtime = createDocument({

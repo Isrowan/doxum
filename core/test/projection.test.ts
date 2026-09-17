@@ -379,6 +379,16 @@ describe('projection runtime', () => {
     });
     expect([...runtime.get(items).keys()]).toEqual(['c', 'a', 'b']);
 
+    document.update(draft => draft.items.reorder(['b', 'c', 'a']));
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [],
+      order: { before: ['c', 'a', 'b'], after: ['b', 'c', 'a'] },
+    });
+    expect([...runtime.get(items).keys()]).toEqual(['b', 'c', 'a']);
+
     document.update(draft => draft.items.remove('b'));
     expect(changes.at(-1)).toMatchObject({
       kind: 'incremental',

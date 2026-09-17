@@ -36,7 +36,7 @@ their generation; membership and structural changes invalidate locations.
 
 Collection methods resolve their current value once for reads and enter complete
 domain operations for writes. Table, list and tree dispatchers stay local to scope;
-ordered reads and move dispatch are shared by table and list. They all use the same
+ordered reads and move/reorder dispatch are shared by table and list. They all use the same
 scope and schema-branch checks. Each read branch creates only its requested method;
 write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
@@ -111,7 +111,7 @@ structural correctness. Draft is never used during seal or observer notification
 generation and recorder lifetime. Complete operations
 are grouped under `mutation/operations/`: `map` owns put/remove, `table` owns
 create/remove/member replacement, `list` owns insert/remove/member replacement,
-`order` owns the shared move, `tree` owns tree commands, and `replay` owns applying
+`order` owns shared move/reorder application, `tree` owns tree commands, and `replay` owns applying
 complete ChangeSet groups. Generic assignment and whole-container replacement
 remain session primitives. These modules take the existing session, own no state,
 and are not public exports. There are no forwarding methods left on session.
@@ -136,9 +136,11 @@ accepts a resolved location and a `set`/`remove` operation, with no replacement
 permission flag. The command-local member entry resolves definitions internally; located list operations pass
 their already resolved index directly. No per-write command object is allocated.
 
-Sequence insert/remove/move/install operations in `anchor.ts` invalidate list indexes
-as part of the structural write. Session and rollback call these operations; neither
-manually invalidates the index. Installing a same-key value preserves the index.
+Sequence insert/remove/install operations in `anchor.ts` own list-index invalidation
+or replacement as part of the structural write. Ordered move/reorder planning is pure;
+`operations/order.ts` performs one final sequence install and one session invalidation.
+Session and rollback call the same installation primitives; neither maintains a
+second mutable order/index protocol. Installing a same-key value preserves the index.
 Generation advances immediately on each structural installation. Domain operations
 may resolve once and retain their local container, but retained user scopes must
 observe earlier writes inside the callback. There is no deferred invalidation mode,
@@ -352,11 +354,14 @@ address resolution, writes and sealing. Building it costs O(N); subsequent key
 lookups are O(1) until a membership/order change invalidates it. Cache identity
 includes the array and keyOf function; externally supplied arrays are validated
 without this cache. Pure key-preserving value updates reuse it across transactions.
-One-off structural list operations locate their positions directly and do not
-build a lookup index solely to discard it after moving elements. Array insertion,
-removal and moves still cost O(N). `profile.address.listIndexes/listItems` counts
-index builds and scanned items; `profile.recorder.indexedGroups` counts coverage
-registrations. Tree deletion touches its
+Single and bulk ordered moves share one selection algorithm. A bulk move scans the
+canonical order once, preserves selected keys in canonical relative order, resolves
+its anchor against the remaining keys, and installs one final sequence, for O(N + M)
+work with O(N) list `keyOf` calls. Exact `reorder` validates one full permutation and
+installs it in O(N). Neither operation loops a bulk intent through the single-key API,
+and there is no transaction-local writable shadow order/index. Array insertion and
+removal remain O(N). `profile.address.listIndexes/listItems` counts index builds and
+scanned items; `profile.recorder.indexedGroups` counts coverage registrations. Tree deletion touches its
 subtree; child-order edits touch affected child arrays. These costs are deliberate
 and instrumented, not hidden behind a constant-time promise.
 `profile.recorder.orderItems` counts first-touch baseline keys;

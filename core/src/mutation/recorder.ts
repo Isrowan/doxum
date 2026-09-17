@@ -241,7 +241,7 @@ const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   if (fact.order) {
     const current =
       fact.node.kind === 'list'
-        ? anchor.keys(fact.value as unknown[], fact.node.keyOf)
+        ? anchor.indexedKeys(fact.value as unknown[], fact.node.keyOf)
         : (fact.value as { ids: string[] }).ids;
     if (!anchor.equal(fact.order, current)) {
       const after = orderOf(fact.node, fact.value);

@@ -46,8 +46,8 @@ table/list/tree 的 replace 同时支持成员和整体替换。含集合数据�
 | 声明                             | 数据          | Draft 方法                                                |
 | -------------------------------- | ------------- | --------------------------------------------------------- |
 | map(valueSchema, { key }?)       | record        | get/has/ids/put/remove/replace                            |
-| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/replace                    |
-| list(field, { keyOf })           | 普通数组      | get/has/ids/insert/remove/move/replace                    |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/reorder/replace            |
+| list(field, { keyOf })           | 普通数组      | get/has/ids/insert/remove/move/reorder/replace            |
 | tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/remove/move/replace |
 
 Read 只暴露读取方法。map 支持 field/object/variant；put 是 upsert，remove 缺失键是 no-op。
@@ -55,6 +55,9 @@ table/list/tree 的 `replace(id, value)` 只替换已存在成员，保持 table
 只改变 payload；`replace(value)` 替换整个集合。list 替换项必须保持寻址键。
 简单数组与笔画可作为一个原子 field。optional 支持 field/variant/map/list/tree，
 缺失与存在的 undefined 不同。variant tag 只读，通过整体替换切换分支。
+table/list 的 `move(key | readonly key[], anchor?)` 会保持 moved selection 当前的相对顺序，
+并在移除 selection 后解析 anchor；`reorder(keys)` 要求与当前 membership 完全一致的排列，
+只改变顺序而不改变成员值。
 
 校验器是纯同步函数或 Standard Schema v1，直接接收原始引用且不得修改它。
 成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。

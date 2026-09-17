@@ -52,8 +52,8 @@ plain replacement of object or variant members that contain collection data.
 | Definition                       | Data          | Draft methods                                             |
 | -------------------------------- | ------------- | --------------------------------------------------------- |
 | map(valueSchema, { key }?)       | record        | get/has/ids/put/remove/replace                            |
-| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/replace                    |
-| list(field, { keyOf })           | array         | get/has/ids/insert/remove/move/replace                    |
+| table(objectOrVariant, { key }?) | ids/byId      | get/has/ids/create/remove/move/reorder/replace            |
+| list(field, { keyOf })           | array         | get/has/ids/insert/remove/move/reorder/replace            |
 | tree(field)                      | rootId?/nodes | get/has/rootId/parent/children/insert/remove/move/replace |
 
 Read scopes expose only read methods. Map supports field/object/variant values;
@@ -63,6 +63,9 @@ tree payload. `replace(value)` replaces a whole collection. List member replacem
 retains the addressed key. Simple arrays and strokes can be one
 atomic field. Optional supports field/variant/map/list/tree. Absent differs from
 present undefined. Variant tags are readonly; change branch by whole replacement.
+For table/list, `move(key | readonly key[], anchor?)` preserves a moved selection's
+current relative order and resolves the anchor after removal. `reorder(keys)` requires
+an exact permutation of current membership and changes only order.
 
 Pure synchronous functions and Standard Schema v1 validators receive original input.
 They must not mutate it; successful output is ignored, with no copy or deep conversion

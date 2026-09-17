@@ -22,6 +22,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
 - Maps use get/has/ids/put/remove/replace; table/list/tree use overloaded replace
   for member and whole-container replacement. Use replace(parent, key, value) for
   object or variant members whose Draft type contains collection tools.
+- Ordered table/list Drafts use move(key | readonly key[], anchor?) for relative
+  movement and reorder(keys) for an exact full-membership permutation.
 - Expected business failure throws TransactionRejected. Other exceptions roll back
   and rethrow unchanged. Callback returns carry business values and notices.
 - Commits contain final reversible ChangeSets. History and impact share those facts.

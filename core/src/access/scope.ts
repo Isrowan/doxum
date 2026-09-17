@@ -67,7 +67,8 @@ type TableAccess<K extends string, N extends ValueSchemaNode, W extends boolean>
         anchor?: DocumentAnchor<K>
       ): void;
       remove(ids: K | readonly K[]): void;
-      move(id: K, anchor?: DocumentAnchor<K>): void;
+      move(ids: K | readonly K[], anchor?: DocumentAnchor<K>): void;
+      reorder(ids: readonly K[]): void;
       replace(value: {
         readonly ids: readonly K[];
         readonly byId: Readonly<Record<K, Infer<N>>>;
@@ -83,7 +84,8 @@ type ListAccess<T, W extends boolean> = {
   ? {
       insert(value: ReadonlyValue<T>, anchor?: DocumentAnchor): void;
       remove(key: string): void;
-      move(key: string, anchor?: DocumentAnchor): void;
+      move(keys: string | readonly string[], anchor?: DocumentAnchor): void;
+      reorder(keys: readonly string[]): void;
       replace(value: readonly ReadonlyValue<T>[]): void;
       replace(key: string, value: ReadonlyValue<T>): void;
     }
@@ -407,9 +409,14 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         );
       };
     if (property === 'move')
-      return (id: string, position?: DocumentAnchor) => {
+      return (ids: string | readonly string[], position?: DocumentAnchor) => {
         const writable = writableCollection(target, node);
-        orderOperations.move(context.session!, writable, id, position);
+        orderOperations.move(context.session!, writable, ids, position);
+      };
+    if (property === 'reorder')
+      return (ids: readonly string[]) => {
+        const writable = writableCollection(target, node);
+        orderOperations.reorder(context.session!, writable, ids);
       };
     return undefined;
   };

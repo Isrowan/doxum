@@ -51,6 +51,13 @@ describe('projection optimization boundaries', () => {
     expect(move.collectionView.mappedItems).toBe(0);
     expect(move.access.snapshots).toBe(0);
 
+    const reorderedIds = Array.from({ length: 1_000 }, (_, index) => `row-${999 - index}`);
+    const reorder = measureProfile(() =>
+      document.update(draft => draft.rows.reorder(reorderedIds))
+    ).profile;
+    expect(reorder.collectionView.mappedItems).toBe(0);
+    expect(reorder.access.snapshots).toBe(0);
+
     document.dispose();
     runtime.dispose();
   });
