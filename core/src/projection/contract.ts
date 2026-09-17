@@ -165,6 +165,28 @@ export type CollectionNodeSpec<S extends GraphSources, K extends string, V> = {
   };
 };
 
+/** Internal graph boundary for one atomic multi-output collection processor. */
+export type CollectionGroupSpec = {
+  readonly sources: GraphSources;
+  readonly outputs: readonly {
+    readonly path: readonly string[];
+    readonly isEqual?: (previous: unknown, next: unknown) => boolean;
+  }[];
+  readonly build: (input: {
+    readonly sources: Record<string, unknown>;
+    readonly previous: readonly CollectionRead<string, unknown>[];
+    readonly next: readonly CollectionRead<string, unknown>[];
+    readonly outputs: readonly CollectionDraft<string, unknown>[];
+  }) => {
+    readonly update: (input: {
+      readonly sources: Record<string, unknown>;
+      readonly previous: readonly CollectionRead<string, unknown>[];
+      readonly next: readonly CollectionRead<string, unknown>[];
+      readonly outputs: readonly CollectionDraft<string, unknown>[];
+    }) => void | { readonly kind: 'rebuild' };
+  };
+};
+
 export class ProjectionError extends Error {
   constructor(
     readonly phase: 'processor' | 'listener' | 'source' | 'blocked',

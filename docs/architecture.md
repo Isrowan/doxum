@@ -312,7 +312,13 @@ equality)`, so the same runtime-owned readable can be consumed by React or
 imperative code. Keyed invalidation prevents an unrelated entry update from
 executing the selector; equality filters the result only after a related update.
 This tracking does not construct processor dependencies, which remain explicit in
-`derive` and the advanced incremental entry point.
+`derive` and the advanced incremental entry point. Advanced processors may
+declare one static `incremental.group` with nested named keyed collection leaves.
+The group is one scheduler node and one retained-state owner; each leaf is still
+an ordinary projection source with its own `CollectionChange`, revision and
+listeners. All changed leaves publish atomically before downstream nodes are
+enqueued. The namespace is not a graph node, runtime, scheduler, transaction or
+event bus, and any leaf first materialization materializes the whole group.
 Published collection snapshots share an internal persistent keyed index. A
 value-only update path-copies only the affected key paths and reuses the immutable
 id sequence; membership or order changes create a new id sequence because order is

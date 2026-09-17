@@ -37,6 +37,19 @@ type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
 type Equality = (a: unknown, b: unknown) => boolean;
 type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unknown;
 
+export type IncrementalGroupDefinition = {
+  readonly dependencies: GraphSources;
+  readonly outputs: readonly {
+    readonly path: readonly string[];
+    readonly isEqual?: Equality;
+  }[];
+  readonly build: (...args: never[]) => unknown;
+  readonly projections: readonly Projection<
+    ReadonlyMap<string, unknown>,
+    CollectionChange<string, unknown>
+  >[];
+};
+
 type Definition =
   | { readonly kind: 'input'; readonly initial: unknown; readonly isEqual?: Equality }
   | { readonly kind: 'collection-input'; readonly initial: ReadonlyMap<string, unknown> }
@@ -70,6 +83,11 @@ type Definition =
       readonly build: (...args: never[]) => unknown;
       readonly isEqual?: Equality;
       readonly name?: string;
+    }
+  | {
+      readonly kind: 'incremental-group-output';
+      readonly group: IncrementalGroupDefinition;
+      readonly output: number;
     };
 
 type DefinitionProjection = Projection<unknown, unknown>;
@@ -87,6 +105,9 @@ export const definitionOf = (projection: DefinitionProjection): Definition => {
   if (!definition) throw new TypeError('Unknown projection definition.');
   return definition;
 };
+
+export const isProjection = (value: unknown): value is DefinitionProjection =>
+  value !== null && typeof value === 'object' && definitions.has(value);
 
 export const ownerOf = (projection: DefinitionProjection): object | undefined =>
   owners.get(projection);
@@ -238,3 +259,35 @@ export const defineIncrementalCollection = <K extends string, V>(definition: {
     isEqual: definition.isEqual as Equality | undefined,
     name: definition.name,
   });
+
+export const defineIncrementalGroup = (definition: {
+  readonly dependencies: GraphSources;
+  readonly outputs: readonly {
+    readonly path: readonly string[];
+    readonly isEqual?: Equality;
+  }[];
+  readonly build: (...args: never[]) => unknown;
+}): IncrementalGroupDefinition => {
+  const group = {
+    dependencies: definition.dependencies,
+    outputs: Object.freeze(
+      definition.outputs.map(output =>
+        Object.freeze({ path: Object.freeze([...output.path]), isEqual: output.isEqual })
+      )
+    ),
+    build: definition.build,
+    projections: [] as Projection<
+      ReadonlyMap<string, unknown>,
+      CollectionChange<string, unknown>
+    >[],
+  };
+  const projections = group.outputs.map((_, output) =>
+    define<ReadonlyMap<string, unknown>, CollectionChange<string, unknown>>({
+      kind: 'incremental-group-output',
+      group,
+      output,
+    })
+  );
+  group.projections = Object.freeze(projections) as typeof group.projections;
+  return Object.freeze(group);
+};

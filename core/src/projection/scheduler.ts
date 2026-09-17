@@ -14,10 +14,17 @@ export type SourceRecord = {
   disposed: boolean;
   clear(): void;
 };
+export type OutputRecord = SourceRecord & {
+  readonly owner: NodeRecord;
+  emit(call: (listener: () => void) => void): void;
+};
 export type NodeRecord = SourceRecord & {
+  readonly owner: NodeRecord;
   readonly order: number;
   readonly name: string;
   readonly sources: readonly SourceRecord[];
+  readonly outputs?: readonly OutputRecord[];
+  readonly changedOutputs?: () => readonly OutputRecord[];
   evaluate(build: boolean): boolean;
   publish(): void;
   emit(call: (listener: () => void) => void): void;
@@ -39,7 +46,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   const heap: NodeRecord[] = [];
   const queued = new Set<NodeRecord>();
   const completed: NodeRecord[] = [];
-  const emissions = new Set<NodeRecord>();
+  const emissions = new Set<OutputRecord>();
   const errors: ProjectionError[] = [];
   let reportingFailures: unknown[] = [];
   const guards = new Set<(locked: boolean) => void>();
@@ -136,7 +143,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
             node.fault = undefined;
           } catch (cause) {
             const error = errorFor(node, cause);
-            errors.push(error);
             node.fault = error;
             if (!build) {
               try {
@@ -144,21 +150,32 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
                 const failure = node.sources.find(source => source.fault)?.fault;
                 if (failure) throw failure;
                 node.fault = undefined;
+                errors.push(error);
               } catch (cause) {
                 node.fault = errorFor(node, cause);
                 errors.push(node.fault);
               }
-            }
+            } else errors.push(error);
           }
         }
         completed.push(node);
-        if (changed || wasFaulted || node.fault) {
+        const outputs = node.changedOutputs?.() ?? (changed ? [node as OutputRecord] : []);
+        const affected = node.fault
+          ? (node.outputs ?? [node as OutputRecord])
+          : outputs.length
+            ? outputs
+            : wasFaulted
+              ? (node.outputs ?? [node as OutputRecord])
+              : [];
+        if (affected.length) {
           profile.projection('publishedNodes');
-          emissions.add(node);
-          node.consumers.forEach(enqueue);
+          node.publish();
+          affected.forEach(output => {
+            emissions.add(output);
+            output.consumers.forEach(enqueue);
+          });
         }
       }
-      completed.forEach(node => node.publish());
     } finally {
       lock(false);
       phase = 'idle';
@@ -171,12 +188,12 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     lock(true);
     const reportFailures: unknown[] = [];
     try {
-      emissions.forEach(node =>
-        node.emit(listener => {
+      emissions.forEach(output =>
+        output.emit(listener => {
           try {
             listener();
           } catch (cause) {
-            errors.push(errorFor(node, cause, 'listener'));
+            errors.push(errorFor(output.owner, cause, 'listener'));
           }
         })
       );
@@ -285,18 +302,25 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     },
     releaseNode(handle: object) {
       assertIdle();
-      const node = records.get(handle) as NodeRecord | undefined;
+      const record = records.get(handle);
+      const node =
+        record && 'owner' in record
+          ? (record as SourceRecord & { readonly owner: NodeRecord }).owner
+          : (record as NodeRecord | undefined);
       if (!node || !nodes.has(node)) throw new Error('Unknown projection node.');
-      if (node.consumers.size) throw new Error('Projection node is still used by another node.');
+      if ((node.outputs ?? [node as OutputRecord]).some(output => output.consumers.size))
+        throw new Error('Projection node is still used by another node.');
       node.disposed = true;
       node.sources.forEach(source => source.consumers.delete(node));
       node.release();
       node.clear();
       nodes.delete(node);
-      records.delete(handle);
+      for (const [registered, value] of records)
+        if (value === node || ('owner' in value && value.owner === node))
+          records.delete(registered);
       pending.delete(node);
       queued.delete(node);
-      emissions.delete(node);
+      for (const output of node.outputs ?? [node as OutputRecord]) emissions.delete(output);
     },
     source(handle: object) {
       assertActive();

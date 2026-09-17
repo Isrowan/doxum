@@ -64,6 +64,24 @@ const total = incremental([tasks], ({ sources, previous, state }) => {
 const doubled = incremental.collection([tasks], ({ sources, output }) => {
   for (const [id, task] of sources[0]) output.set(id, task.value * 2);
 });
+
+const render = incremental.group(
+  [tasks],
+  define => ({
+    node: {
+      shell: define.collection<string, Shell>(),
+      content: define.collection<string, Content>(),
+    },
+    labels: define.collection<string, Label>(),
+  }),
+  ({ sources, outputs }) => {
+    for (const [id, task] of sources[0]) {
+      outputs.node.shell.set(id, makeShell(task));
+      outputs.node.content.set(id, makeContent(task));
+      outputs.labels.set(id, makeLabel(task));
+    }
+  }
+);
 ```
 
 两种 processor context 都包含 `sources`、按依赖位置对齐的 `changes` tuple、
@@ -79,6 +97,10 @@ build 对集合依赖报告 `reset`；一次已提交的 batch 已经合并成�
 只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`；
 Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
 一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。
+`incremental.group(...)` 是多个命名 keyed output 的组合边界。嵌套 namespace
+只是静态 API 组织，不是新的图、Runtime 或事件协议。每个叶子都是普通
+`Projection`；一次 processor 执行会把所有变化的叶子原子发布，下游直接依赖这些
+叶子。首次读取任一叶子会物化整个 group；scope dispose 会一起释放 group 和其保留状态。
 
 ## React selector 追踪
 

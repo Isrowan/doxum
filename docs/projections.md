@@ -1,5 +1,8 @@
 # Projection API
 
+多输出 processor composition 的最终目标态、实现边界和删除清单见根目录的
+[Projection Processor Composition 最终方案](../PROJECTION_COMPOSITION_TARGET_STATE.md)。
+
 Projection definitions are lazy. Root declarations are reusable across Runtimes;
 scope declarations belong to one local lifetime. A `Projection` contains no
 materialized value, retained processor state, subscription or disposal state.
@@ -225,6 +228,43 @@ const doubled = incremental.collection([tasks], ({ sources, changes, output }) =
   if (change.order) output.order([...sources[0].keys()]);
 });
 ```
+
+When several keyed outputs share one processor, declare them as one static
+group. The processor executes once per causal batch; all output leaves publish
+atomically, while each leaf still exposes the ordinary `Projection` and
+`CollectionChange` contract:
+
+```ts
+const render = incremental.group(
+  [tasks],
+  define => ({
+    node: {
+      shell: define.collection<string, Shell>(),
+      content: define.collection<string, Content>(),
+    },
+    labels: define.collection<string, Label>(),
+  }),
+  ({ sources, outputs }) => {
+    for (const [id, task] of sources[0]) {
+      outputs.node.shell.set(id, makeShell(task));
+      outputs.node.content.set(id, makeContent(task));
+      outputs.labels.set(id, makeLabel(task));
+    }
+  }
+);
+
+const shell = incremental.collection([render.node.shell], ({ sources, output }) => {
+  for (const [id, value] of sources[0]) output.set(id, value);
+});
+```
+
+The namespace is a frozen static object tree, not a projection, runtime,
+scheduler, transaction, or event bus. Only output leaves can be read, composed,
+or subscribed. Any leaf first read materializes the whole group so one
+processor cannot expose different output generations. Split groups when
+outputs do not share computation or atomicity requirements. Group outputs can
+also be declared through `scope.incremental.group`; scope disposal releases the
+whole group and its retained state together.
 
 Both processors receive `sources`, dependency-aligned `changes`, `previous`,
 `reset`, `cause` and a Runtime-local retained `state` object. Collection

@@ -279,6 +279,24 @@ import { incremental } from 'doxum/advanced';
 const doubled = incremental.collection([tasks], ({ sources, output }) => {
   for (const [id, task] of sources[0]) output.set(id, task.value * 2);
 });
+
+const render = incremental.group(
+  [tasks],
+  define => ({
+    node: {
+      shell: define.collection<string, { readonly title: string }>(),
+      content: define.collection<string, string>(),
+    },
+    labels: define.collection<string, string>(),
+  }),
+  ({ sources, outputs }) => {
+    for (const [id, task] of sources[0]) {
+      outputs.node.shell.set(id, { title: task.title });
+      outputs.node.content.set(id, task.title);
+      outputs.labels.set(id, task.title);
+    }
+  }
+);
 ```
 
 Incremental processors receive a dependency-aligned `changes` tuple. Collection
@@ -286,6 +304,12 @@ entries carry `added`/`updated`/`removed` transitions with complete
 `before`/`after` values, so a processor can patch indexes without rescanning the
 collection; scalar dependencies use `undefined` and the initial collection build
 reports `{ kind: 'reset' }`.
+`incremental.group` runs one processor for several named keyed collection outputs.
+Its static nested namespace is only API organization: every leaf is an ordinary
+`Projection`, all leaves publish atomically in one causal settle, and downstream
+processors depend directly on those leaves. A group materializes as a whole when
+any leaf is first read; split groups when outputs do not share computation or
+atomicity requirements. There is no output event bus or per-output runtime.
 
 In React, `useProjection(projection)` reads a value and
 `useProjection(projection, selector, equality?)` tracks keyed reads such as

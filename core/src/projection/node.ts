@@ -22,6 +22,7 @@ export const createNode = <S extends GraphSources>(
   );
   const order = scheduler.order();
   const node: NodeRecord = {
+    owner: undefined as unknown as NodeRecord,
     ...behavior,
     publish: () => {
       if (node.fault) behavior.clear();
@@ -47,6 +48,7 @@ export const createNode = <S extends GraphSources>(
       }
     },
   };
+  (node as { owner: NodeRecord }).owner = node;
   scheduler.initialize(() => {
     const invalid = node.sources.find(source => source.fault || source.disposed);
     if (invalid) throw invalid.fault ?? new ProjectionDisposedError();

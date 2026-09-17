@@ -682,4 +682,162 @@ describe('projection runtime', () => {
     runtime.dispose();
     expect(() => readable.current()).toThrow(ProjectionDisposedError);
   });
+
+  it('composes atomic multi-output groups with nested namespaces', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+      ])
+    );
+    const calls = vi.fn();
+    const graph = incremental.group(
+      [rows],
+      define => ({
+        node: {
+          shell: define.collection<string, number>(),
+          content: define.collection<string, string>(),
+        },
+        labels: define.collection<string, string>(),
+      }),
+      ({ sources, outputs }) => {
+        calls();
+        for (const [key, value] of sources[0]) {
+          outputs.node.shell.set(key, value * 2);
+          outputs.node.content.set(key, 'content');
+          outputs.labels.set(key, `label:${value}`);
+        }
+      }
+    );
+    const downstream = incremental.group(
+      [graph.node.shell, graph.labels],
+      define => ({
+        rendered: define.collection<string, string>(),
+      }),
+      ({ sources, outputs }) => {
+        for (const key of sources[0].keys())
+          outputs.rendered.set(key, `${sources[0].get(key)}:${sources[1].get(key)}`);
+      }
+    );
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(graph.node.shell).get('a')).toBe(2);
+    expect(runtime.get(graph.node.content).get('a')).toBe('content');
+    expect(runtime.get(graph.labels).get('a')).toBe('label:1');
+    expect(runtime.get(downstream.rendered).get('a')).toBe('2:label:1');
+    expect(calls).toHaveBeenCalledTimes(1);
+
+    const shellListener = vi.fn();
+    const contentListener = vi.fn();
+    const labelsListener = vi.fn();
+    runtime.readable(graph.node.shell).subscribe(shellListener);
+    runtime.readable(graph.node.content).subscribe(contentListener);
+    runtime.readable(graph.labels).subscribe(labelsListener);
+    runtime.update(rows, draft => draft.set('b', 3));
+    expect(calls).toHaveBeenCalledTimes(2);
+    expect(shellListener).toHaveBeenCalledTimes(1);
+    expect(contentListener).not.toHaveBeenCalled();
+    expect(labelsListener).toHaveBeenCalledTimes(1);
+    expect(runtime.get(downstream.rendered).get('b')).toBe('6:label:3');
+    runtime.dispose();
+  });
+
+  it('keeps all group outputs unchanged when a processor fails', () => {
+    const source = input(1);
+    const errors: unknown[] = [];
+    const group = incremental.group(
+      [source],
+      define => ({
+        first: define.collection<string, number>(),
+        second: define.collection<string, number>(),
+      }),
+      ({ sources, outputs }) => {
+        outputs.first.set('value', sources[0]);
+        if (sources[0] === 2) throw new Error('processor failed');
+        outputs.second.set('value', sources[0] * 10);
+      }
+    );
+    const runtime = createProjectionRuntime({ onError: error => errors.push(error) });
+    expect(runtime.get(group.first).get('value')).toBe(1);
+    expect(runtime.get(group.second).get('value')).toBe(10);
+    runtime.set(source, 2);
+    expect(errors).toHaveLength(1);
+    expect(() => runtime.get(group.first)).toThrow();
+    expect(() => runtime.get(group.second)).toThrow();
+    runtime.set(source, 3);
+    expect(runtime.get(group.first).get('value')).toBe(3);
+    expect(runtime.get(group.second).get('value')).toBe(30);
+    runtime.set(source, 1);
+    expect(runtime.get(group.first).get('value')).toBe(1);
+    expect(runtime.get(group.second).get('value')).toBe(10);
+    runtime.dispose();
+  });
+
+  it('releases a scoped group as one local lifetime', () => {
+    const source = input.collection(new Map([['a', 1]]));
+    const runtime = createProjectionRuntime();
+    const scope = runtime.scope();
+    const group = scope.incremental.group(
+      [source],
+      define => ({
+        values: define.collection<string, number>(),
+        doubled: define.collection<string, number>(),
+      }),
+      ({ sources, outputs }) => {
+        for (const [key, value] of sources[0]) {
+          outputs.values.set(key, value);
+          outputs.doubled.set(key, value * 2);
+        }
+      }
+    );
+    expect(scope.get(group.doubled).get('a')).toBe(2);
+    scope.dispose();
+    expect(() => scope.get(group.values)).toThrow(ProjectionDisposedError);
+    expect(runtime.get(source).get('a')).toBe(1);
+    runtime.dispose();
+  });
+
+  it('settles a downstream group only after all upstream groups publish', () => {
+    const left = input(1);
+    const right = input(10);
+    const leftGroup = incremental.group(
+      [left],
+      define => ({ value: define.collection<string, number>() }),
+      ({ sources, outputs }) => outputs.value.set('current', sources[0])
+    );
+    const rightGroup = incremental.group(
+      [right],
+      define => ({ value: define.collection<string, number>() }),
+      ({ sources, outputs }) => outputs.value.set('current', sources[0])
+    );
+    const combined = incremental.group(
+      [leftGroup.value, rightGroup.value],
+      define => ({ value: define.collection<string, string>() }),
+      ({ sources, outputs }) =>
+        outputs.value.set('current', `${sources[0].get('current')}:${sources[1].get('current')}`)
+    );
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(combined.value).get('current')).toBe('1:10');
+    runtime.batch(() => {
+      runtime.set(left, 2);
+      runtime.set(right, 20);
+    });
+    expect(runtime.get(combined.value).get('current')).toBe('2:20');
+    runtime.dispose();
+  });
+
+  it('rejects non-static or reused group output declarations', () => {
+    expect(() =>
+      incremental.group([] as const, _define => ({}) as never, (() => undefined) as never)
+    ).toThrow('cannot be empty');
+    expect(() =>
+      incremental.group(
+        [] as const,
+        define => {
+          const output = define.collection<string, number>();
+          return { first: output, second: output };
+        },
+        () => undefined
+      )
+    ).toThrow('cannot be reused');
+  });
 });

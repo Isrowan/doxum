@@ -18,11 +18,16 @@ import {
   input,
   ownDefinition,
   ownerOf,
+  isProjection,
   type Input,
   type Projection,
+  type IncrementalGroupDefinition,
 } from './definition';
 import {
   incremental,
+  type IncrementalGroupDefine,
+  type IncrementalGroupOutputTree,
+  type IncrementalGroupProcessor,
   type IncrementalCollectionProcessor,
   type IncrementalValueProcessor,
 } from './advanced';
@@ -309,6 +314,11 @@ export const createProjectionRuntime = (options?: {
     | CollectionWrite;
   type Materialized = MaterializedBase & ({ readonly kind: 'projection' } | InputWrite);
   const materialized = new WeakMap<object, Materialized>();
+  type MaterializedGroup = {
+    readonly definition: IncrementalGroupDefinition;
+    readonly nodes: readonly CollectionNode<string, unknown>[];
+  };
+  const groups = new WeakMap<object, MaterializedGroup>();
   let disposed = false;
   type ScopeState = {
     active: boolean;
@@ -317,7 +327,45 @@ export const createProjectionRuntime = (options?: {
   };
   const scopes = new Set<ScopeState>();
 
-  const materialize = (
+  let materialize: (
+    projection: Projection<unknown, unknown>,
+    requester?: ScopeState
+  ) => RuntimeValue;
+
+  const materializeGroup = (
+    definition: IncrementalGroupDefinition,
+    requester?: ScopeState
+  ): MaterializedGroup => {
+    const existing = groups.get(definition);
+    if (existing) return existing;
+    const owners = definition.projections
+      .map(projection => ownerOf(projection))
+      .filter((owner): owner is object => owner !== undefined);
+    if (owners.some(owner => owner !== requester))
+      throw new TypeError('Projection group belongs to another scope.');
+    const sources = Object.fromEntries(
+      Object.entries(definition.dependencies).map(([key, dependency]) => [
+        key,
+        sourceOf(materialize(dependency as never, requester)),
+      ])
+    );
+    const nodes = runtime.group({
+      sources,
+      outputs: definition.outputs,
+      build: definition.build as never,
+    });
+    const group = Object.freeze({ definition, nodes });
+    groups.set(definition, group);
+    for (let index = 0; index < definition.projections.length; index++)
+      materialized.set(definition.projections[index], {
+        kind: 'projection',
+        node: nodes[index],
+      });
+    if (requester) requester.materialized.push(definition);
+    return group;
+  };
+
+  materialize = (
     projection: Projection<unknown, unknown>,
     requester?: ScopeState
   ): RuntimeValue => {
@@ -329,6 +377,8 @@ export const createProjectionRuntime = (options?: {
     const old = materialized.get(projection);
     if (old) return old.node;
     const definition = definitionOf(projection);
+    if (definition.kind === 'incremental-group-output')
+      return materializeGroup(definition.group, requester).nodes[definition.output];
     let instance: RuntimeValue;
     let write: InputWrite | undefined;
     switch (definition.kind) {
@@ -677,7 +727,9 @@ export const createProjectionRuntime = (options?: {
           ? definition.dependencies
           : definition.kind === 'incremental-value' || definition.kind === 'incremental-collection'
             ? Object.values(definition.dependencies)
-            : [];
+            : definition.kind === 'incremental-group-output'
+              ? Object.values(definition.group.dependencies)
+              : [];
       for (const dependency of dependencies) {
         const dependencyOwner = ownerOf(dependency as Projection<unknown, unknown>);
         if (dependencyOwner && dependencyOwner !== state)
@@ -696,6 +748,13 @@ export const createProjectionRuntime = (options?: {
     );
     const scopedDerive: typeof derive = (dependencies, compute, equality) =>
       own(derive(dependencies, compute, equality));
+    const ownOutputTree = <T>(tree: T): T => {
+      if (isProjection(tree)) return own(tree as never) as T;
+      if (!tree || typeof tree !== 'object')
+        throw new TypeError('Incremental group output tree must be an object.');
+      for (const value of Object.values(tree as Record<string, unknown>)) ownOutputTree(value);
+      return tree;
+    };
     const scopedIncremental: typeof incremental = Object.assign(
       <const D extends readonly Projection<unknown, unknown>[], T>(
         dependencies: D,
@@ -706,6 +765,14 @@ export const createProjectionRuntime = (options?: {
           dependencies: D,
           processor: IncrementalCollectionProcessor<D, K, V>
         ) => own(incremental.collection(dependencies, processor)),
+        group: <
+          const D extends readonly Projection<unknown, unknown>[],
+          const O extends IncrementalGroupOutputTree,
+        >(
+          dependencies: D,
+          defineOutputs: (define: IncrementalGroupDefine) => O,
+          processor: IncrementalGroupProcessor<D, O>
+        ) => ownOutputTree(incremental.group(dependencies, defineOutputs, processor)),
       }
     );
     function scopeReadable<T>(projection: Projection<T, unknown>): Readable<T>;
@@ -784,6 +851,13 @@ export const createProjectionRuntime = (options?: {
         state.active = false;
         state.subscriptions.forEach(unsubscribe => unsubscribe());
         for (const definition of state.materialized.reverse()) {
+          const group = groups.get(definition);
+          if (group) {
+            runtime.releaseNode(group.nodes[0]);
+            groups.delete(definition);
+            group.definition.projections.forEach(projection => materialized.delete(projection));
+            continue;
+          }
           const record = materialized.get(definition);
           if (!record) continue;
           runtime.releaseNode(record.node);

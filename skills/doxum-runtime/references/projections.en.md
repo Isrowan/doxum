@@ -70,6 +70,24 @@ const total = incremental([tasks], ({ sources, previous, state }) => {
 const doubled = incremental.collection([tasks], ({ sources, output }) => {
   for (const [id, task] of sources[0]) output.set(id, task.value * 2);
 });
+
+const render = incremental.group(
+  [tasks],
+  define => ({
+    node: {
+      shell: define.collection<string, Shell>(),
+      content: define.collection<string, Content>(),
+    },
+    labels: define.collection<string, Label>(),
+  }),
+  ({ sources, outputs }) => {
+    for (const [id, task] of sources[0]) {
+      outputs.node.shell.set(id, makeShell(task));
+      outputs.node.content.set(id, makeContent(task));
+      outputs.labels.set(id, makeLabel(task));
+    }
+  }
+);
 ```
 
 Both processor contexts expose `sources`, a dependency-aligned `changes` tuple,
@@ -88,6 +106,12 @@ an explicit full-collection read.
 `set`, `remove`, and `order`; the Runtime validates and seals them after
 the synchronous callback, computes keyed transitions and publishes one immutable
 map-like value. Reset or fault recovery is internal.
+`incremental.group(...)` is the composition boundary for several named keyed
+outputs. Its nested namespace is static API organization, not another graph or
+runtime concept. Every leaf is an ordinary `Projection`; one processor execution
+publishes all changed leaves atomically, and downstream processors depend on
+those leaves directly. Reading any leaf materializes the whole group, while
+scope disposal releases the group and its retained state together.
 
 ## React selector tracking
 
