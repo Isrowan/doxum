@@ -1,7 +1,7 @@
 # Projection API
 
-Projection composition 与 collection observation 的最终目标态、实现边界和删除清单见根目录的
-[Projection Composition & Collection Observation 最终方案](../PROJECTION_COMPOSITION_TARGET_STATE.md)。
+Projection 的最终 producer/output 架构、实现边界和删除清单见根目录的
+[Projection Architecture Target State](../PROJECTION_ARCHITECTURE_TARGET_STATE.md)。
 
 Projection definitions are lazy. Root declarations are reusable across Runtimes;
 scope declarations belong to one local lifetime. A `Projection` contains no
@@ -105,19 +105,20 @@ stop();
 runtime.dispose();
 ```
 
-The Runtime has one graph and these application-facing operations:
+The Runtime is the single owner of materialized producers, source boundaries,
+scheduling and consumer readables. Its application-facing operations are:
 
-| Operation                                    | Meaning                                        |
-| -------------------------------------------- | ---------------------------------------------- |
-| `get(projection)`                            | Read the last published value.                 |
-| `readable(projection, selector?, equality?)` | Create a live Runtime-owned readable boundary. |
-| `set(input, value)`                          | Write a Runtime-local input.                   |
-| `update(collectionInput, edit)`              | Atomically edit keyed input entries.           |
-| `batch(options?, run)`                       | Settle one complete application action once.   |
-| `scope()`                                    | Create a local lifetime inside the same graph. |
-| `dispose()`                                  | Release graph nodes and source attachments.    |
+| Operation                                    | Meaning                                                |
+| -------------------------------------------- | ------------------------------------------------------ |
+| `get(projection)`                            | Read the last published value.                         |
+| `readable(projection, selector?, equality?)` | Create a live Runtime-owned readable boundary.         |
+| `set(input, value)`                          | Write a Runtime-local input.                           |
+| `update(collectionInput, edit)`              | Atomically edit keyed input entries.                   |
+| `batch(options?, run)`                       | Settle one complete application action once.           |
+| `scope()`                                    | Create a local producer lifetime in this Runtime.      |
+| `dispose()`                                  | Release materialized producers and source attachments. |
 
-Graph revisions, rebuild controls, per-item handles, manual flush and release
+Output revisions, rebuild controls, per-item handles, manual flush and release
 operations are internal publication facts. A `Readable` exposes only its own
 publication revision for external-store integrations.
 
@@ -136,12 +137,12 @@ scope.dispose();
 ```
 
 The scope provides the same `get`, `readable`, `set`, `update` and `batch`
-operations, but delegates to its parent Runtime's one graph and one scheduler.
+operations, but uses its parent Runtime's scheduler and materialization cache.
 Only definitions made through `scope.input`, `scope.derive`, and
 `scope.incremental` belong to that scope. They may depend directly on root
 definitions; sibling and root projections cannot depend on scoped definitions.
 Disposal invalidates scoped handles, unsubscribes scope readables, and releases
-only local materialized nodes and processor state. It does not dispose their
+only local materialized producers and processor state. It does not dispose their
 root-owned dependencies. `ProjectionProvider` also accepts a scope as its value.
 
 ### Keyed input
@@ -192,7 +193,7 @@ equality everywhere.
 
 ## The one collection transition protocol
 
-Every collection source and collection node publishes the same exact net
+Every collection source and collection output publishes the same exact net
 transition shape:
 
 ```ts
@@ -276,13 +277,14 @@ const shell = incremental.collection([render.node.shell], ({ sources, output }) 
 });
 ```
 
-The namespace is a frozen static object tree, not a projection, runtime,
-scheduler, transaction, or event bus. Only output leaves can be read, composed,
-or subscribed. Any leaf first read materializes the whole group so one
-processor cannot expose different output generations. Split groups when
-outputs do not share computation or atomicity requirements. Group outputs can
-also be declared through `scope.incremental.group`; scope disposal releases the
-whole group and its retained state together.
+The namespace is a frozen static object tree, not a projection, producer,
+runtime, scheduler, transaction, or event bus. Only output leaves can be read,
+composed, or subscribed. Every leaf points to one shared processor producer, so
+reading any leaf materializes that producer once and every output observes the
+same generation. Split groups when outputs do not share computation or atomicity
+requirements. Group outputs can also be declared through
+`scope.incremental.group`; scope disposal releases that producer and its retained
+state once.
 
 `define.value<T>(equality?)` has one borrowed draft operation: `set(value)`.
 During the initial build and every rebuild each value leaf must be set exactly as

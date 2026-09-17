@@ -4,14 +4,14 @@ import { assertScope } from './scheduler';
 
 const unset = Symbol('projection-value-unset');
 
-export type ValueEvaluation<T> = {
+export type ValueOutputEvaluation<T> = {
   readonly previous: T | undefined;
   readonly next: () => T | undefined;
   readonly output: { set(value: T): void };
 };
 
-export type ValueState<T> = {
-  begin(active: () => boolean, reset: boolean): ValueEvaluation<T>;
+export type ValueOutputState<T> = {
+  begin(active: () => boolean, initialize: boolean): ValueOutputEvaluation<T>;
   seal(reset: boolean, isEqual: (previous: T, next: T) => boolean): boolean;
   context(active: () => boolean, cause: unknown): ValueContext<T>;
   current(check: () => void): T;
@@ -25,8 +25,8 @@ export type ValueState<T> = {
   unsubscribe(listener: () => void): void;
 };
 
-/** Shared staged publication state for ordinary value nodes and group value leaves. */
-export const createValueState = <T>(): ValueState<T> => {
+/** Owns staged and published state for one scalar Projection output. */
+export const createValueOutput = <T>(): ValueOutputState<T> => {
   let value!: T;
   let staged: T | typeof unset = unset;
   let next!: T;
@@ -36,17 +36,17 @@ export const createValueState = <T>(): ValueState<T> => {
   let reset = false;
   const listeners = new Set<() => void>();
 
-  const begin = (active: () => boolean, nextReset: boolean): ValueEvaluation<T> => {
+  const begin = (active: () => boolean, initialize: boolean): ValueOutputEvaluation<T> => {
     staged = unset;
     next = value;
     changed = false;
-    reset = nextReset;
+    reset = initialize;
     return {
       previous: initialized ? value : undefined,
       next: () => {
         assertScope(active);
         if (staged !== unset) return staged;
-        return nextReset ? undefined : initialized ? value : undefined;
+        return initialize ? undefined : initialized ? value : undefined;
       },
       output: Object.freeze({
         set: (candidate: T) => {
@@ -58,10 +58,10 @@ export const createValueState = <T>(): ValueState<T> => {
   };
 
   const seal = (nextReset: boolean, isEqual: (previous: T, next: T) => boolean): boolean => {
-    if (nextReset && staged === unset)
+    if (reset && staged === unset)
       throw new TypeError('Value output must be initialized on reset.');
     if (staged === unset) {
-      reset = false;
+      reset = nextReset;
       changed = false;
       next = value;
       return false;
@@ -81,7 +81,7 @@ export const createValueState = <T>(): ValueState<T> => {
       return Object.freeze({
         kind: 'value' as const,
         value: next,
-        revision: revision + (changed ? 1 : 0),
+        revision,
         reset,
         cause,
       });

@@ -1,38 +1,52 @@
-import type { ObserverError } from '../runtime/contract';
-import { ProjectionDisposedError, ProjectionError, type BatchContext } from './contract';
 import { profile } from '../profile';
+import type { ObserverError, Unsubscribe } from '../runtime/contract';
+import type { BatchContext, CollectionChange, SourceContext } from './contract';
+import { ProjectionDisposedError, ProjectionError } from './contract';
 
 type BatchOptions = { readonly cause?: unknown };
 
-export type SourceRecord = {
-  readonly consumers: Set<NodeRecord>;
-  context(active: () => boolean): unknown;
-  revision(): number;
-  reset(): boolean;
-  shouldSettle?(): boolean;
+type ProducerBase = {
+  readonly name: string;
+  readonly outputs: readonly OutputRecord[];
   fault: ProjectionError | undefined;
   disposed: boolean;
   clear(): void;
-};
-export type OutputRecord = SourceRecord & {
-  readonly owner: NodeRecord;
-  emit(call: (listener: () => void) => void): void;
-};
-export type NodeRecord = SourceRecord & {
-  readonly owner: NodeRecord;
-  readonly order: number;
-  readonly name: string;
-  readonly sources: readonly SourceRecord[];
-  readonly outputs?: readonly OutputRecord[];
-  readonly changedOutputs?: () => readonly OutputRecord[];
-  evaluate(build: boolean): boolean;
-  publish(): void;
-  emit(call: (listener: () => void) => void): void;
   release(): void;
 };
 
-// Sources and nodes share one registry. Public structural lookalikes are never accepted.
-export const projectionHandles = new WeakSet<object>();
+export type OutputRecord = {
+  readonly kind: 'value' | 'collection';
+  readonly owner: ProducerRecord;
+  readonly consumers: Set<ProcessorRecord>;
+  context(active: () => boolean): SourceContext;
+  current(): unknown;
+  revision(): number;
+  reset(): boolean;
+  subscribe(listener: (change?: CollectionChange<string, unknown>) => void): Unsubscribe;
+  emit(call: (listener: () => void) => void): void;
+  clear(): void;
+  release(): void;
+};
+
+export type SourceBoundaryRecord = ProducerBase & {
+  readonly kind: 'source';
+  readonly outputs: readonly [OutputRecord];
+  pendingCause(): unknown;
+  recovering(): boolean;
+  prepare(cause: unknown): { readonly changed: boolean; readonly force: boolean };
+  publish(): void;
+};
+
+export type ProcessorRecord = ProducerBase & {
+  readonly kind: 'processor';
+  readonly dependencies: readonly OutputRecord[];
+  readonly order: number;
+  evaluate(reset: boolean, cause: unknown): readonly OutputRecord[];
+  publish(): void;
+};
+
+export type ProducerRecord = SourceBoundaryRecord | ProcessorRecord;
+
 export const createScheduler = (onError: (error: ProjectionError) => void) => {
   let disposed = false;
   let depth = 0;
@@ -40,17 +54,18 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   let activeBatch: BatchContext | undefined;
   let phase: 'idle' | 'compute' | 'notify' = 'idle';
   let sequence = 0;
-  const records = new Map<object, SourceRecord>();
-  const nodes = new Set<NodeRecord>();
-  const pending = new Set<SourceRecord>();
-  const heap: NodeRecord[] = [];
-  const queued = new Set<NodeRecord>();
-  const completed: NodeRecord[] = [];
+  const sources = new Set<SourceBoundaryRecord>();
+  const processors = new Set<ProcessorRecord>();
+  const pendingSources = new Set<SourceBoundaryRecord>();
+  const heap: ProcessorRecord[] = [];
+  const queued = new Set<ProcessorRecord>();
+  const completed = new Set<ProcessorRecord>();
   const emissions = new Set<OutputRecord>();
   const errors: ProjectionError[] = [];
   let reportingFailures: unknown[] = [];
   const guards = new Set<(locked: boolean) => void>();
   const cleanups = new Set<() => void>();
+
   const assertActive = () => {
     if (disposed) throw new ProjectionDisposedError();
   };
@@ -60,120 +75,164 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       throw new Error('Projection cannot be re-entered during processing or notification.');
   };
   const lock = (value: boolean) => guards.forEach(guard => guard(value));
-  const enqueue = (node: NodeRecord) => {
-    if (node.disposed || queued.has(node)) return;
-    queued.add(node);
+
+  const enqueue = (processor: ProcessorRecord) => {
+    if (processor.disposed || queued.has(processor)) return;
+    queued.add(processor);
     profile.projection('scheduledNodes');
-    let i = heap.length;
-    heap.push(node);
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (heap[p].order < node.order) break;
-      heap[i] = heap[p];
-      i = p;
+    let index = heap.length;
+    heap.push(processor);
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (heap[parent].order < processor.order) break;
+      heap[index] = heap[parent];
+      index = parent;
     }
-    heap[i] = node;
+    heap[index] = processor;
   };
-  const pop = () => {
+
+  const pop = (): ProcessorRecord => {
     const first = heap[0];
     const last = heap.pop()!;
     if (heap.length) {
-      let i = 0;
-      while (i * 2 + 1 < heap.length) {
-        let c = i * 2 + 1;
-        if (c + 1 < heap.length && heap[c + 1].order < heap[c].order) c++;
-        if (last.order < heap[c].order) break;
-        heap[i] = heap[c];
-        i = c;
+      let index = 0;
+      while (index * 2 + 1 < heap.length) {
+        let child = index * 2 + 1;
+        if (child + 1 < heap.length && heap[child + 1].order < heap[child].order) child++;
+        if (last.order < heap[child].order) break;
+        heap[index] = heap[child];
+        index = child;
       }
-      heap[i] = last;
+      heap[index] = last;
     }
     return first;
   };
+
+  const revisionsOf = (producer: ProducerRecord): readonly number[] =>
+    producer.kind === 'processor'
+      ? producer.dependencies.map(output => output.revision())
+      : producer.outputs.map(output => output.revision());
+
   const errorFor = (
-    node: NodeRecord,
+    producer: ProducerRecord,
     cause: unknown,
-    kind: ProjectionError['phase'] = 'processor'
-  ) =>
-    new ProjectionError(
-      kind,
-      node.name,
-      node.sources.map(source => source.revision()),
-      cause
-    );
-  const capture = (source: SourceRecord) => {
+    kind: ProjectionError['phase'] = producer.kind === 'source' ? 'source' : 'processor'
+  ) => new ProjectionError(kind, producer.name, revisionsOf(producer), cause);
+
+  const capture = (source: SourceBoundaryRecord) => {
     if (disposed) return;
     if (phase !== 'idle') {
-      source.fault = new ProjectionError(
-        'source',
-        'reentrant source',
-        [source.revision()],
-        new Error('Source changed while projection was running.')
+      source.fault = errorFor(
+        source,
+        new Error('Source changed while projection was running.'),
+        'source'
       );
       errors.push(source.fault);
       throw source.fault;
     }
-    pending.add(source);
+    pendingSources.add(source);
     profile.projection('sourceEvents');
     if (source.fault) errors.push(source.fault);
   };
+
+  const settleCause = (): unknown => {
+    if (activeBatch?.cause !== undefined) return activeBatch.cause;
+    for (const source of pendingSources) {
+      const cause = source.pendingCause();
+      if (cause !== undefined) return cause;
+    }
+    return undefined;
+  };
+
   const settle = () => {
     if (disposed || depth || phase !== 'idle') return;
     phase = 'compute';
     lock(true);
+    const cause = settleCause();
     try {
-      pending.forEach(source => {
-        if (source.shouldSettle?.() ?? true) source.consumers.forEach(enqueue);
-      });
-      while (heap.length) {
-        const node = pop();
-        if (node.disposed) continue;
-        const wasFaulted = node.fault !== undefined;
-        profile.projection('processedNodes');
+      for (const source of pendingSources) {
+        if (source.disposed) continue;
+        const wasFaulted = source.fault !== undefined;
         let changed = false;
-        const blocked = node.sources.find(source => source.fault || source.disposed);
-        if (blocked) {
-          node.fault = errorFor(node, blocked.fault ?? new ProjectionDisposedError(), 'blocked');
-        } else {
-          const build = wasFaulted || node.sources.some(source => source.reset());
+        let force = false;
+        if (!source.fault || source.recovering()) {
           try {
-            changed = node.evaluate(build);
-            const failure = node.sources.find(source => source.fault)?.fault;
-            if (failure) throw failure;
-            node.fault = undefined;
-          } catch (cause) {
-            const error = errorFor(node, cause);
-            node.fault = error;
-            if (!build) {
+            const prepared = source.prepare(cause);
+            changed = prepared.changed;
+            force = prepared.force;
+            source.fault = undefined;
+          } catch (failure) {
+            source.fault = errorFor(source, failure, 'source');
+            errors.push(source.fault);
+          }
+        }
+        const recovered = wasFaulted && !source.fault;
+        if (changed) source.publish();
+        if (source.fault || changed || force || recovered) {
+          const output = source.outputs[0];
+          emissions.add(output);
+          output.consumers.forEach(enqueue);
+        }
+      }
+
+      while (heap.length) {
+        const processor = pop();
+        if (processor.disposed) continue;
+        const wasFaulted = processor.fault !== undefined;
+        profile.projection('processedNodes');
+        let changedOutputs: readonly OutputRecord[] = Object.freeze([]);
+        const blocked = processor.dependencies.find(
+          output => output.owner.fault || output.owner.disposed
+        );
+        if (blocked) {
+          processor.fault = errorFor(
+            processor,
+            blocked.owner.fault ?? new ProjectionDisposedError(),
+            'blocked'
+          );
+        } else {
+          const reset = wasFaulted || processor.dependencies.some(output => output.reset());
+          try {
+            changedOutputs = processor.evaluate(reset, cause);
+            const dependencyFailure = processor.dependencies.find(output => output.owner.fault)
+              ?.owner.fault;
+            if (dependencyFailure) throw dependencyFailure;
+            processor.fault = undefined;
+          } catch (failure) {
+            const error = errorFor(processor, failure);
+            processor.fault = error;
+            if (!reset) {
               try {
-                changed = node.evaluate(true);
-                const failure = node.sources.find(source => source.fault)?.fault;
-                if (failure) throw failure;
-                node.fault = undefined;
+                changedOutputs = processor.evaluate(true, cause);
+                const dependencyFailure = processor.dependencies.find(output => output.owner.fault)
+                  ?.owner.fault;
+                if (dependencyFailure) throw dependencyFailure;
+                processor.fault = undefined;
                 errors.push(error);
-              } catch (cause) {
-                node.fault = errorFor(node, cause);
-                errors.push(node.fault);
+              } catch (rebuildFailure) {
+                processor.fault = errorFor(processor, rebuildFailure);
+                errors.push(processor.fault);
               }
             } else errors.push(error);
           }
         }
-        completed.push(node);
-        const outputs = node.changedOutputs?.() ?? (changed ? [node as OutputRecord] : []);
-        const affected = node.fault
-          ? (node.outputs ?? [node as OutputRecord])
-          : outputs.length
-            ? outputs
-            : wasFaulted
-              ? (node.outputs ?? [node as OutputRecord])
-              : [];
-        if (affected.length) {
-          profile.projection('publishedNodes');
-          node.publish();
-          affected.forEach(output => {
+        completed.add(processor);
+        const recovered = wasFaulted && !processor.fault;
+        if (processor.fault) {
+          processor.outputs.forEach(output => {
             emissions.add(output);
             output.consumers.forEach(enqueue);
           });
+        } else {
+          if (changedOutputs.length) {
+            processor.publish();
+            changedOutputs.forEach(output => emissions.add(output));
+          }
+          const propagated = recovered ? processor.outputs : changedOutputs;
+          propagated.forEach(output => output.consumers.forEach(enqueue));
+        }
+        if (processor.fault || changedOutputs.length) {
+          profile.projection('publishedNodes');
         }
       }
     } finally {
@@ -181,9 +240,10 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       phase = 'idle';
     }
   };
+
   const flush = (): readonly ObserverError[] => {
     if (disposed || depth) return [];
-    if (pending.size || completed.length) profile.projection('flushes');
+    if (pendingSources.size || completed.size) profile.projection('flushes');
     phase = 'notify';
     lock(true);
     const reportFailures: unknown[] = [];
@@ -214,11 +274,11 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         ...reportFailures.map(error => Object.freeze({ phase: 'listener' as const, error })),
       ]);
     } finally {
-      pending.forEach(source => source.clear());
-      completed.forEach(node => node.clear());
-      pending.clear();
+      pendingSources.forEach(source => source.clear());
+      completed.forEach(processor => processor.clear());
+      pendingSources.clear();
       queued.clear();
-      completed.length = 0;
+      completed.clear();
       emissions.clear();
       errors.length = 0;
       reportingFailures = reportFailures;
@@ -226,6 +286,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       phase = 'idle';
     }
   };
+
   const run = () => {
     settle();
     const result = flush();
@@ -234,6 +295,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     if (failures.length) throw new AggregateError(failures, 'Projection error reporter failed.');
     return result;
   };
+
   const batch = <T>(optionsOrCallback: BatchOptions | (() => T), maybeCallback?: () => T): T => {
     assertIdle();
     const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
@@ -271,6 +333,26 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       }
     }
   };
+
+  const releaseProducer = (producer: ProducerRecord) => {
+    assertIdle();
+    if (producer.outputs.some(output => output.consumers.size))
+      throw new Error('Projection producer is still used by another processor.');
+    producer.disposed = true;
+    if (producer.kind === 'processor') {
+      producer.dependencies.forEach(output => output.consumers.delete(producer));
+      processors.delete(producer);
+      queued.delete(producer);
+      completed.delete(producer);
+    } else {
+      sources.delete(producer);
+      pendingSources.delete(producer);
+    }
+    producer.release();
+    producer.clear();
+    producer.outputs.forEach(output => emissions.delete(output));
+  };
+
   return {
     assertActive,
     assertIdle,
@@ -278,68 +360,28 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     settle,
     flush,
     run,
-    records,
     guards,
     cleanups,
     get active() {
       return !disposed;
     },
-    register(handle: object, record: SourceRecord) {
+    addSource(source: SourceBoundaryRecord) {
       assertIdle();
-      records.set(handle, record);
-      projectionHandles.add(handle);
+      sources.add(source);
     },
-    unregisterSource(handle: object) {
-      const record = records.get(handle);
-      if (record) {
-        assertIdle();
-        if (record.consumers.size) throw new Error('Projection source is still used by a node.');
-        record.disposed = true;
-        pending.delete(record);
-        record.clear();
-        records.delete(handle);
-      }
-    },
-    releaseNode(handle: object) {
+    addProcessor(processor: ProcessorRecord) {
       assertIdle();
-      const record = records.get(handle);
-      const node =
-        record && 'owner' in record
-          ? (record as SourceRecord & { readonly owner: NodeRecord }).owner
-          : (record as NodeRecord | undefined);
-      if (!node || !nodes.has(node)) throw new Error('Unknown projection node.');
-      if ((node.outputs ?? [node as OutputRecord]).some(output => output.consumers.size))
-        throw new Error('Projection node is still used by another node.');
-      node.disposed = true;
-      node.sources.forEach(source => source.consumers.delete(node));
-      node.release();
-      node.clear();
-      nodes.delete(node);
-      for (const [registered, value] of records)
-        if (value === node || ('owner' in value && value.owner === node))
-          records.delete(registered);
-      pending.delete(node);
-      queued.delete(node);
-      for (const output of node.outputs ?? [node as OutputRecord]) emissions.delete(output);
+      processors.add(processor);
+      processor.dependencies.forEach(output => output.consumers.add(processor));
     },
-    source(handle: object) {
-      assertActive();
-      const source = records.get(handle);
-      if (!source || source.disposed)
-        throw new Error('Unknown, disposed, or foreign projection source.');
-      return source;
-    },
-    addNode(node: NodeRecord) {
-      nodes.add(node);
-      node.sources.forEach(source => source.consumers.add(node));
-    },
+    releaseProducer,
     order: () => sequence++,
-    initialize<T>(run: () => T): T {
+    initialize<T>(callback: () => T): T {
       assertIdle();
       phase = 'compute';
       lock(true);
       try {
-        return run();
+        return callback();
       } finally {
         lock(false);
         phase = 'idle';
@@ -360,22 +402,28 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         }
       });
       cleanups.clear();
-      nodes.forEach(node => {
-        node.disposed = true;
-        node.release();
-        node.consumers.clear();
+      processors.forEach(processor => {
+        processor.disposed = true;
+        try {
+          processor.release();
+        } catch (error) {
+          failures.push(error);
+        }
       });
-      records.forEach(source => {
+      sources.forEach(source => {
         source.disposed = true;
-        source.consumers.clear();
-        source.clear();
+        try {
+          source.release();
+        } catch (error) {
+          failures.push(error);
+        }
       });
-      nodes.clear();
-      records.clear();
-      pending.clear();
+      processors.clear();
+      sources.clear();
+      pendingSources.clear();
       heap.length = 0;
-      completed.length = 0;
       queued.clear();
+      completed.clear();
       emissions.clear();
       guards.clear();
       errors.length = 0;
@@ -384,7 +432,9 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     },
   };
 };
+
 export type Scheduler = ReturnType<typeof createScheduler>;
+
 export const assertSynchronous = (value: unknown): void => {
   if (
     value != null &&
@@ -394,6 +444,7 @@ export const assertSynchronous = (value: unknown): void => {
   )
     throw new TypeError('Projection callbacks must be synchronous.');
 };
+
 export const assertScope = (active: () => boolean) => {
   if (!active()) throw new Error('Projection reader or writer is no longer active.');
 };

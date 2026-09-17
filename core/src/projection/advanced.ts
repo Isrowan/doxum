@@ -1,19 +1,13 @@
-import type { Projection } from './definition';
-import {
-  defineIncrementalCollection,
-  defineIncrementalGroup,
-  defineIncrementalValue,
-  definitionOf,
-} from './definition';
+import { collectionView } from './collection-output';
+import type { CollectionChange, CollectionDraft, CollectionRead, SourceContext } from './contract';
 import type {
-  CollectionChange,
-  CollectionDraft,
-  CollectionRead,
-  GroupProcess,
-  GroupOutputSpec,
-  GraphSources,
-} from './contract';
-import { snapshot } from '../access/scope';
+  CollectionOutputEvaluation,
+  OutputDefinition,
+  OutputEvaluation,
+  Projection,
+  Rebuild,
+} from './definition';
+import { defineProcessor, projectionRef } from './definition';
 import { assertSynchronous } from './scheduler';
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
@@ -39,7 +33,7 @@ export type IncrementalValueContext<D extends readonly Projection<unknown, unkno
 
 export type IncrementalValueProcessor<D extends readonly Projection<unknown, unknown>[], T> = (
   context: IncrementalValueContext<D, T>
-) => T | { readonly kind: 'rebuild' };
+) => T | Rebuild;
 
 export type IncrementalCollectionContext<
   D extends readonly Projection<unknown, unknown>[],
@@ -60,11 +54,7 @@ export type IncrementalCollectionProcessor<
   D extends readonly Projection<unknown, unknown>[],
   K extends string,
   V,
-> = (context: IncrementalCollectionContext<D, K, V>) => void | { readonly kind: 'rebuild' };
-
-type DependencyMap<D extends readonly Projection<unknown, unknown>[]> = {
-  readonly [K in keyof D as `d${Extract<K, number>}`]: D[K];
-};
+> = (context: IncrementalCollectionContext<D, K, V>) => void | Rebuild;
 
 declare const groupOutput: unique symbol;
 
@@ -130,141 +120,67 @@ export type IncrementalGroupContext<
 export type IncrementalGroupProcessor<
   D extends readonly Projection<unknown, unknown>[],
   O extends GroupOutputShape,
-> = (context: IncrementalGroupContext<D, O>) => void | { readonly kind: 'rebuild' };
+> = (context: IncrementalGroupContext<D, O>) => void | Rebuild;
 
 const resetCollectionChange = Object.freeze({ kind: 'reset' as const });
 
-const isRebuild = (value: unknown): value is { readonly kind: 'rebuild' } =>
+const isRebuild = (value: unknown): value is Rebuild =>
   value !== null &&
   typeof value === 'object' &&
   (value as { readonly kind?: unknown }).kind === 'rebuild';
 
-const collectionChange = (source: unknown): CollectionChange<string, unknown> | undefined => {
-  if (!source || typeof source !== 'object' || !('kind' in source)) return undefined;
-  if (source.kind !== 'collection') return undefined;
-  return (source as { readonly change?: CollectionChange<string, unknown> }).change;
-};
-
-const sourceCause = (sources: Record<string, unknown>): unknown => {
-  for (const source of Object.values(sources)) {
-    if (source && typeof source === 'object' && 'kind' in source) {
-      const cause = (source as { readonly cause?: unknown }).cause;
-      if (cause !== undefined) return cause;
-    }
-  }
-  return undefined;
-};
-
-const collectionView = <K extends string, V>(read: CollectionRead<K, V>): ReadonlyMap<K, V> => {
-  const entries = function* (): IterableIterator<[K, V]> {
-    for (const key of read.ids()) yield [key, read.get(key) as V];
-  };
-  const values = function* (): IterableIterator<V> {
-    for (const key of read.ids()) yield read.get(key) as V;
-  };
-  const view: ReadonlyMap<K, V> = {
-    get: key => read.get(key),
-    has: key => read.has(key),
-    get size() {
-      return read.ids().length;
-    },
-    keys: () => read.ids()[Symbol.iterator](),
-    values,
-    entries,
-    forEach: (callback, thisArg) => {
-      for (const key of read.ids()) callback.call(thisArg, read.get(key) as V, key, view);
-    },
-    [Symbol.iterator]: entries,
-  };
-  return Object.freeze(view);
-};
-
-const publicSource = (source: unknown): unknown => {
-  if (!source || typeof source !== 'object') return source;
-  if (!('kind' in source)) return source;
-  if (source.kind === 'value') return (source as unknown as { readonly value: unknown }).value;
-  if (source.kind === 'document')
-    return snapshot((source as unknown as { readonly read: unknown }).read as never);
-  if (source.kind === 'collection') {
-    const read = (source as unknown as { readonly read: CollectionRead<string, unknown> }).read;
-    return collectionView(read);
-  }
-  return source;
-};
+const publicValue = (source: SourceContext): unknown =>
+  source.kind === 'value' ? source.value : collectionView(source.read);
 
 const publicInputs = (
-  sources: Record<string, unknown>,
-  initial = false
-): { readonly values: readonly unknown[]; readonly changes: readonly unknown[] } => {
-  const values: unknown[] = [];
-  const changes: unknown[] = [];
-  for (const key of Object.keys(sources).sort(
-    (left, right) => Number(left.slice(1)) - Number(right.slice(1))
-  )) {
-    const source = sources[key];
-    values.push(publicSource(source));
-    changes.push(
-      initial &&
-        source &&
-        typeof source === 'object' &&
-        'kind' in source &&
-        source.kind === 'collection'
-        ? resetCollectionChange
-        : collectionChange(source)
-    );
-  }
-  return { values, changes };
+  sources: readonly SourceContext[],
+  reset: boolean
+): { readonly values: readonly unknown[]; readonly changes: readonly unknown[] } => ({
+  values: Object.freeze(sources.map(publicValue)),
+  changes: Object.freeze(
+    sources.map(source =>
+      source.kind === 'collection' ? (reset ? resetCollectionChange : source.change) : undefined
+    )
+  ),
+});
+
+const validateDependencies = (dependencies: readonly Projection<unknown, unknown>[]) => {
+  if (!Array.isArray(dependencies))
+    throw new TypeError('Incremental dependencies must be projections.');
+  dependencies.forEach(projectionRef);
 };
 
 function createIncrementalValue<const D extends readonly Projection<unknown, unknown>[], T>(
   dependencies: D,
   processor: IncrementalValueProcessor<D, T>
 ): Projection<T> {
-  const dependencyMap = dependenciesOf(dependencies);
-  const build = (sources: Record<string, unknown>) => {
-    const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    let current!: T;
-    const publicInputsForBuild = publicInputs(sources, true);
-    const result = processor({
-      sources: publicInputsForBuild.values as ProjectionValues<D>,
-      changes: publicInputsForBuild.changes as ProjectionChanges<D>,
-      previous: undefined,
-      reset: true,
-      cause: sourceCause(sources),
-      state,
-    });
-    if (isRebuild(result)) throw new TypeError('Initial incremental processor cannot rebuild.');
-    current = result as T;
-    return {
-      value: current,
-      update: (nextSources: Record<string, unknown>) => {
-        const publicInputsForUpdate = publicInputs(nextSources);
-        const next = processor({
-          sources: publicInputsForUpdate.values as ProjectionValues<D>,
-          changes: publicInputsForUpdate.changes as ProjectionChanges<D>,
-          previous: current,
-          reset: false,
-          cause: sourceCause(nextSources),
-          state,
-        });
-        if (isRebuild(next)) return next;
-        current = next as T;
-        return { kind: 'changed', value: current } as const;
-      },
-    };
-  };
-  return defineIncrementalValue({ dependencies: dependencyMap, build: build as never });
-}
-
-function dependenciesOf<D extends readonly Projection<unknown, unknown>[]>(
-  dependencies: D
-): GraphSources {
-  if (!Array.isArray(dependencies))
-    throw new TypeError('Incremental dependencies must be projections.');
-  dependencies.forEach(dependency => definitionOf(dependency));
-  return Object.freeze(
-    Object.fromEntries(dependencies.map((dependency, index) => [`d${index}`, dependency]))
-  ) as unknown as GraphSources;
+  validateDependencies(dependencies);
+  const [projection] = defineProcessor({
+    dependencies,
+    outputs: [{ kind: 'value', equality: Object.is }],
+    create: () => {
+      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      return {
+        evaluate: evaluation => {
+          const output = evaluation.outputs[0];
+          if (output.kind !== 'value') throw new Error('Incremental value output is invalid.');
+          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
+          const result = processor({
+            sources: publicInput.values as ProjectionValues<D>,
+            changes: publicInput.changes as ProjectionChanges<D>,
+            previous: output.previous as T | undefined,
+            reset: evaluation.reset,
+            cause: evaluation.cause,
+            state,
+          });
+          assertSynchronous(result);
+          if (isRebuild(result)) return result;
+          output.output.set(result as T);
+        },
+      };
+    },
+  });
+  return projection as Projection<T>;
 }
 
 function createIncrementalCollection<
@@ -275,50 +191,44 @@ function createIncrementalCollection<
   dependencies: D,
   processor: IncrementalCollectionProcessor<D, K, V>
 ): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> {
-  const dependencyMap = dependenciesOf(dependencies);
-  const build = (input: {
-    readonly sources: Record<string, unknown>;
-    readonly previous: CollectionRead<K, V>;
-    readonly next: CollectionRead<K, V>;
-    readonly output: CollectionDraft<K, V>;
-  }) => {
-    const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    const publicInputsForBuild = publicInputs(input.sources, true);
-    const result = processor({
-      sources: publicInputsForBuild.values as ProjectionValues<D>,
-      changes: publicInputsForBuild.changes as ProjectionChanges<D>,
-      previous: input.previous,
-      next: input.next,
-      reset: true,
-      cause: sourceCause(input.sources),
-      state,
-      output: input.output,
-    });
-    if (result?.kind === 'rebuild')
-      throw new TypeError('Initial incremental collection processor cannot rebuild.');
-    return {
-      update: (nextInput: typeof input) => {
-        const publicInputsForUpdate = publicInputs(nextInput.sources);
-        return processor({
-          sources: publicInputsForUpdate.values as ProjectionValues<D>,
-          changes: publicInputsForUpdate.changes as ProjectionChanges<D>,
-          previous: nextInput.previous,
-          next: nextInput.next,
-          reset: false,
-          cause: sourceCause(nextInput.sources),
-          state,
-          output: nextInput.output,
-        });
-      },
-    };
-  };
-  return defineIncrementalCollection({ dependencies: dependencyMap, build: build as never });
+  validateDependencies(dependencies);
+  const [projection] = defineProcessor({
+    dependencies,
+    outputs: [{ kind: 'collection', equality: Object.is }],
+    create: () => {
+      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      return {
+        evaluate: evaluation => {
+          const output = evaluation.outputs[0];
+          if (output.kind !== 'collection')
+            throw new Error('Incremental collection output is invalid.');
+          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
+          const result = processor({
+            sources: publicInput.values as ProjectionValues<D>,
+            changes: publicInput.changes as ProjectionChanges<D>,
+            previous: output.previous as CollectionRead<K, V>,
+            next: output.next as CollectionRead<K, V>,
+            reset: evaluation.reset,
+            cause: evaluation.cause,
+            state,
+            output: output.output as CollectionDraft<K, V>,
+          });
+          assertSynchronous(result);
+          return isRebuild(result) ? result : undefined;
+        },
+      };
+    },
+  });
+  return projection as Projection<ReadonlyMap<K, V>, CollectionChange<K, V>>;
 }
 
 type GroupShape = number | { readonly [key: string]: GroupShape };
 const groupOutputMetadata = new WeakMap<
   object,
-  { readonly kind: GroupOutputSpec['kind']; readonly isEqual?: (a: unknown, b: unknown) => boolean }
+  {
+    readonly kind: OutputDefinition['kind'];
+    readonly equality: (a: unknown, b: unknown) => boolean;
+  }
 >();
 
 const isPlainGroupNamespace = (value: unknown): value is Record<string, unknown> =>
@@ -333,7 +243,7 @@ const compileGroupShape = (
   path: readonly string[],
   declaredOutputs: ReadonlySet<object>,
   used: Set<object>,
-  outputs: GroupOutputSpec[]
+  outputs: OutputDefinition[]
 ): GroupShape => {
   if (value !== null && typeof value === 'object') {
     const metadata = groupOutputMetadata.get(value);
@@ -345,8 +255,8 @@ const compileGroupShape = (
       const index = outputs.length;
       outputs.push({
         kind: metadata.kind,
+        equality: metadata.equality,
         path: Object.freeze([...path]),
-        isEqual: metadata.isEqual,
       });
       return index;
     }
@@ -386,17 +296,26 @@ const hydrateGroupShape = <T>(shape: GroupShape, values: readonly T[]): unknown 
   return Object.freeze(result);
 };
 
-const hydrateGroupReads = (shape: GroupShape, read: (index: number) => unknown): unknown => {
-  if (typeof shape === 'number') return read(shape);
+const previousOf = (output: OutputEvaluation): unknown => output.previous;
+
+const hydrateGroupReads = (
+  shape: GroupShape,
+  outputs: readonly OutputEvaluation[],
+  next: boolean
+): unknown => {
+  if (typeof shape === 'number') {
+    const output = outputs[shape];
+    return next && output.kind === 'value' ? output.next() : next ? output.next : output.previous;
+  }
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(shape)) {
-    if (typeof child === 'number') {
+    if (typeof child === 'number' && next && outputs[child].kind === 'value') {
       Object.defineProperty(result, key, {
         enumerable: true,
         configurable: false,
-        get: () => read(child),
+        get: () => (outputs[child] as Extract<OutputEvaluation, { kind: 'value' }>).next(),
       });
-    } else result[key] = hydrateGroupReads(child, read);
+    } else result[key] = hydrateGroupReads(child, outputs, next);
   }
   return Object.freeze(result);
 };
@@ -409,30 +328,31 @@ function createIncrementalGroup<
   defineOutputs: (define: GroupOutputBuilder) => O,
   processor: IncrementalGroupProcessor<D, O>
 ): GroupProjections<O> {
-  const dependencyMap = dependenciesOf(dependencies);
+  validateDependencies(dependencies);
   if (typeof defineOutputs !== 'function')
     throw new TypeError('Incremental group outputs must be declared by a callback.');
   if (typeof processor !== 'function')
     throw new TypeError('Incremental group processor must be a function.');
+
   let active = true;
   const declaredOutputs = new Set<object>();
   const defineOutput: GroupOutputBuilder = {
-    collection: <K extends string, V>(equality?: (previous: V, next: V) => boolean) => {
+    collection: <K extends string, V>(equality: (previous: V, next: V) => boolean = Object.is) => {
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
       const descriptor = Object.freeze({});
       groupOutputMetadata.set(descriptor, {
         kind: 'collection',
-        isEqual: equality as ((a: unknown, b: unknown) => boolean) | undefined,
+        equality: equality as (a: unknown, b: unknown) => boolean,
       });
       declaredOutputs.add(descriptor);
       return descriptor as GroupCollectionOutput<K, V>;
     },
-    value: <T>(equality?: (previous: T, next: T) => boolean) => {
+    value: <T>(equality: (previous: T, next: T) => boolean = Object.is) => {
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
       const descriptor = Object.freeze({});
       groupOutputMetadata.set(descriptor, {
         kind: 'value',
-        isEqual: equality as ((a: unknown, b: unknown) => boolean) | undefined,
+        equality: equality as (a: unknown, b: unknown) => boolean,
       });
       declaredOutputs.add(descriptor);
       return descriptor as GroupValueOutput<T>;
@@ -441,56 +361,49 @@ function createIncrementalGroup<
   const declared = defineOutputs(defineOutput);
   assertSynchronous(declared);
   active = false;
-  const outputs: GroupOutputSpec[] = [];
+  const outputs: OutputDefinition[] = [];
   const used = new Set<object>();
   const shape = compileGroupShape(declared, [], declaredOutputs, used, outputs);
   if (typeof shape === 'number')
     throw new TypeError('Incremental group declarations must return an output namespace.');
   if (used.size === 0 || used.size !== declaredOutputs.size)
     throw new TypeError('Every incremental group output must be returned by the declaration.');
-  const stateFactory = () => Object.create(null) as Record<string, unknown>;
-  const build = (input: GroupProcess) => {
-    const state = stateFactory();
-    const run = (nextInput: typeof input, reset: boolean) => {
-      const publicInput = publicInputs(nextInput.sources, reset);
-      const result = processor({
-        sources: publicInput.values as ProjectionValues<D>,
-        changes: publicInput.changes as ProjectionChanges<D>,
-        previous: hydrateGroupShape(shape, nextInput.previous) as GroupReads<O>,
-        next: hydrateGroupReads(shape, index => nextInput.next[index]()) as GroupReads<O>,
-        outputs: hydrateGroupShape(shape, nextInput.outputs) as GroupDrafts<O>,
-        reset,
-        cause: sourceCause(nextInput.sources),
-        state,
-      });
-      assertSynchronous(result);
-      return result;
-    };
-    const result = run(input, true);
-    if (isRebuild(result))
-      throw new TypeError('Initial incremental group processor cannot rebuild.');
-    return {
-      update: (nextInput: typeof input) => {
-        const result = run(nextInput, false);
-        return isRebuild(result) ? result : undefined;
-      },
-    };
-  };
-  const group = defineIncrementalGroup({
-    dependencies: dependencyMap,
+
+  const projections = defineProcessor({
+    dependencies,
     outputs,
-    build: build as never,
+    create: () => {
+      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      return {
+        evaluate: evaluation => {
+          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
+          const result = processor({
+            sources: publicInput.values as ProjectionValues<D>,
+            changes: publicInput.changes as ProjectionChanges<D>,
+            previous: hydrateGroupReads(shape, evaluation.outputs, false) as GroupReads<O>,
+            next: hydrateGroupReads(shape, evaluation.outputs, true) as GroupReads<O>,
+            outputs: hydrateGroupShape(
+              shape,
+              evaluation.outputs.map(output => output.output)
+            ) as GroupDrafts<O>,
+            reset: evaluation.reset,
+            cause: evaluation.cause,
+            state,
+          });
+          assertSynchronous(result);
+          return isRebuild(result) ? result : undefined;
+        },
+      };
+    },
+    name: `processor-group:${outputs.map(output => output.path?.join('.') ?? '').join(',')}`,
   });
-  const materialized = hydrateGroupShape(shape, group.projections) as GroupProjections<O>;
-  return materialized;
+  void previousOf;
+  return hydrateGroupShape(shape, projections) as GroupProjections<O>;
 }
 
 export const incremental = Object.assign(createIncrementalValue, {
   collection: createIncrementalCollection,
   group: createIncrementalGroup,
 });
-
-export type IncrementalDependencies<D extends readonly Projection<unknown, unknown>[]> =
-  DependencyMap<D>;
 
 export type { CollectionChange } from './contract';

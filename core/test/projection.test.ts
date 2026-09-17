@@ -68,6 +68,33 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
+  it('unblocks downstream after equal fault recovery without republishing the recovered output', () => {
+    const source = input(1);
+    const upstream = incremental([source], ({ sources }) => {
+      if (sources[0] === 2) throw new Error('failed');
+      return 'stable';
+    });
+    const downstream = derive([upstream], value => `${value}!`);
+    const runtime = createProjectionRuntime({ onError: () => undefined });
+    const readable = runtime.readable(upstream);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+
+    expect(runtime.get(downstream)).toBe('stable!');
+    const revision = readable.revision();
+    runtime.set(source, 2);
+    expect(() => runtime.get(upstream)).toThrow();
+    expect(() => runtime.get(downstream)).toThrow();
+    const callsAfterFault = listener.mock.calls.length;
+
+    runtime.set(source, 3);
+    expect(runtime.get(upstream)).toBe('stable');
+    expect(runtime.get(downstream)).toBe('stable!');
+    expect(readable.revision()).toBe(revision);
+    expect(listener).toHaveBeenCalledTimes(callsAfterFault);
+    runtime.dispose();
+  });
+
   it('isolates retained incremental state between runtimes and rebuilds', () => {
     const source = input(1);
     const projection = incremental([source], ({ state, sources }) => {

@@ -1,139 +1,256 @@
+import { accessOf } from '../runtime/access';
 import type { DocumentReadable, Synchronous } from '../runtime/contract';
 import type {
   CollectionId,
-  CollectionPath,
   CollectionNode as SchemaCollectionNode,
+  CollectionPath,
+  CollectionSelector,
   Infer,
   ObjectNode,
+  PathValueOf,
   ReadonlyValue,
   SchemaPath,
-  PathValueOf,
+  ValueSelector,
 } from '../schema';
-import type { Readable } from './readable';
+import { compilePath } from '../schema';
+import { snapshotCollectionView } from './collection-output';
 import type {
   CollectionChange,
+  CollectionDraft,
+  CollectionRead,
   ExternalCollectionSource,
   ExternalValueSource,
-  GroupOutputSpec,
-  GraphSources,
+  SourceContext,
 } from './contract';
+import type { Readable } from './readable';
+import { assertSynchronous } from './scheduler';
 
 declare const projectionDefinition: unique symbol;
 declare const projectionChanges: unique symbol;
 declare const writableInput: unique symbol;
 
-/** A lazy definition with no materialized state; root definitions are reusable. */
+/** A lazy output reference with no materialized Runtime state. */
 export type Projection<T, C = undefined> = {
   readonly [projectionDefinition]: T;
   readonly [projectionChanges]: C;
 };
 
-/** A runtime-local writable projection definition. */
+/** A writable source projection. */
 export type Input<T, C = undefined> = Projection<T, C> & { readonly [writableInput]: true };
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
 };
 
-type Equality = (a: unknown, b: unknown) => boolean;
+export type Equality = (a: unknown, b: unknown) => boolean;
 type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unknown;
 
-export type IncrementalGroupDefinition = {
-  readonly dependencies: GraphSources;
-  readonly outputs: readonly GroupOutputSpec[];
-  readonly build: (...args: never[]) => unknown;
-  readonly projections: readonly Projection<unknown, unknown>[];
+export type OutputDefinition =
+  | {
+      readonly kind: 'value';
+      readonly equality: Equality;
+      readonly path?: readonly string[];
+    }
+  | {
+      readonly kind: 'collection';
+      readonly equality: Equality;
+      readonly path?: readonly string[];
+    };
+
+export type ValueOutputEvaluation = {
+  readonly kind: 'value';
+  readonly previous: unknown;
+  readonly next: () => unknown;
+  readonly output: { set(value: unknown): void };
 };
 
-type Definition =
-  | { readonly kind: 'input'; readonly initial: unknown; readonly isEqual?: Equality }
-  | { readonly kind: 'collection-input'; readonly initial: ReadonlyMap<string, unknown> }
-  | { readonly kind: 'readable'; readonly readable: Readable<unknown>; readonly isEqual?: Equality }
-  | { readonly kind: 'source-value'; readonly source: ExternalValueSource<unknown> }
+export type CollectionOutputEvaluation = {
+  readonly kind: 'collection';
+  readonly previous: CollectionRead<string, unknown>;
+  readonly next: CollectionRead<string, unknown>;
+  readonly output: CollectionDraft<string, unknown>;
+};
+
+export type OutputEvaluation = ValueOutputEvaluation | CollectionOutputEvaluation;
+
+export type ProcessorEvaluation = {
+  readonly reset: boolean;
+  readonly cause: unknown;
+  readonly sources: readonly SourceContext[];
+  readonly outputs: readonly OutputEvaluation[];
+};
+
+export type Rebuild = { readonly kind: 'rebuild' };
+
+export type ProcessorInstance = {
+  evaluate(input: ProcessorEvaluation): void | Rebuild;
+  release?(): void;
+};
+
+type SourceAdapter =
   | {
-      readonly kind: 'source-collection';
+      readonly kind: 'value-input';
+      readonly initial: unknown;
+      readonly equality: Equality;
+    }
+  | {
+      readonly kind: 'collection-input';
+      readonly initial: ReadonlyMap<string, unknown>;
+    }
+  | {
+      readonly kind: 'readable';
+      readonly readable: Readable<unknown>;
+      readonly equality: Equality;
+    }
+  | {
+      readonly kind: 'external-value';
+      readonly source: ExternalValueSource<unknown>;
+      readonly equality: Equality;
+    }
+  | {
+      readonly kind: 'external-collection';
       readonly source: ExternalCollectionSource<string, unknown>;
     }
   | {
-      readonly kind: 'document';
+      readonly kind: 'document-value';
       readonly document: DocumentReadable<ObjectNode>;
-      readonly selector?: PathSelector<ObjectNode>;
+      readonly selector?: ValueSelector;
     }
   | {
-      readonly kind: 'derive';
-      readonly dependencies: readonly Projection<unknown, unknown>[];
-      readonly compute: (...values: readonly unknown[]) => unknown;
-      readonly isEqual?: Equality;
-    }
-  | {
-      readonly kind: 'incremental-value';
-      readonly dependencies: GraphSources;
-      readonly build: (...args: never[]) => unknown;
-      readonly isEqual?: Equality;
-      readonly name?: string;
-    }
-  | {
-      readonly kind: 'incremental-collection';
-      readonly dependencies: GraphSources;
-      readonly build: (...args: never[]) => unknown;
-      readonly isEqual?: Equality;
-      readonly name?: string;
-    }
-  | {
-      readonly kind: 'incremental-group-output';
-      readonly group: IncrementalGroupDefinition;
-      readonly output: number;
+      readonly kind: 'document-collection';
+      readonly document: DocumentReadable<ObjectNode>;
+      readonly selector: CollectionSelector;
     };
 
-type DefinitionProjection = Projection<unknown, unknown>;
-const definitions = new WeakMap<object, Definition>();
-const owners = new WeakMap<object, object>();
+export type SourceDefinition = {
+  readonly kind: 'source';
+  readonly source: SourceAdapter;
+  readonly output: OutputDefinition;
+  owner?: object;
+};
 
-const define = <T, C = undefined>(definition: Definition): Projection<T, C> => {
+export type ProcessorDefinition = {
+  readonly kind: 'processor';
+  readonly dependencies: readonly Projection<unknown, unknown>[];
+  readonly outputs: readonly OutputDefinition[];
+  readonly create: () => ProcessorInstance;
+  readonly name?: string;
+  owner?: object;
+};
+
+export type ProducerDefinition = SourceDefinition | ProcessorDefinition;
+
+export type ProjectionRef = {
+  readonly producer: ProducerDefinition;
+  readonly output: number;
+};
+
+const projections = new WeakMap<object, ProjectionRef>();
+
+const defineRef = <T, C = undefined>(
+  producer: ProducerDefinition,
+  output: number
+): Projection<T, C> => {
   const handle = Object.freeze({}) as Projection<T, C>;
-  definitions.set(handle, definition);
+  projections.set(handle, Object.freeze({ producer, output }));
   return handle;
 };
 
-export const definitionOf = (projection: DefinitionProjection): Definition => {
-  const definition = definitions.get(projection);
-  if (!definition) throw new TypeError('Unknown projection definition.');
-  return definition;
+export const projectionRef = (projection: Projection<unknown, unknown>): ProjectionRef => {
+  const ref = projections.get(projection);
+  if (!ref) throw new TypeError('Unknown projection definition.');
+  return ref;
 };
 
-export const isProjection = (value: unknown): value is DefinitionProjection =>
-  value !== null && typeof value === 'object' && definitions.has(value);
+export const producerOf = (projection: Projection<unknown, unknown>): ProducerDefinition =>
+  projectionRef(projection).producer;
 
-export const ownerOf = (projection: DefinitionProjection): object | undefined =>
-  owners.get(projection);
+export const isProjection = (value: unknown): value is Projection<unknown, unknown> =>
+  value !== null && typeof value === 'object' && projections.has(value);
 
-export const ownDefinition = <T, C>(
-  projection: Projection<T, C>,
+export const ownProjection = <P extends Projection<unknown, unknown>>(
+  projection: P,
   owner: object
-): Projection<T, C> => {
-  if (!definitions.has(projection) || owners.has(projection))
-    throw new TypeError('Projection definition already has an owner.');
-  owners.set(projection, owner);
+): P => {
+  const producer = producerOf(projection);
+  if (producer.owner !== undefined && producer.owner !== owner)
+    throw new TypeError('Projection producer already belongs to another scope.');
+  if (producer.kind === 'processor') {
+    for (const dependency of producer.dependencies) {
+      const dependencyOwner = producerOf(dependency).owner;
+      if (dependencyOwner !== undefined && dependencyOwner !== owner)
+        throw new TypeError('A scope cannot depend on another scope.');
+    }
+  }
+  producer.owner = owner;
   return projection;
 };
+
+const freezeOutput = (output: OutputDefinition): OutputDefinition =>
+  Object.freeze({
+    kind: output.kind,
+    equality: output.equality,
+    ...(output.path ? { path: Object.freeze([...output.path]) } : {}),
+  });
+
+export const defineProcessor = (definition: {
+  readonly dependencies: readonly Projection<unknown, unknown>[];
+  readonly outputs: readonly OutputDefinition[];
+  readonly create: () => ProcessorInstance;
+  readonly name?: string;
+}): readonly Projection<unknown, unknown>[] => {
+  if (!Array.isArray(definition.dependencies))
+    throw new TypeError('Projection dependencies must be an array.');
+  definition.dependencies.forEach(projectionRef);
+  if (!definition.outputs.length) throw new TypeError('Projection processor requires an output.');
+  const producer: ProcessorDefinition = {
+    kind: 'processor',
+    dependencies: Object.freeze([...definition.dependencies]),
+    outputs: Object.freeze(definition.outputs.map(freezeOutput)),
+    create: definition.create,
+    ...(definition.name ? { name: definition.name } : {}),
+  };
+  return Object.freeze(
+    producer.outputs.map((_, output) => defineRef<unknown, unknown>(producer, output))
+  );
+};
+
+const defineSource = <T, C = undefined>(
+  source: SourceAdapter,
+  output: OutputDefinition
+): Projection<T, C> => {
+  const producer: SourceDefinition = {
+    kind: 'source',
+    source,
+    output: freezeOutput(output),
+  };
+  return defineRef<T, C>(producer, 0);
+};
+
+const sourceValue = (source: SourceContext): unknown =>
+  source.kind === 'value' ? source.value : snapshotCollectionView(source.read);
 
 const valueInput = <T>(
   initial: T,
   equality: (previous: T, next: T) => boolean = Object.is
-): Input<T> => define<T>({ kind: 'input', initial, isEqual: equality as Equality }) as Input<T>;
+): Input<T> =>
+  defineSource<T>(
+    { kind: 'value-input', initial, equality: equality as Equality },
+    { kind: 'value', equality: equality as Equality }
+  ) as Input<T>;
 
 const collectionInput = <K extends string, V>(
   initial: ReadonlyMap<K, V> = new Map<K, V>()
 ): Input<ReadonlyMap<K, V>, CollectionChange<K, V>> => {
-  const entries = new Map<K, V>();
+  const entries = new Map<string, unknown>();
   for (const [key, value] of initial) {
     if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
     entries.set(key, value);
   }
-  return define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
-    kind: 'collection-input',
-    initial: entries,
-  }) as Input<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+  return defineSource<ReadonlyMap<K, V>, CollectionChange<K, V>>(
+    { kind: 'collection-input', initial: entries },
+    { kind: 'collection', equality: Object.is }
+  ) as Input<ReadonlyMap<K, V>, CollectionChange<K, V>>;
 };
 
 export const input = Object.assign(valueInput, { collection: collectionInput });
@@ -157,24 +274,46 @@ export function observe<S extends ObjectNode, P>(
   selector: (path: SchemaPath<S['shape']>) => P
 ): Projection<PathValueOf<P>>;
 export function observe<S extends ObjectNode>(
-  document:
+  source:
     | DocumentReadable<S>
     | Readable<unknown>
     | ExternalValueSource<unknown>
     | ExternalCollectionSource<string, unknown>,
   selector?: PathSelector<S>
 ): Projection<unknown, unknown> {
-  if (isExternalSource(document))
-    return document.kind === 'collection'
-      ? defineExternalCollection(document)
-      : defineExternalValue(document);
-  if ('current' in document && typeof document.current === 'function')
-    return defineReadable(document as Readable<unknown>);
-  return define({
-    kind: 'document',
-    document: document as DocumentReadable<ObjectNode>,
-    selector: selector as PathSelector<ObjectNode> | undefined,
-  });
+  if (isExternalSource(source))
+    return source.kind === 'collection'
+      ? defineSource(
+          { kind: 'external-collection', source },
+          { kind: 'collection', equality: Object.is }
+        )
+      : defineSource(
+          { kind: 'external-value', source, equality: Object.is },
+          { kind: 'value', equality: Object.is }
+        );
+  if ('current' in source && typeof source.current === 'function')
+    return defineSource(
+      { kind: 'readable', readable: source as Readable<unknown>, equality: Object.is },
+      { kind: 'value', equality: Object.is }
+    );
+
+  const document = source as DocumentReadable<ObjectNode>;
+  if (!selector)
+    return defineSource(
+      { kind: 'document-value', document },
+      { kind: 'value', equality: Object.is }
+    );
+  const state = accessOf(document);
+  const selected = compilePath(state.schema, 'auto', selector as never);
+  return selected.kind === 'collection'
+    ? defineSource(
+        { kind: 'document-collection', document, selector: selected },
+        { kind: 'collection', equality: Object.is }
+      )
+    : defineSource(
+        { kind: 'document-value', document, selector: selected },
+        { kind: 'value', equality: Object.is }
+      );
 }
 
 const isExternalSource = (
@@ -200,89 +339,18 @@ export function derive<const D extends readonly Projection<unknown, unknown>[], 
   compute: (...values: ProjectionValues<D>) => Synchronous<T>,
   equality: (previous: T, next: T) => boolean = Object.is
 ): Projection<T> {
-  if (!Array.isArray(dependencies) || dependencies.some(value => !definitions.has(value)))
-    throw new TypeError('derive dependencies must be projections.');
-  const frozen = Object.freeze([...dependencies]) as readonly Projection<unknown, unknown>[];
-  return define<T>({
-    kind: 'derive',
-    dependencies: frozen,
-    compute: compute as (...values: readonly unknown[]) => unknown,
-    isEqual: equality as Equality,
+  const [projection] = defineProcessor({
+    dependencies,
+    outputs: [{ kind: 'value', equality: equality as Equality }],
+    create: () => ({
+      evaluate: evaluation => {
+        const output = evaluation.outputs[0];
+        if (output.kind !== 'value') throw new Error('derive requires a value output.');
+        const next = compute(...(evaluation.sources.map(sourceValue) as ProjectionValues<D>));
+        assertSynchronous(next);
+        output.output.set(next);
+      },
+    }),
   });
+  return projection as Projection<T>;
 }
-
-export const defineReadable = <T>(
-  readable: Readable<T>,
-  equality: (a: T, b: T) => boolean = Object.is
-): Projection<T> => define<T>({ kind: 'readable', readable, isEqual: equality as Equality });
-
-export const defineExternalValue = <T>(source: ExternalValueSource<T>): Projection<T> =>
-  define<T>({ kind: 'source-value', source: source as ExternalValueSource<unknown> });
-
-export const defineExternalCollection = <K extends string, V>(
-  source: ExternalCollectionSource<K, V>
-): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> =>
-  define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
-    kind: 'source-collection',
-    source: source as unknown as ExternalCollectionSource<string, unknown>,
-  });
-
-export const defineIncrementalValue = <T>(definition: {
-  readonly dependencies: GraphSources;
-  readonly build: (...args: never[]) => unknown;
-  readonly isEqual?: (a: T, b: T) => boolean;
-  readonly name?: string;
-}): Projection<T> =>
-  define<T>({
-    kind: 'incremental-value',
-    dependencies: definition.dependencies,
-    build: definition.build,
-    isEqual: definition.isEqual as Equality | undefined,
-    name: definition.name,
-  });
-
-export const defineIncrementalCollection = <K extends string, V>(definition: {
-  readonly dependencies: GraphSources;
-  readonly build: (...args: never[]) => unknown;
-  readonly isEqual?: (a: V, b: V) => boolean;
-  readonly name?: string;
-}): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> =>
-  define<ReadonlyMap<K, V>, CollectionChange<K, V>>({
-    kind: 'incremental-collection',
-    dependencies: definition.dependencies,
-    build: definition.build,
-    isEqual: definition.isEqual as Equality | undefined,
-    name: definition.name,
-  });
-
-export const defineIncrementalGroup = (definition: {
-  readonly dependencies: GraphSources;
-  readonly outputs: readonly GroupOutputSpec[];
-  readonly build: (...args: never[]) => unknown;
-}): IncrementalGroupDefinition => {
-  const group = {
-    dependencies: definition.dependencies,
-    outputs: Object.freeze(
-      definition.outputs.map(output =>
-        Object.freeze({
-          kind: output.kind,
-          path: Object.freeze([...output.path]),
-          isEqual: output.isEqual,
-        })
-      )
-    ),
-    build: definition.build,
-    projections: [] as Projection<unknown, unknown>[],
-  };
-  const projections = group.outputs.map((leaf, output) =>
-    leaf.kind === 'collection'
-      ? define<ReadonlyMap<string, unknown>, CollectionChange<string, unknown>>({
-          kind: 'incremental-group-output',
-          group,
-          output,
-        })
-      : define<unknown>({ kind: 'incremental-group-output', group, output })
-  );
-  group.projections = Object.freeze(projections) as typeof group.projections;
-  return Object.freeze(group);
-};

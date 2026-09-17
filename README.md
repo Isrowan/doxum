@@ -240,7 +240,7 @@ one Runtime. Collection values are
 immutable `ReadonlyMap`-like snapshots, while a `Readable` owns selector
 tracking, equality and subscription lifecycle.
 
-Local projections live in the same graph as their parent definitions:
+Local projections share the parent Runtime's scheduler and materialization owner:
 
 ```ts
 const scope = runtime.scope();
@@ -249,7 +249,7 @@ const localVisible = scope.derive([tasks, localFilter], (tasks, filter) =>
   filter === 'all' ? tasks : new Map([...tasks].filter(([, task]) => !task.done))
 );
 scope.get(localVisible);
-scope.dispose(); // Releases local nodes, state and subscriptions; parent tasks remain.
+scope.dispose(); // Releases local producers, state and subscriptions; parent tasks remain.
 ```
 
 For Runtime-local keyed state, `input.collection` publishes the same exact
@@ -318,9 +318,9 @@ initial build or rebuild every value leaf must be set; on an incremental update 
 untouched value leaf keeps its published value. Its static nested namespace is only
 API organization: every leaf is an ordinary `Projection`, all changed leaves publish
 atomically in one causal settle, and downstream processors depend directly on those
-leaves. A group materializes as a whole when any leaf is first read; split groups
-when outputs do not share computation or atomicity requirements. There is no output
-event bus or per-output runtime.
+leaves. All leaves reference one producer, so reading any leaf materializes that
+producer once; split groups when outputs do not share computation or atomicity
+requirements. There is no group runtime, output event bus, or per-output runtime.
 
 In React, `useProjection(projection)` reads a value and
 `useProjection(projection, selector, equality?)` tracks keyed reads such as

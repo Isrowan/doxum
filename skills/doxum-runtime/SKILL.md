@@ -29,7 +29,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   kinds, optional before/after order in the same group, and a separate root reset.
   Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
 - Paths belong in subscription, impact and collection source callbacks.
-- Projection definitions are lazy; one ProjectionRuntime owns each materialized graph.
+- Projection definitions are lazy; one ProjectionRuntime owns all materialized
+  producers, outputs, scheduling and source attachments for that Runtime.
   Use tuple `derive` for pure values. Advanced `incremental` processors declare every
   source, own any forward/reverse dependency indexes, derive from final batched source
   state, and recover from resets internally. Core projections never track reads

@@ -4,7 +4,6 @@ import { join, relative } from 'node:path';
 const root = process.cwd();
 const forbidden = [
   'ProjectionDefinition',
-  'SourceBoundary',
   'CollectionDelta',
   'PublicCollection',
   'CollectionProjection',
@@ -45,10 +44,29 @@ for (const file of roots.flatMap(filesUnder)) {
 }
 
 const publicEntrypoints = [
-  ['core/src/index.ts', ['ProjectionDefinition', 'PublicCollection', 'CollectionProjection']],
+  [
+    'core/src/index.ts',
+    [
+      'ProjectionDefinition',
+      'PublicCollection',
+      'CollectionProjection',
+      'SourceBoundary',
+      'SourceBoundaryRecord',
+      'ProcessorRecord',
+      'OutputRecord',
+    ],
+  ],
   [
     'core/src/projection/advanced.ts',
-    ['ProjectionDefinition', 'PublicCollection', 'CollectionProjection'],
+    [
+      'ProjectionDefinition',
+      'PublicCollection',
+      'CollectionProjection',
+      'SourceBoundary',
+      'SourceBoundaryRecord',
+      'ProcessorRecord',
+      'OutputRecord',
+    ],
   ],
   ['react/src/index.ts', ['ProjectionContext']],
 ];

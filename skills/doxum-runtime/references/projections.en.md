@@ -54,10 +54,11 @@ runtime.dispose();
 atomic per callback, and a Runtime batch publishes one exact net
 `CollectionChange`. A scope declares local inputs, derives, and incremental
 processors through `scope.input`, `scope.derive`, and `scope.incremental`. They
-depend directly on root projections in the same graph. Disposing the scope
-releases local state and subscriptions without disposing its root dependencies.
+depend directly on root projections in the same Runtime. Disposing the scope
+releases local producers, state and subscriptions without disposing its root
+dependencies.
 
-The Runtime exposes no graph revision, item handle, rebuild or release operation;
+The Runtime exposes no scheduler/output internals, item handle, rebuild or release operation;
 only a `Readable`'s own publication revision is public for store integrations.
 Runtime materialization, keyed storage, recovery and disposal are one owner.
 
@@ -117,13 +118,14 @@ map-like value. Reset or fault recovery is internal.
 `incremental.group(...)` is the composition boundary for several named value and
 keyed collection outputs. `define.value<T>(equality?)` creates a scalar leaf and
 `define.collection<K, V>(equality?)` creates a keyed leaf. Its nested namespace is
-static API organization, not another graph or runtime concept. Every leaf is an
-ordinary `Projection`; one processor execution seals and publishes all changed
-leaves atomically, and downstream processors depend on those leaves directly.
+static API organization, not another producer, runtime or scheduler concept. Every
+leaf is an ordinary `Projection` pointing to one output of the same processor
+producer; one processor execution seals and publishes all changed leaves atomically,
+and downstream processors depend on those leaves directly.
 Initial builds and rebuilds must set every value leaf; ordinary incremental runs
 may leave a value leaf untouched to preserve its current value and revision.
-Reading any leaf materializes the whole group, while scope disposal releases the
-group and its retained state together.
+Reading any leaf materializes that producer once, while scope disposal releases the
+producer and its retained state once.
 
 ## React selector tracking
 

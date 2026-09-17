@@ -288,15 +288,16 @@ Projection definitions explicitly declare dependencies and are lazy. A single
 batching, errors and disposal; there is no second Engine owner. Its public spine is
 `get`, `readable`, scalar `set`, keyed `update`, `scope`, `batch` and `dispose`.
 `runtime.scope()` creates a local definition and subscription lifetime inside
-that same graph, not a child Runtime. Local input, derive and incremental nodes
-can depend directly on root document or session projections. Scope disposal
-unsubscribes its readables and releases local nodes in reverse dependency order;
-root nodes continue to live until Runtime disposal. A scoped definition cannot
-be materialized by another scope or by the root. Collection inputs are graph
-collection sources: their synchronous `update` draft stages keyed set/remove
+that same Runtime, not a child Runtime. Local input, derive and incremental
+producers can depend directly on root document or session projections. Scope
+disposal unsubscribes its readables and releases local producers in reverse
+dependency order; root producers continue to live until Runtime disposal. A
+scoped definition cannot be materialized by another scope or by the root.
+Collection inputs are source producers: their synchronous `update` draft stages
+keyed set/remove
 commands and publishes a net `CollectionChange` at the Runtime batch boundary.
 Collection values are immutable
-map-like snapshots, while keyed storage, graph revisions and transition indexes
+map-like snapshots, while keyed storage, output revisions and transition indexes
 remain private to the runtime. A readable exposes only its own publication
 revision for store integrations. Selector tracking and equality belong to a runtime-owned
 `Readable`, not to a second subscription protocol.
@@ -318,14 +319,15 @@ executing the selector; equality filters the result only after a related update.
 This tracking does not construct processor dependencies, which remain explicit in
 `derive` and the advanced incremental entry point. Advanced processors may
 declare one static `incremental.group` with nested named value and keyed collection
-leaves. The group is one scheduler node and one retained-state owner. Value leaves
+leaves. The declaration compiles to one processor producer and one retained-state
+owner. Value leaves
 reuse the ordinary value publication kernel; collection leaves reuse the keyed
 collection publication kernel. Every leaf is still an ordinary projection source
 with its own revision/listeners, and collection leaves additionally publish
 `CollectionChange`. All changed leaves seal before the group publishes atomically,
 then only consumers of changed leaves are enqueued. The namespace is not a graph
-node, runtime, scheduler, transaction or event bus, and any leaf first
-materialization materializes the whole group.
+node, producer, runtime, scheduler, transaction or event bus; every leaf references
+one output of the same processor producer, which is materialized once on first use.
 Published collection snapshots share an internal persistent keyed index. A
 value-only update path-copies only the affected key paths and reuses the immutable
 id sequence; membership or order changes create a new id sequence because order is

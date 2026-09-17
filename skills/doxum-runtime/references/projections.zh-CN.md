@@ -49,9 +49,10 @@ runtime.dispose();
 `input.collection<K, V>(initial?)` 声明 Runtime 本地 keyed 状态。`update` 的借用 draft
 提供 `get`、`has`、`set`、`remove`；单次 callback 同步且原子，Runtime batch 发布一次
 精确的净 `CollectionChange`。scope 用 `scope.input`、`scope.derive`、
-`scope.incremental` 声明局部投影，直接依赖同一张图中的根投影；dispose 只释放局部状态和订阅。
+`scope.incremental` 声明局部投影，直接依赖同一 Runtime 中的根投影；dispose 只释放
+局部 producer、状态和订阅。
 
-Runtime graph revision、item handle、rebuild、release 都是内部事实，不是应用层操作；
+Runtime 的 scheduler/output internals、item handle、rebuild、release 都是内部事实，不是应用层操作；
 只有 `Readable` 自己的 publication revision 为 store 集成保留为公开事实。
 Materialization、keyed storage、故障恢复和释放只有一个 owner。
 
@@ -107,11 +108,11 @@ Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
 一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。
 `incremental.group(...)` 是多个命名 value / keyed collection output 的组合边界。
 `define.value<T>(equality?)` 声明 scalar leaf，`define.collection<K, V>(equality?)`
-声明 keyed leaf。嵌套 namespace 只是静态 API 组织，不是新的图、Runtime 或事件协议。
-每个叶子都是普通 `Projection`；一次 processor 执行先 seal 所有 leaf，再原子发布真正
+声明 keyed leaf。嵌套 namespace 只是静态 API 组织，不是新的 producer、Runtime、scheduler 或事件协议。
+每个叶子都是指向同一个 processor producer 某个 output 的普通 `Projection`；一次 processor 执行先 seal 所有 leaf，再原子发布真正
 变化的 leaf，下游直接依赖这些叶子。initial build / rebuild 必须 set 每个 value leaf；
-普通增量轮次可以不触碰 value leaf，此时保留其现值和 revision。首次读取任一叶子会物化
-整个 group；scope dispose 会一起释放 group 和其保留状态。
+普通增量轮次可以不触碰 value leaf，此时保留其现值和 revision。首次读取任一叶子只会
+物化该 producer 一次；scope dispose 也只会释放该 producer 和其保留状态一次。
 
 ## React selector 追踪
 

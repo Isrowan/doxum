@@ -1,3 +1,4 @@
+import { profile } from '../profile';
 import type {
   CollectionChange,
   CollectionContext,
@@ -5,7 +6,6 @@ import type {
   CollectionRead,
 } from './contract';
 import { assertScope } from './scheduler';
-import { profile } from '../profile';
 
 type Entry<V> = { readonly present: true; readonly value: V } | { readonly present: false };
 
@@ -134,14 +134,14 @@ const treeFromSorted = <K extends string, V>(
   );
 };
 
-export type CollectionEvaluation<K extends string, V> = {
+export type CollectionOutputEvaluation<K extends string, V> = {
   readonly previous: CollectionRead<K, V>;
   readonly next: CollectionRead<K, V>;
   readonly output: CollectionDraft<K, V>;
 };
 
-export type CollectionState<K extends string, V> = {
-  begin(active: () => boolean, reset: boolean): CollectionEvaluation<K, V>;
+export type CollectionOutputState<K extends string, V> = {
+  begin(active: () => boolean, initialize: boolean): CollectionOutputEvaluation<K, V>;
   seal(reset: boolean, isEqual: (previous: V, next: V) => boolean): boolean;
   context(active: () => boolean, cause: unknown): CollectionContext<K, V>;
   current(check: () => void): CollectionRead<K, V>;
@@ -155,13 +155,8 @@ export type CollectionState<K extends string, V> = {
   unsubscribe(listener: (change: CollectionChange<K, V>) => void): void;
 };
 
-/**
- * The one keyed publication kernel used by ordinary collection nodes and
- * processor-group output leaves. It owns staged intent, exact transitions and
- * the persistent published snapshot; callers only provide the processor
- * callback and the equality policy.
- */
-export const createCollectionState = <K extends string, V>(): CollectionState<K, V> => {
+/** Owns staged keyed intent, exact transitions and the persistent published lookup. */
+export const createCollectionOutput = <K extends string, V>(): CollectionOutputState<K, V> => {
   const values = new Map<K, V>();
   let ids: readonly K[] = Object.freeze([]);
   let staged = new Map<K, Entry<V>>();
@@ -171,8 +166,6 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
   let reset = false;
   let revision = 0;
   let publishedRoot: TreeNode<K, V> | undefined;
-  let changedKeys = new Set<K>();
-  let orderChanged = false;
   let explicitOrder: readonly K[] | undefined;
   let cleared = false;
   const listeners = new Set<(change: CollectionChange<K, V>) => void>();
@@ -196,14 +189,13 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
     return result;
   };
 
-  const begin = (active: () => boolean, nextReset: boolean): CollectionEvaluation<K, V> => {
+  const begin = (active: () => boolean, initialize: boolean): CollectionOutputEvaluation<K, V> => {
     staged = new Map();
     nextIds = ids;
     change = undefined;
-    changedKeys = new Set();
     explicitOrder = undefined;
-    orderChanged = false;
-    cleared = nextReset;
+    cleared = initialize;
+    reset = initialize;
     const read = (next: boolean): CollectionRead<K, V> => ({
       get: key => {
         assertScope(active);
@@ -241,7 +233,6 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
       for (const key of values.keys()) if (!staged.has(key)) staged.set(key, { present: false });
 
     profile.projection('touchedKeys', staged.size);
-
     const added = new Set<K>();
     const removed = new Set<K>();
     const updated = new Set<K>();
@@ -270,12 +261,8 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
           : Object.freeze([...order]);
     } else nextIds = ids;
 
-    orderChanged = nextIds !== ids;
-    for (const key of added) changedKeys.add(key);
-    for (const key of removed) changedKeys.add(key);
-    for (const key of updated) changedKeys.add(key);
+    const changedKeys = new Set<K>([...added, ...removed, ...updated]);
     profile.projection('changedKeys', changedKeys.size);
-
     const addedEntries: { readonly key: K; readonly after: V }[] = [];
     const updatedEntries: {
       readonly key: K;
@@ -299,6 +286,7 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
         });
     }
 
+    const orderChanged = nextIds !== ids;
     if (nextReset) change = Object.freeze({ kind: 'reset' as const });
     else if (
       addedEntries.length ||
@@ -349,7 +337,8 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
         },
       },
       change,
-      revision: revision + (change ? 1 : 0),
+      revision,
+      reset,
       cause,
     });
 
@@ -410,9 +399,7 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
       nextIds = ids;
       change = undefined;
       reset = false;
-      changedKeys.clear();
       explicitOrder = undefined;
-      orderChanged = false;
       cleared = false;
     },
     release: () => {
@@ -424,12 +411,141 @@ export const createCollectionState = <K extends string, V>(): CollectionState<K,
       change = undefined;
       initialized = false;
       revision = 0;
+      reset = false;
+      explicitOrder = undefined;
+      cleared = false;
     },
-    subscribe: listener => {
-      listeners.add(listener);
-    },
-    unsubscribe: listener => {
-      listeners.delete(listener);
-    },
+    subscribe: listener => listeners.add(listener),
+    unsubscribe: listener => listeners.delete(listener),
   };
+};
+
+export const mapRead = <K extends string, V>(value: ReadonlyMap<K, V>): CollectionRead<K, V> => ({
+  get: key => value.get(key),
+  has: key => value.has(key),
+  ids: () => Object.freeze([...value.keys()]),
+});
+
+/** Immutable map-like view over a CollectionRead. */
+export const collectionView = <K extends string, V>(
+  read: CollectionRead<K, V>
+): ReadonlyMap<K, V> => {
+  const ids = read.ids();
+  const entries = function* (): IterableIterator<[K, V]> {
+    for (const key of ids) yield [key, read.get(key) as V];
+  };
+  const values = function* (): IterableIterator<V> {
+    for (const key of ids) yield read.get(key) as V;
+  };
+  const view: ReadonlyMap<K, V> = {
+    get: key => read.get(key),
+    has: key => read.has(key),
+    get size() {
+      return ids.length;
+    },
+    keys: () => ids[Symbol.iterator](),
+    values,
+    entries,
+    forEach: (callback, thisArg) => {
+      for (const key of ids) callback.call(thisArg, read.get(key) as V, key, view);
+    },
+    [Symbol.iterator]: entries,
+  };
+  return Object.freeze(view);
+};
+
+/** Eager durable view used when a processor result may retain its dependency value. */
+export const snapshotCollectionView = <K extends string, V>(
+  read: CollectionRead<K, V>
+): ReadonlyMap<K, V> => {
+  const ids = read.ids();
+  const values = new Map<K, V>();
+  for (const key of ids) values.set(key, read.get(key) as V);
+  return collectionView(mapRead(values));
+};
+
+export type CollectionStageOptions<K extends string, V> = {
+  readonly reset: boolean;
+  readonly candidates?: Iterable<K>;
+  readonly orderMayChange?: boolean;
+  readonly isEqual?: (previous: V, next: V) => boolean;
+};
+
+/**
+ * The one source-to-CollectionChange kernel. Candidate keys only narrow value work;
+ * exact membership/value/order semantics remain owned here.
+ */
+export const stageCollectionRead = <K extends string, V>(
+  state: CollectionOutputState<K, V>,
+  read: CollectionRead<K, V>,
+  active: () => boolean,
+  options: CollectionStageOptions<K, V>
+): boolean => {
+  const evaluation = state.begin(active, options.reset);
+  if (options.reset) {
+    const ids = read.ids();
+    profile.collectionView.idsScanned(ids.length);
+    for (const key of ids) {
+      profile.collectionView.mapped();
+      evaluation.output.set(key, read.get(key) as V);
+    }
+    evaluation.output.order(ids);
+  } else {
+    const previous = state.current(() => undefined);
+    const keys = options.candidates
+      ? [...new Set(options.candidates)]
+      : [...new Set([...previous.ids(), ...read.ids()])];
+    if (!options.candidates) profile.collectionView.idsScanned(keys.length);
+    for (const key of keys) {
+      if (read.has(key)) {
+        profile.collectionView.mapped();
+        evaluation.output.set(key, read.get(key) as V);
+      } else evaluation.output.remove(key);
+    }
+    if (options.orderMayChange || !options.candidates) {
+      const ids = read.ids();
+      if (options.candidates) profile.collectionView.idsScanned(ids.length);
+      evaluation.output.order(ids);
+    }
+  }
+  return state.seal(options.reset, options.isEqual ?? Object.is);
+};
+
+/** Exact net transition between two published map-like snapshots. */
+export const collectionChangeBetween = <K extends string, V>(
+  previous: ReadonlyMap<K, V>,
+  current: ReadonlyMap<K, V>,
+  isEqual: (previous: V, next: V) => boolean = Object.is
+): CollectionChange<K, V> | undefined => {
+  const added: { readonly key: K; readonly after: V }[] = [];
+  const removed: { readonly key: K; readonly before: V }[] = [];
+  const updated: { readonly key: K; readonly before: V; readonly after: V }[] = [];
+  for (const [key, before] of previous) {
+    if (!current.has(key)) removed.push({ key, before });
+    else {
+      const after = current.get(key) as V;
+      if (!isEqual(before, after)) updated.push({ key, before, after });
+    }
+  }
+  for (const [key, after] of current) if (!previous.has(key)) added.push({ key, after });
+  const beforeKeys = new Set(previous.keys());
+  const afterKeys = new Set(current.keys());
+  const beforeCommon = [...previous.keys()].filter(key => afterKeys.has(key));
+  const afterCommon = [...current.keys()].filter(key => beforeKeys.has(key));
+  const orderChanged = beforeCommon.some((key, index) => afterCommon[index] !== key);
+  if (!added.length && !removed.length && !updated.length && !orderChanged) return undefined;
+  return Object.freeze({
+    kind: 'incremental' as const,
+    added: Object.freeze(added),
+    updated: Object.freeze(updated),
+    removed: Object.freeze(removed),
+    ...(orderChanged
+      ? {
+          order: Object.freeze({
+            before: Object.freeze([...previous.keys()]),
+            after: Object.freeze([...current.keys()]),
+          }),
+        }
+      : {}),
+  });
 };

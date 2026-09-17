@@ -1,802 +1,823 @@
-import { createAccess, collectionAccess, snapshot } from '../access/scope';
+import { read as readAddress, nodeAt } from '../address';
+import { collectionAccess, snapshot } from '../access/scope';
 import { affectsTarget, collectionImpact } from '../impact';
-import * as target from '../impact-target';
-import { nodeAt } from '../address';
 import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
-import type { DocumentCommit, DocumentReadable } from '../runtime/contract';
-import type { ObjectNode, ImpactTarget, CollectionSelector, PathPick } from '../schema';
-import { collectionEntryNode, compilePath } from '../schema';
-import { equalValue } from '../schema-value';
+import type { DocumentCommit, DocumentReadable, Unsubscribe } from '../runtime/contract';
+import type { CollectionSelector, ObjectNode, ValueSelector } from '../schema';
+import { collectionEntryNode } from '../schema';
+import { copyValue, equalValue } from '../schema-value';
+import {
+  createCollectionOutput,
+  mapRead,
+  stageCollectionRead,
+  type CollectionOutputState,
+} from './collection-output';
 import type {
-  CollectionContext,
   CollectionChange,
   CollectionRead,
-  DocumentHandle,
-  GraphSource,
   ExternalCollectionSource,
   ExternalValueSource,
-  ValueContext,
 } from './contract';
-import { ProjectionError } from './contract';
+import { ProjectionDisposedError, ProjectionError } from './contract';
+import type { SourceDefinition } from './definition';
 import type { Readable } from './readable';
 import {
   assertScope,
   assertSynchronous,
-  projectionHandles,
+  type OutputRecord,
   type Scheduler,
-  type SourceRecord,
+  type SourceBoundaryRecord,
 } from './scheduler';
+import { createValueOutput, type ValueOutputState } from './value-output';
 
-export const createSources = (scheduler: Scheduler) => {
-  const documents = new Map<object, object>();
-  const readables = new Map<
-    object,
-    Map<
-      object,
-      {
-        readonly source: object;
-        readonly accept: (value: unknown) => void;
-      }
-    >
-  >();
-  const externalSources = new WeakMap<object, object>();
-  const isCollectionSource = (value: object): boolean =>
-    (value as { readonly kind?: unknown }).kind === 'collection';
-  const document = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentHandle<S> => {
-    scheduler.assertIdle();
-    const state = accessOf(runtime);
-    if (state.disposed) throw new Error('Document has been disposed.');
-    const existing = documents.get(state);
-    if (existing) return existing as DocumentHandle<S>;
-    const bindings: {
-      handle: object;
-      targets: readonly ImpactTarget[];
-      record: SourceRecord;
-      receive: (commit: DocumentCommit<S>) => void;
-    }[] = [];
-    let batch: import('./contract').BatchContext | undefined;
-    const make = (
-      input:
-        { readonly targets: readonly ImpactTarget[] } | { readonly collection: CollectionSelector }
-    ): object => {
-      const collection = 'collection' in input ? input.collection : undefined;
-      const targets = 'targets' in input ? input.targets : [input.collection];
-      if (state.disposed) throw new Error('Document has been disposed.');
-      targets.forEach(value => {
-        if (!target.belongs(value, state.schema))
-          throw new Error('Projection target belongs to another schema.');
-      });
-      const old = bindings.find(
-        entry =>
-          Boolean(collection) === isCollectionSource(entry.handle) &&
-          entry.targets.length === targets.length &&
-          entry.targets.every((value, i) => target.same(value, targets[i]))
-      );
-      if (old) return old.handle;
-      let reset = false;
-      let orderChanged = false;
-      const keys = new Set<string>();
-      let baseline: Map<string, unknown> | undefined;
-      let baselineIds: readonly string[] = Object.freeze([]);
-      let nextBaseline: Map<string, unknown> | undefined;
-      let nextBaselineIds: readonly string[] = Object.freeze([]);
-      const collectionNode = collection
-        ? nodeAt(state.schema, collection.address, state.document)
-        : undefined;
-      const entryNode = collectionNode ? collectionEntryNode(collectionNode) : undefined;
-      const sameEntry = (left: unknown, right: unknown): boolean =>
-        entryNode ? equalValue(entryNode, left, right) : Object.is(left, right);
-      const record: SourceRecord = {
-        consumers: new Set(),
-        disposed: false,
-        fault: undefined,
-        revision: runtime.revision,
-        reset: () => reset,
-        clear: () => {
-          if (collection && nextBaseline) {
-            baseline = nextBaseline;
-            baselineIds = nextBaselineIds;
-          }
-          reset = false;
-          orderChanged = false;
-          batch = undefined;
-          keys.clear();
-          nextBaseline = undefined;
-          nextBaselineIds = Object.freeze([]);
-        },
-        context: active => {
-          assertScope(active);
-          if (state.disposed) throw new Error('Document has been disposed.');
-          const context = { state, active };
-          const rawRead = collection
-            ? (collectionAccess(context, collection.address) as CollectionRead<string, unknown>)
-            : undefined;
-          const snapshots = collection ? new Map<string, unknown>() : undefined;
-          const read = collection
-            ? Object.freeze({
-                get: (key: string) => {
-                  assertScope(active);
-                  if (!snapshots!.has(key)) snapshots!.set(key, snapshot(rawRead!.get(key)));
-                  return snapshots!.get(key);
-                },
-                has: (key: string) => {
-                  assertScope(active);
-                  return rawRead!.has(key);
-                },
-                ids: () => {
-                  assertScope(active);
-                  return rawRead!.ids();
-                },
-              })
-            : createAccess(context);
-          if (!collection)
-            return Object.freeze({
-              kind: 'document' as const,
-              read,
-              revision: runtime.revision(),
-              reset: record.reset(),
-              cause: batch?.cause,
-            });
+export type KeyedInputDraft<K extends string, V> = {
+  get(key: K): V | undefined;
+  has(key: K): boolean;
+  set(key: K, value: V): void;
+  remove(key: K): void;
+};
 
-          if (!baseline) {
-            const collectionRead = read as CollectionRead<string, unknown>;
-            baseline = new Map<string, unknown>();
-            baselineIds = Object.freeze(
-              collectionAccess(context, collection.address).ids().slice()
-            );
-            for (const key of baselineIds) {
-              const value = collectionRead.get(key);
-              baseline.set(key, value);
-            }
-          }
-          const changed = [...keys];
-          const added: { readonly key: string; readonly after: unknown }[] = [];
-          const updated: {
-            readonly key: string;
-            readonly before: unknown;
-            readonly after: unknown;
-          }[] = [];
-          const removed: {
-            readonly key: string;
-            readonly before: unknown;
-          }[] = [];
-          const next = new Map(baseline);
-          const collectionRead = read as CollectionRead<string, unknown>;
-          for (const key of changed) {
-            const beforePresent = baseline.has(key);
-            const afterPresent = collectionRead.has(key);
-            const afterValue = afterPresent ? collectionRead.get(key) : undefined;
-            if (!beforePresent && afterPresent) {
-              added.push({ key, after: afterValue });
-              next.set(key, afterValue);
-            } else if (beforePresent && !afterPresent) {
-              removed.push({ key, before: baseline.get(key) });
-              next.delete(key);
-            } else if (beforePresent && afterPresent) {
-              const beforeValue = baseline.get(key);
-              if (!sameEntry(beforeValue, afterValue))
-                updated.push({ key, before: beforeValue, after: afterValue });
-              next.set(key, afterValue);
-            }
-          }
-          const ids =
-            record.reset() || orderChanged ? Object.freeze([...collectionRead.ids()]) : baselineIds;
-          if (record.reset()) {
-            next.clear();
-            for (const key of ids) {
-              const value = collectionRead.get(key);
-              next.set(key, value);
-            }
-          }
-          let order:
-            { readonly before: readonly string[]; readonly after: readonly string[] } | undefined;
-          if (orderChanged) {
-            const beforeKeys = new Set(baselineIds);
-            const afterKeys = new Set(ids);
-            const beforeCommon = baselineIds.filter(key => afterKeys.has(key));
-            const afterCommon = ids.filter(key => beforeKeys.has(key));
-            if (beforeCommon.some((key, index) => afterCommon[index] !== key))
-              order = { before: Object.freeze([...baselineIds]), after: ids };
-          }
-          const change = record.reset()
-            ? Object.freeze({ kind: 'reset' as const })
-            : added.length || updated.length || removed.length || order
-              ? Object.freeze({
-                  kind: 'incremental' as const,
-                  added: Object.freeze(added),
-                  updated: Object.freeze(updated),
-                  removed: Object.freeze(removed),
-                  ...(order ? { order: Object.freeze(order) } : {}),
-                })
-              : undefined;
-          nextBaseline = next;
-          nextBaselineIds = ids;
-          return Object.freeze({
-            kind: 'collection' as const,
-            read,
-            change,
-            revision: runtime.revision(),
-            cause: batch?.cause,
-          });
-        },
-      };
-      const handle = collection
-        ? { kind: 'collection' as const }
-        : {
-            collection: (pick: PathPick<S>) => {
-              scheduler.assertIdle();
-              const selector = compilePath<S['shape']>(
-                state.schema,
-                'collection',
-                pick
-              ) as CollectionSelector;
-              return make({ collection: selector });
-            },
-            targets: (...selected: PathPick<S>[]) => {
-              scheduler.assertIdle();
-              if (!selected.length) throw new TypeError('Expected at least one target.');
-              return make({
-                targets: selected.map(pick => compilePath<S['shape']>(state.schema, 'value', pick)),
-              });
-            },
-          };
-      Object.freeze(handle);
-      scheduler.register(handle, record);
-      // The attachment delivers to all local bindings without extra document subscriptions.
-      const receive = (commit: DocumentCommit<S>) => {
-        reset ||= commit.impact.kind === 'reset';
-        if (collection) {
-          const change = collectionImpact(commit.impact, collection);
-          if (change.kind === 'reset') reset = true;
-          else {
-            change.added.forEach(key => keys.add(key));
-            change.removed.forEach(key => keys.add(key));
-            change.updated.forEach(key => keys.add(key));
-            orderChanged ||= Boolean(
-              change.added.size || change.removed.size || change.orderChanged
-            );
-          }
-        }
-      };
-      bindings.push({ handle, targets, record, receive });
-      return handle;
+export type SourceWrite =
+  | { readonly kind: 'value'; set(value: unknown): void }
+  | {
+      readonly kind: 'collection';
+      update(run: (draft: KeyedInputDraft<string, unknown>) => void): void;
     };
-    const handle = make({ targets: [] }) as DocumentHandle<S>;
+
+export type SourceMaterialization = {
+  readonly producer: SourceBoundaryRecord;
+  readonly output: OutputRecord;
+  readonly write?: SourceWrite;
+};
+
+type SourceMark = { readonly reset?: boolean; readonly cause?: unknown };
+type CollectionMark = SourceMark & {
+  readonly candidates?: Iterable<string>;
+  readonly fullScan?: boolean;
+  readonly orderMayChange?: boolean;
+};
+
+type ValueBoundary = SourceMaterialization & {
+  readonly setLatest: (value: unknown) => void;
+  readonly mark: (metadata?: SourceMark) => void;
+  readonly fail: (cause: unknown) => void;
+  readonly detach: (cleanup: Unsubscribe) => void;
+};
+
+type CollectionBoundary = SourceMaterialization & {
+  readonly mark: (metadata?: CollectionMark) => void;
+  readonly fail: (cause: unknown) => void;
+  readonly detach: (cleanup: Unsubscribe) => void;
+};
+
+const sourceError = (source: SourceBoundaryRecord, cause: unknown): ProjectionError =>
+  new ProjectionError('source', source.name, [source.outputs[0].revision()], cause);
+
+const createValueBoundary = (
+  scheduler: Scheduler,
+  name: string,
+  initial: unknown,
+  equality: (previous: unknown, next: unknown) => boolean
+): ValueBoundary => {
+  const state: ValueOutputState<unknown> = createValueOutput();
+  let boundary!: SourceBoundaryRecord;
+  let latest = initial;
+  let pendingReset = false;
+  let pendingCause: unknown;
+  let contextCause: unknown;
+  let recovering = false;
+  let cleanup: Unsubscribe | undefined;
+
+  const check = () => {
+    if (!scheduler.active || boundary.disposed) throw new ProjectionDisposedError();
+    if (boundary.fault) throw boundary.fault;
+  };
+
+  const output: OutputRecord = {
+    kind: 'value',
+    get owner() {
+      return boundary;
+    },
+    consumers: new Set(),
+    context: active => state.context(active, contextCause),
+    current: () => state.current(check),
+    revision: state.revision,
+    reset: state.reset,
+    subscribe: listener => {
+      check();
+      const wrapped = () => listener();
+      state.subscribe(wrapped);
+      return () => state.unsubscribe(wrapped);
+    },
+    emit: state.emit,
+    clear: state.clear,
+    release: state.release,
+  };
+
+  boundary = {
+    kind: 'source',
+    name,
+    outputs: Object.freeze([output]) as readonly [OutputRecord],
+    fault: undefined,
+    disposed: false,
+    pendingCause: () => pendingCause,
+    recovering: () => recovering,
+    prepare: cause => {
+      contextCause = cause;
+      let active = true;
+      try {
+        const evaluation = state.begin(() => active, pendingReset);
+        evaluation.output.set(latest);
+        const changed = state.seal(pendingReset, equality);
+        recovering = false;
+        return { changed, force: pendingReset };
+      } finally {
+        active = false;
+      }
+    },
+    publish: state.publish,
+    clear: () => {
+      state.clear();
+      pendingReset = false;
+      pendingCause = undefined;
+      contextCause = undefined;
+      recovering = false;
+    },
+    release: () => {
+      cleanup?.();
+      cleanup = undefined;
+      state.release();
+      output.consumers.clear();
+    },
+  };
+
+  scheduler.initialize(() => {
+    let active = true;
+    try {
+      const evaluation = state.begin(() => active, true);
+      evaluation.output.set(initial);
+      state.seal(true, equality);
+      state.publish();
+      state.clear();
+    } finally {
+      active = false;
+    }
+  });
+  scheduler.addSource(boundary);
+
+  const mark = (metadata: SourceMark = {}) => {
+    scheduler.assertIdle();
+    pendingReset ||= metadata.reset ?? false;
+    if (metadata.cause !== undefined) pendingCause ??= metadata.cause;
+    if (boundary.fault) recovering = true;
+    scheduler.capture(boundary);
+  };
+  const fail = (cause: unknown) => {
+    boundary.fault = sourceError(boundary, cause);
+    recovering = false;
+    scheduler.capture(boundary);
+  };
+  return {
+    producer: boundary,
+    output,
+    setLatest: value => {
+      latest = value;
+    },
+    mark,
+    fail,
+    detach: next => {
+      cleanup = next;
+    },
+  };
+};
+
+const createCollectionBoundary = (
+  scheduler: Scheduler,
+  name: string,
+  readLatest: (active: () => boolean) => CollectionRead<string, unknown>,
+  equality: (previous: unknown, next: unknown) => boolean
+): CollectionBoundary => {
+  const state: CollectionOutputState<string, unknown> = createCollectionOutput();
+  let boundary!: SourceBoundaryRecord;
+  let pendingReset = false;
+  let pendingCause: unknown;
+  let contextCause: unknown;
+  let recovering = false;
+  let fullScan = false;
+  let orderMayChange = false;
+  const candidates = new Set<string>();
+  let cleanup: Unsubscribe | undefined;
+
+  const check = () => {
+    if (!scheduler.active || boundary.disposed) throw new ProjectionDisposedError();
+    if (boundary.fault) throw boundary.fault;
+  };
+
+  const output: OutputRecord = {
+    kind: 'collection',
+    get owner() {
+      return boundary;
+    },
+    consumers: new Set(),
+    context: active => state.context(active, contextCause),
+    current: () => state.current(check),
+    revision: state.revision,
+    reset: state.reset,
+    subscribe: listener => {
+      check();
+      const wrapped = (change: CollectionChange<string, unknown>) => listener(change);
+      state.subscribe(wrapped);
+      return () => state.unsubscribe(wrapped);
+    },
+    emit: state.emit,
+    clear: state.clear,
+    release: state.release,
+  };
+
+  boundary = {
+    kind: 'source',
+    name,
+    outputs: Object.freeze([output]) as readonly [OutputRecord],
+    fault: undefined,
+    disposed: false,
+    pendingCause: () => pendingCause,
+    recovering: () => recovering,
+    prepare: cause => {
+      contextCause = cause;
+      let active = true;
+      try {
+        const changed = stageCollectionRead(
+          state,
+          readLatest(() => active),
+          () => active,
+          {
+            reset: pendingReset,
+            ...(fullScan ? {} : { candidates }),
+            orderMayChange,
+            isEqual: equality,
+          }
+        );
+        recovering = false;
+        return { changed, force: pendingReset };
+      } finally {
+        active = false;
+      }
+    },
+    publish: state.publish,
+    clear: () => {
+      state.clear();
+      pendingReset = false;
+      pendingCause = undefined;
+      contextCause = undefined;
+      recovering = false;
+      fullScan = false;
+      orderMayChange = false;
+      candidates.clear();
+    },
+    release: () => {
+      cleanup?.();
+      cleanup = undefined;
+      state.release();
+      output.consumers.clear();
+    },
+  };
+
+  scheduler.initialize(() => {
+    let active = true;
+    try {
+      stageCollectionRead(
+        state,
+        readLatest(() => active),
+        () => active,
+        {
+          reset: true,
+          isEqual: equality,
+        }
+      );
+      state.publish();
+      state.clear();
+    } finally {
+      active = false;
+    }
+  });
+  scheduler.addSource(boundary);
+
+  const mark = (metadata: CollectionMark = {}) => {
+    scheduler.assertIdle();
+    pendingReset ||= metadata.reset ?? false;
+    if (metadata.cause !== undefined) pendingCause ??= metadata.cause;
+    fullScan ||= metadata.fullScan ?? false;
+    orderMayChange ||= metadata.orderMayChange ?? false;
+    if (metadata.candidates) for (const key of metadata.candidates) candidates.add(key);
+    if (boundary.fault) recovering = true;
+    scheduler.capture(boundary);
+  };
+  const fail = (cause: unknown) => {
+    boundary.fault = sourceError(boundary, cause);
+    recovering = false;
+    scheduler.capture(boundary);
+  };
+  return {
+    producer: boundary,
+    output,
+    mark,
+    fail,
+    detach: next => {
+      cleanup = next;
+    },
+  };
+};
+
+type DocumentBinding = {
+  matches(commit: DocumentCommit<ObjectNode>): boolean;
+  capture(commit: DocumentCommit<ObjectNode>): void;
+  dispose(): void;
+};
+
+type DocumentConnection = {
+  add(binding: DocumentBinding): Unsubscribe;
+  close(): void;
+};
+
+type ValueMember = {
+  readonly boundary: ValueBoundary;
+  receive(value: unknown, metadata?: SourceMark): void;
+};
+
+export const createSourceRegistry = (scheduler: Scheduler) => {
+  const documents = new Map<object, DocumentConnection>();
+  const readables = new Map<object, { members: Set<ValueMember>; close(): void }>();
+  const externalValues = new WeakMap<object, { members: Set<ValueMember>; close(): void }>();
+  const externalCollections = new WeakMap<
+    object,
+    { members: Set<CollectionBoundary>; close(): void }
+  >();
+
+  const documentConnection = <S extends ObjectNode>(
+    runtime: DocumentReadable<S>
+  ): DocumentConnection => {
+    const state = accessOf(runtime);
+    const cached = documents.get(state);
+    if (cached) return cached;
+    if (state.disposed) throw new Error('Document has been disposed.');
+    const bindings = new Set<DocumentBinding>();
     const guard = (locked: boolean) => {
       state.projectionLocks = (state.projectionLocks ?? 0) + (locked ? 1 : -1);
     };
     scheduler.guards.add(guard);
-    const unsubscribe = attachProjection(runtime, {
+    let closed = false;
+    let detach: Unsubscribe = () => undefined;
+    const connection: DocumentConnection = {
+      add(binding) {
+        if (closed) throw new Error('Document projection connection is closed.');
+        bindings.add(binding);
+        let active = true;
+        return () => {
+          if (!active) return;
+          active = false;
+          bindings.delete(binding);
+          if (!bindings.size) connection.close();
+        };
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        detach();
+        bindings.clear();
+        scheduler.guards.delete(guard);
+        documents.delete(state);
+      },
+    };
+    detach = attachProjection(runtime, {
       capture: commit => {
-        for (const binding of bindings) {
-          if (
-            !binding.targets.length ||
-            binding.targets.some(value => affectsTarget(commit.impact, value))
-          ) {
-            binding.receive(commit);
-            batch = scheduler.batchContext();
-            scheduler.capture(binding.record);
-          }
-        }
+        for (const binding of bindings)
+          if (binding.matches(commit as DocumentCommit<ObjectNode>))
+            binding.capture(commit as DocumentCommit<ObjectNode>);
       },
       settle: scheduler.settle,
       flush: scheduler.flush,
       dispose: () => {
-        bindings.forEach(({ record }) => {
-          record.fault = new ProjectionError(
-            'source',
-            'document disposed',
-            [runtime.revision()],
-            new Error('Document has been disposed.')
-          );
-          scheduler.capture(record);
-        });
+        for (const binding of bindings) binding.dispose();
         scheduler.run();
       },
     });
-    scheduler.cleanups.add(() => {
-      unsubscribe();
-      scheduler.guards.delete(guard);
-    });
-    documents.set(state, handle);
-    return handle;
+    documents.set(state, connection);
+    return connection;
   };
-  const valueSource = <T>(initial: T, equal: (a: T, b: T) => boolean) => {
-    let value = initial;
-    let revision = 0;
-    let cause: unknown;
-    let reset = false;
-    const handle = Object.freeze({}) as GraphSource<ValueContext<T>>;
-    const record: SourceRecord = {
-      consumers: new Set(),
-      disposed: false,
-      fault: undefined,
-      revision: () => revision,
-      reset: () => reset,
-      clear: () => {
-        cause = undefined;
-        reset = false;
-      },
-      context: active => {
-        assertScope(active);
-        return Object.freeze({
-          kind: 'value' as const,
-          value,
-          revision,
-          reset,
-          cause,
-        });
-      },
-    };
-    scheduler.register(handle, record);
-    const accept = (next: T, metadata?: Pick<ValueContext<T>, 'revision' | 'reset' | 'cause'>) => {
-      scheduler.assertIdle();
-      const recovering = record.fault !== undefined;
-      const eventful =
-        metadata !== undefined &&
-        (metadata.reset === true ||
-          (metadata.revision !== undefined && metadata.revision !== revision) ||
-          metadata.cause !== undefined);
-      if (equal(value, next) && !recovering && !eventful) return;
-      record.fault = undefined;
-      value = next;
-      revision = metadata?.revision ?? revision + 1;
-      cause = metadata?.cause ?? scheduler.batchContext()?.cause ?? cause;
-      reset ||= metadata?.reset ?? false;
-      scheduler.capture(record);
-    };
+
+  const valueInput = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'value-input') throw new Error('Invalid value input source.');
+    const source = definition.source;
+    const boundary = createValueBoundary(
+      scheduler,
+      'projection input',
+      source.initial,
+      source.equality
+    );
     return {
-      source: handle,
-      accept,
-      set(next: T) {
-        accept(next);
-        scheduler.run();
-      },
-    };
-  };
-  const collectionInput = <K extends string, V>(initial: ReadonlyMap<K, V>) => {
-    const values = new Map(initial);
-    const touched = new Map<K, { readonly present: boolean; readonly value?: V }>();
-    let beforeIds: readonly K[] | undefined;
-    let revision = 0;
-    let cause: unknown;
-    const handle = Object.freeze({ kind: 'collection' as const }) as unknown as GraphSource<
-      CollectionContext<K, V>
-    >;
-    const change = (): CollectionChange<K, V> | undefined => {
-      const added: { readonly key: K; readonly after: V }[] = [];
-      const updated: { readonly key: K; readonly before: V; readonly after: V }[] = [];
-      const removed: { readonly key: K; readonly before: V }[] = [];
-      for (const [key, before] of touched) {
-        const afterPresent = values.has(key);
-        if (!before.present && afterPresent) added.push({ key, after: values.get(key) as V });
-        else if (before.present && !afterPresent) removed.push({ key, before: before.value as V });
-        else if (before.present && afterPresent && !Object.is(before.value, values.get(key)))
-          updated.push({ key, before: before.value as V, after: values.get(key) as V });
-      }
-      let order: { readonly before: readonly K[]; readonly after: readonly K[] } | undefined;
-      if (beforeIds) {
-        const afterIds = [...values.keys()];
-        const beforeKeys = new Set(beforeIds);
-        const afterKeys = new Set(afterIds);
-        const beforeCommon = beforeIds.filter(key => afterKeys.has(key));
-        const afterCommon = afterIds.filter(key => beforeKeys.has(key));
-        if (beforeCommon.some((key, index) => key !== afterCommon[index]))
-          order = Object.freeze({
-            before: beforeIds,
-            after: Object.freeze(afterIds),
-          });
-      }
-      if (!added.length && !updated.length && !removed.length && !order) return undefined;
-      return Object.freeze({
-        kind: 'incremental' as const,
-        added: Object.freeze(added),
-        updated: Object.freeze(updated),
-        removed: Object.freeze(removed),
-        ...(order ? { order } : {}),
-      });
-    };
-    const record: SourceRecord = {
-      consumers: new Set(),
-      disposed: false,
-      fault: undefined,
-      revision: () => revision,
-      reset: () => false,
-      shouldSettle: () => change() !== undefined,
-      clear: () => {
-        touched.clear();
-        beforeIds = undefined;
-        cause = undefined;
-      },
-      context: active => {
-        assertScope(active);
-        const read: CollectionRead<K, V> = Object.freeze({
-          get: (key: K) => {
-            assertScope(active);
-            return values.get(key);
-          },
-          has: (key: K) => {
-            assertScope(active);
-            return values.has(key);
-          },
-          ids: () => {
-            assertScope(active);
-            return Object.freeze([...values.keys()]);
-          },
-        });
-        return Object.freeze({
-          kind: 'collection' as const,
-          read,
-          change: change(),
-          revision,
-          cause,
-        });
-      },
-    };
-    scheduler.register(handle, record);
-    return {
-      source: handle,
-      update(
-        run: (draft: {
-          get(key: K): V | undefined;
-          has(key: K): boolean;
-          set(key: K, value: V): void;
-          remove(key: K): void;
-        }) => void
-      ) {
-        scheduler.assertIdle();
-        const staged = new Map<
-          K,
-          { readonly present: true; readonly value: V } | { readonly present: false }
-        >();
-        let active = true;
-        const draft = Object.freeze({
-          get: (key: K) => {
-            assertScope(() => active);
-            const entry = staged.get(key);
-            return entry ? (entry.present ? entry.value : undefined) : values.get(key);
-          },
-          has: (key: K) => {
-            assertScope(() => active);
-            const entry = staged.get(key);
-            return entry ? entry.present : values.has(key);
-          },
-          set: (key: K, value: V) => {
-            assertScope(() => active);
-            if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
-            staged.set(key, { present: true, value });
-          },
-          remove: (key: K) => {
-            assertScope(() => active);
-            if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
-            staged.set(key, { present: false });
-          },
-        });
-        try {
-          assertSynchronous(run(draft));
-        } finally {
-          active = false;
-        }
-        let changed = false;
-        for (const [key, entry] of staged) {
-          const present = values.has(key);
-          if (entry.present ? present && Object.is(values.get(key), entry.value) : !present)
-            continue;
-          if (!touched.has(key)) touched.set(key, { present, value: values.get(key) });
-          if (!beforeIds && present !== entry.present)
-            beforeIds = Object.freeze([...values.keys()]);
-          if (entry.present) values.set(key, entry.value);
-          else values.delete(key);
-          changed = true;
-        }
-        if (!changed) return;
-        revision++;
-        cause = scheduler.batchContext()?.cause ?? cause;
-        scheduler.capture(record);
-        scheduler.run();
-      },
-    };
-  };
-  const externalValueSource = <T>(
-    port: ExternalValueSource<T>,
-    equal: (a: T, b: T) => boolean
-  ): GraphSource<ValueContext<T>> => {
-    scheduler.assertIdle();
-    const old = externalSources.get(port);
-    if (old) return old as GraphSource<ValueContext<T>>;
-    const input = valueSource<T>(port.current(), equal);
-    const fail = (cause: unknown) => {
-      const record = scheduler.source(input.source);
-      record.fault = new ProjectionError('source', 'external source', [record.revision()], cause);
-      scheduler.capture(record);
-    };
-    let unsubscribe: (() => void) | undefined;
-    try {
-      unsubscribe = port.subscribe(event => {
-        try {
-          input.accept(event.value, {
-            revision: event.revision,
-            reset: event.reset ?? false,
-            cause: event.cause,
-          });
-        } catch (cause) {
-          fail(cause);
-        }
-        scheduler.run();
-      });
-    } catch (cause) {
-      unsubscribe?.();
-      scheduler.unregisterSource(input.source);
-      throw cause;
-    }
-    scheduler.cleanups.add(() => unsubscribe?.());
-    externalSources.set(port, input.source);
-    return input.source;
-  };
-  const externalCollectionSource = <K extends string, V>(
-    port: ExternalCollectionSource<K, V>
-  ): GraphSource<CollectionContext<K, V>> => {
-    scheduler.assertIdle();
-    const old = externalSources.get(port);
-    if (old) return old as GraphSource<CollectionContext<K, V>>;
-    let read = port.current();
-    let previous = read;
-    let revision = port.revision();
-    let change: CollectionContext<K, V>['change'];
-    let reset = false;
-    let orderChanged = false;
-    let cause: unknown;
-    let transitionKeys = new Set<K>();
-    let pending = false;
-    const handle = Object.freeze({ kind: 'collection' as const }) as unknown as GraphSource<
-      CollectionContext<K, V>
-    >;
-    const record: SourceRecord = {
-      consumers: new Set(),
-      disposed: false,
-      fault: undefined,
-      revision: () => revision,
-      reset: () => reset,
-      clear: () => {
-        previous = read;
-        pending = false;
-        change = undefined;
-        reset = false;
-        orderChanged = false;
-        cause = undefined;
-        transitionKeys.clear();
-      },
-      context: active => {
-        assertScope(active);
-        const currentRead: CollectionRead<K, V> = Object.freeze({
-          get: key => {
-            assertScope(active);
-            return read.get(key);
-          },
-          has: key => {
-            assertScope(active);
-            return read.has(key);
-          },
-          ids: () => {
-            assertScope(active);
-            return read.ids();
-          },
-        });
-        return Object.freeze({
-          kind: 'collection' as const,
-          read: currentRead,
-          change,
-          revision,
-          cause,
-        });
-      },
-    };
-    scheduler.register(handle, record);
-    const fail = (error: unknown) => {
-      record.fault = new ProjectionError('source', 'external collection source', [revision], error);
-      scheduler.capture(record);
-    };
-    const deriveChange = (): CollectionContext<K, V>['change'] => {
-      if (reset) return Object.freeze({ kind: 'reset' as const });
-      const added: { readonly key: K; readonly after: V }[] = [];
-      const updated: {
-        readonly key: K;
-        readonly before: V;
-        readonly after: V;
-      }[] = [];
-      const removed: { readonly key: K; readonly before: V }[] = [];
-      for (const key of transitionKeys) {
-        const beforePresent = previous.has(key);
-        const afterPresent = read.has(key);
-        const before = beforePresent ? previous.get(key) : undefined;
-        const after = afterPresent ? read.get(key) : undefined;
-        if (beforePresent === afterPresent && Object.is(before, after)) continue;
-        if (!beforePresent && afterPresent) added.push({ key, after: after as V });
-        else if (beforePresent && !afterPresent) removed.push({ key, before: before as V });
-        else if (beforePresent && afterPresent)
-          updated.push({ key, before: before as V, after: after as V });
-      }
-      let order: { readonly before: readonly K[]; readonly after: readonly K[] } | undefined;
-      if (orderChanged) {
-        const beforeIds = previous.ids();
-        const afterIds = read.ids();
-        const beforeKeys = new Set(beforeIds);
-        const afterKeys = new Set(afterIds);
-        const beforeCommon = beforeIds.filter(key => afterKeys.has(key));
-        const afterCommon = afterIds.filter(key => beforeKeys.has(key));
-        if (beforeCommon.some((key, index) => afterCommon[index] !== key))
-          order = Object.freeze({
-            before: Object.freeze([...beforeIds]),
-            after: Object.freeze([...afterIds]),
-          });
-      }
-      if (!added.length && !removed.length && !updated.length && !order) return undefined;
-      return Object.freeze({
-        kind: 'incremental' as const,
-        added: Object.freeze(added),
-        updated: Object.freeze(updated),
-        removed: Object.freeze(removed),
-        ...(order ? { order } : {}),
-      });
-    };
-    let unsubscribe: (() => void) | undefined;
-    try {
-      unsubscribe = port.subscribe(event => {
-        try {
+      ...boundary,
+      write: {
+        kind: 'value',
+        set(value) {
           scheduler.assertIdle();
-          if (!pending) previous = event.previous;
-          read = port.current();
-          revision = event.revision;
-          if (event.impact?.kind === 'incremental') {
-            event.impact.added.forEach(key => transitionKeys.add(key));
-            event.impact.removed.forEach(key => transitionKeys.add(key));
-            event.impact.updated.forEach(key => transitionKeys.add(key));
-            orderChanged ||= Boolean(
-              event.impact.added.size || event.impact.removed.size || event.impact.orderChanged
-            );
-          } else if (!event.impact) {
-            previous.ids().forEach(key => transitionKeys.add(key));
-            read.ids().forEach(key => transitionKeys.add(key));
-            orderChanged = true;
-          }
-          reset ||= event.impact?.kind === 'reset';
-          cause = event.cause ?? scheduler.batchContext()?.cause ?? cause;
-          change = deriveChange();
-          record.fault = undefined;
-          scheduler.capture(record);
-          pending = true;
-        } catch (error) {
-          fail(error);
-        }
-        scheduler.run();
-      });
-    } catch (error) {
-      unsubscribe?.();
-      scheduler.unregisterSource(handle);
-      throw error;
-    }
-    scheduler.cleanups.add(() => unsubscribe?.());
-    externalSources.set(port, handle);
-    return handle;
+          boundary.setLatest(value);
+          boundary.mark();
+          scheduler.run();
+        },
+      },
+    };
   };
-  return {
-    dispose: () => {
-      documents.clear();
-      readables.clear();
-    },
-    document,
-    fromSource: <T>(
-      source: ExternalValueSource<T>,
-      options?: { readonly isEqual?: (a: T, b: T) => boolean }
-    ) => externalValueSource(source, options?.isEqual ?? Object.is),
-    fromCollectionSource: <K extends string, V>(source: ExternalCollectionSource<K, V>) =>
-      externalCollectionSource(source),
-    input: <T>(initial: T, options?: { readonly isEqual?: (a: T, b: T) => boolean }) => {
-      const { source, set } = valueSource(initial, options?.isEqual ?? Object.is);
-      return Object.freeze({ source, set });
-    },
-    collectionInput,
-    fromReadable: <T>(
-      readable: Readable<T>,
-      options?: { readonly isEqual?: (a: T, b: T) => boolean }
-    ): GraphSource<ValueContext<T>> => {
-      scheduler.assertIdle();
-      if (projectionHandles.has(readable))
-        throw new Error('Projection nodes must be declared directly as sources.');
-      const equal = options?.isEqual ?? Object.is;
-      let bindings = readables.get(readable);
-      const old = bindings?.get(equal);
-      if (old) return old.source as GraphSource<ValueContext<T>>;
-      const input = valueSource(readable.current(), equal);
-      if (bindings) {
-        bindings.set(equal, { source: input.source, accept: value => input.accept(value as T) });
-        return input.source;
-      }
-      bindings = new Map([
-        [equal, { source: input.source, accept: (value: unknown) => input.accept(value as T) }],
-      ]);
-      const members = bindings;
-      const receive = (settle = true) => {
-        if (!scheduler.active) return;
-        let value: T;
-        try {
-          value = readable.current();
-        } catch (cause) {
-          for (const member of members.values()) {
-            const record = scheduler.source(member.source);
-            record.fault = new ProjectionError(
-              'source',
-              'external readable',
-              [record.revision()],
-              cause
-            );
-            scheduler.capture(record);
+
+  const collectionInput = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'collection-input')
+      throw new Error('Invalid collection input source.');
+    const values = new Map(definition.source.initial);
+    const boundary = createCollectionBoundary(
+      scheduler,
+      'projection collection input',
+      () => mapRead(values),
+      definition.output.equality
+    );
+    return {
+      ...boundary,
+      write: {
+        kind: 'collection',
+        update(run) {
+          scheduler.assertIdle();
+          const staged = new Map<
+            string,
+            { readonly present: true; readonly value: unknown } | { readonly present: false }
+          >();
+          const operations: (
+            | { readonly kind: 'set'; readonly key: string; readonly value: unknown }
+            | { readonly kind: 'remove'; readonly key: string }
+          )[] = [];
+          let active = true;
+          const draft: KeyedInputDraft<string, unknown> = Object.freeze({
+            get: key => {
+              assertScope(() => active);
+              const entry = staged.get(key);
+              return entry ? (entry.present ? entry.value : undefined) : values.get(key);
+            },
+            has: key => {
+              assertScope(() => active);
+              const entry = staged.get(key);
+              return entry ? entry.present : values.has(key);
+            },
+            set: (key, value) => {
+              assertScope(() => active);
+              if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+              staged.set(key, { present: true, value });
+              operations.push({ kind: 'set', key, value });
+            },
+            remove: key => {
+              assertScope(() => active);
+              if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+              staged.set(key, { present: false });
+              operations.push({ kind: 'remove', key });
+            },
+          });
+          try {
+            assertSynchronous(run(draft));
+          } finally {
+            active = false;
           }
-          if (settle) scheduler.run();
+
+          const candidates = new Set<string>();
+          let structural = false;
+          let changed = false;
+          for (const operation of operations) {
+            const present = values.has(operation.key);
+            if (operation.kind === 'set') {
+              if (present && Object.is(values.get(operation.key), operation.value)) continue;
+              structural ||= !present;
+              values.set(operation.key, operation.value);
+            } else {
+              if (!present) continue;
+              structural = true;
+              values.delete(operation.key);
+            }
+            candidates.add(operation.key);
+            changed = true;
+          }
+          if (!changed) return;
+          boundary.mark({ candidates, orderMayChange: structural });
+          scheduler.run();
+        },
+      },
+    };
+  };
+
+  const documentValue = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'document-value')
+      throw new Error('Invalid document value source.');
+    const { document, selector } = definition.source;
+    const state = accessOf(document);
+    const address = selector?.address ?? Object.freeze([]);
+    const schemaNode = () => nodeAt(state.schema, address, state.document);
+    const read = () => {
+      if (state.disposed) throw new Error('Document has been disposed.');
+      const node = schemaNode();
+      if (!node) return undefined;
+      const value = selector ? readAddress(state.document, address, state.schema) : state.document;
+      return copyValue(node, value);
+    };
+    const initial = read();
+    const boundary = createValueBoundary(scheduler, 'document source', initial, (left, right) => {
+      const node = schemaNode();
+      return node ? equalValue(node, left, right) : Object.is(left, right);
+    });
+    const remove = documentConnection(document).add({
+      matches: commit => !selector || affectsTarget(commit.impact, selector),
+      capture: commit => {
+        try {
+          boundary.setLatest(read());
+          boundary.mark({ reset: commit.impact.kind === 'reset' });
+        } catch (cause) {
+          boundary.fail(cause);
+        }
+      },
+      dispose: () => boundary.fail(new Error('Document has been disposed.')),
+    });
+    boundary.detach(remove);
+    return boundary;
+  };
+
+  const documentCollection = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'document-collection')
+      throw new Error('Invalid document collection source.');
+    const { document, selector } = definition.source;
+    const state = accessOf(document);
+    const read = (active: () => boolean): CollectionRead<string, unknown> => {
+      if (state.disposed) throw new Error('Document has been disposed.');
+      const raw = collectionAccess({ state, active }, selector.address) as CollectionRead<
+        string,
+        unknown
+      >;
+      const snapshots = new Map<string, unknown>();
+      return Object.freeze({
+        get: (key: string) => {
+          assertScope(active);
+          if (!snapshots.has(key)) snapshots.set(key, snapshot(raw.get(key)));
+          return snapshots.get(key);
+        },
+        has: (key: string) => {
+          assertScope(active);
+          return raw.has(key);
+        },
+        ids: () => {
+          assertScope(active);
+          return raw.ids();
+        },
+      });
+    };
+    const collectionNode = () => nodeAt(state.schema, selector.address, state.document);
+    const boundary = createCollectionBoundary(
+      scheduler,
+      'document collection source',
+      read,
+      (left, right) => {
+        const node = collectionNode();
+        const entry = node && collectionEntryNode(node);
+        return entry ? equalValue(entry, left, right) : Object.is(left, right);
+      }
+    );
+    const remove = documentConnection(document).add({
+      matches: commit => affectsTarget(commit.impact, selector),
+      capture: commit => {
+        const impact = collectionImpact(commit.impact, selector);
+        if (impact.kind === 'reset') {
+          boundary.mark({ reset: true });
           return;
         }
-        for (const member of members.values()) {
-          try {
-            member.accept(value);
-          } catch (cause) {
-            const record = scheduler.source(member.source);
-            record.fault = new ProjectionError(
-              'source',
-              'external readable',
-              [record.revision()],
-              cause
-            );
-            scheduler.capture(record);
-          }
+        const candidates = new Set<string>([...impact.added, ...impact.updated, ...impact.removed]);
+        boundary.mark({
+          candidates,
+          orderMayChange: Boolean(impact.added.size || impact.removed.size || impact.orderChanged),
+        });
+      },
+      dispose: () => boundary.fail(new Error('Document has been disposed.')),
+    });
+    boundary.detach(remove);
+    return boundary;
+  };
+
+  const readable = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'readable') throw new Error('Invalid Readable source.');
+    const { readable, equality } = definition.source;
+    let initial = readable.current();
+    const boundary = createValueBoundary(scheduler, 'external readable', initial, equality);
+    const member: ValueMember = {
+      boundary,
+      receive(value, metadata) {
+        initial = value;
+        boundary.setLatest(value);
+        boundary.mark(metadata);
+      },
+    };
+    let connection = readables.get(readable);
+    if (!connection) {
+      const members = new Set<ValueMember>();
+      let closed = false;
+      let unsubscribe: Unsubscribe | undefined;
+      let detachDocument: Unsubscribe | undefined;
+      const receive = (settle: boolean) => {
+        if (closed || !scheduler.active) return;
+        try {
+          const value = readable.current();
+          members.forEach(next => next.receive(value));
+        } catch (cause) {
+          members.forEach(next => next.boundary.fail(cause));
         }
         if (settle) scheduler.run();
       };
-      let unsubscribe: (() => void) | undefined;
-      let detach: (() => void) | undefined;
-      try {
-        const owner = documentReadableOwner(readable);
-        if (owner) {
-          document(owner);
-          detach = attachProjection(owner, {
-            capture: () => receive(false),
-            settle: scheduler.settle,
-            flush: scheduler.flush,
-            dispose: () => {
-              for (const member of members.values()) {
-                const record = scheduler.source(member.source);
-                record.fault = new ProjectionError(
-                  'source',
-                  'document readable disposed',
-                  [record.revision()],
-                  new Error('Document has been disposed.')
-                );
-                scheduler.capture(record);
-              }
-              scheduler.run();
-            },
-          });
-        }
-        unsubscribe = readable.subscribe(() => receive());
-        input.accept(readable.current());
-      } catch (error) {
-        try {
+      const created = {
+        members,
+        close() {
+          if (closed) return;
+          closed = true;
           unsubscribe?.();
-          detach?.();
-        } finally {
-          scheduler.unregisterSource(input.source);
-        }
-        throw error;
+          detachDocument?.();
+          readables.delete(readable);
+        },
+      };
+      const owner = documentReadableOwner(readable);
+      if (owner) {
+        detachDocument = documentConnection(owner).add({
+          matches: () => true,
+          capture: () => receive(false),
+          dispose: () => {
+            members.forEach(next => next.boundary.fail(new Error('Document has been disposed.')));
+          },
+        });
       }
-      scheduler.cleanups.add(unsubscribe);
-      if (detach) scheduler.cleanups.add(detach);
-      readables.set(readable, bindings);
-      scheduler.run();
-      return input.source;
+      unsubscribe = readable.subscribe(() => receive(true));
+      connection = created;
+      readables.set(readable, connection);
+    }
+    connection.members.add(member);
+    boundary.detach(() => {
+      connection!.members.delete(member);
+      if (!connection!.members.size) connection!.close();
+    });
+    void initial;
+    return boundary;
+  };
+
+  const externalValue = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'external-value')
+      throw new Error('Invalid external value source.');
+    const { source, equality } = definition.source;
+    const boundary = createValueBoundary(scheduler, 'external source', source.current(), equality);
+    const member: ValueMember = {
+      boundary,
+      receive(value, metadata) {
+        boundary.setLatest(value);
+        boundary.mark(metadata);
+      },
+    };
+    let connection = externalValues.get(source);
+    if (!connection) {
+      const members = new Set<ValueMember>();
+      let closed = false;
+      let unsubscribe: Unsubscribe | undefined;
+      const created = {
+        members,
+        close() {
+          if (closed) return;
+          closed = true;
+          unsubscribe?.();
+          externalValues.delete(source);
+        },
+      };
+      try {
+        unsubscribe = source.subscribe(event => {
+          try {
+            members.forEach(next =>
+              next.receive(event.value, { reset: event.reset, cause: event.cause })
+            );
+          } catch (cause) {
+            members.forEach(next => next.boundary.fail(cause));
+          }
+          scheduler.run();
+        });
+      } catch (cause) {
+        created.close();
+        throw cause;
+      }
+      connection = created;
+      externalValues.set(source, connection);
+    }
+    connection.members.add(member);
+    boundary.detach(() => {
+      connection!.members.delete(member);
+      if (!connection!.members.size) connection!.close();
+    });
+    return boundary;
+  };
+
+  const externalCollection = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'external-collection')
+      throw new Error('Invalid external collection source.');
+    const source = definition.source.source as ExternalCollectionSource<string, unknown>;
+    const boundary = createCollectionBoundary(
+      scheduler,
+      'external collection source',
+      () => {
+        const current = source.current();
+        return Object.freeze({
+          get: key => current.get(key),
+          has: key => current.has(key),
+          ids: () => current.ids(),
+        });
+      },
+      definition.output.equality
+    );
+    let connection = externalCollections.get(source);
+    if (!connection) {
+      const members = new Set<CollectionBoundary>();
+      let closed = false;
+      let unsubscribe: Unsubscribe | undefined;
+      const created = {
+        members,
+        close() {
+          if (closed) return;
+          closed = true;
+          unsubscribe?.();
+          externalCollections.delete(source);
+        },
+      };
+      try {
+        unsubscribe = source.subscribe(event => {
+          try {
+            const impact = event.impact;
+            if (impact?.kind === 'reset') {
+              members.forEach(next => next.mark({ reset: true, cause: event.cause }));
+            } else if (impact?.kind === 'incremental') {
+              const candidates = new Set<string>([
+                ...impact.added,
+                ...impact.updated,
+                ...impact.removed,
+              ]);
+              members.forEach(next =>
+                next.mark({
+                  candidates,
+                  orderMayChange: Boolean(
+                    impact.added.size || impact.removed.size || impact.orderChanged
+                  ),
+                  cause: event.cause,
+                })
+              );
+            } else {
+              members.forEach(next =>
+                next.mark({ fullScan: true, orderMayChange: true, cause: event.cause })
+              );
+            }
+          } catch (cause) {
+            members.forEach(next => next.fail(cause));
+          }
+          scheduler.run();
+        });
+      } catch (cause) {
+        created.close();
+        throw cause;
+      }
+      connection = created;
+      externalCollections.set(source, connection);
+    }
+    connection.members.add(boundary);
+    boundary.detach(() => {
+      connection!.members.delete(boundary);
+      if (!connection!.members.size) connection!.close();
+    });
+    return boundary;
+  };
+
+  return {
+    materialize(definition: SourceDefinition): SourceMaterialization {
+      switch (definition.source.kind) {
+        case 'value-input':
+          return valueInput(definition);
+        case 'collection-input':
+          return collectionInput(definition);
+        case 'document-value':
+          return documentValue(definition);
+        case 'document-collection':
+          return documentCollection(definition);
+        case 'readable':
+          return readable(definition);
+        case 'external-value':
+          return externalValue(definition);
+        case 'external-collection':
+          return externalCollection(definition);
+      }
     },
-    assertCollection: (handle: object) => {
-      scheduler.source(handle);
-      if (!isCollectionSource(handle)) throw new Error('map requires a collection source.');
+    dispose() {
+      documents.forEach(connection => connection.close());
+      readables.forEach(connection => connection.close());
+      documents.clear();
+      readables.clear();
     },
   };
 };
