@@ -1,7 +1,7 @@
 import type { ObjectNode } from '../schema';
 import type { DocumentRuntime } from '../runtime/contract';
 import type { JsonChangeLimits } from './json';
-import type { Readable } from '../projection/readable';
+import type { Readable } from '../projection/readable/contract';
 
 export class LocalSyncUnavailableError extends Error {
   constructor(capability: 'IndexedDB' | 'Web Locks' | 'BroadcastChannel') {

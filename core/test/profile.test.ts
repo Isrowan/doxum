@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { equal } from '../src/mutation/anchor';
+import { equal } from '../src/ordered-key';
 import { copyValue } from '../src/schema-value';
 import { field, object } from '../src';
 import { startProfile } from '../src/profile';

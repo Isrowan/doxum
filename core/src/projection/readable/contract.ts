@@ -1,4 +1,4 @@
-import type { Unsubscribe } from '../runtime/contract';
+import type { Unsubscribe } from '../../runtime/contract';
 
 export type Readable<TValue> = {
   current(): TValue;

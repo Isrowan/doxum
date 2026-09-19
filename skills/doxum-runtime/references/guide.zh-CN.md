@@ -3,7 +3,7 @@
 ## 定义、修改与读取
 
 ```ts
-import { createDocument, field, map, object, select, snapshot, type Infer } from 'doxum';
+import { createDocument, field, map, object, read, snapshot, type Infer } from 'doxum';
 
 const task = object({ title: field<string>(), done: field<boolean>() });
 const model = object({ tasks: map(task) });
@@ -18,8 +18,8 @@ document.update(draft => {
   draft.tasks.put('b', { title: 'Review', done: false });
   return { warnings: [] };
 });
-const done = select(document, state => state.tasks.get('a')?.done);
-const tasks = select(document, state => snapshot(state.tasks));
+const done = read(document, state => state.tasks.get('a')?.done);
+const tasks = read(document, state => snapshot(state.tasks));
 document.subscribe(
   path => path.tasks.item('a').done,
   commit => console.log(commit.changes)
@@ -27,7 +27,7 @@ document.subscribe(
 ```
 
 根 object 是定义身份，runtime 拥有状态与 revision。事务同步且原子，修改立即可读。
-Draft 和内部 readWith 是同步回调内的借用视图，不得逃逸。预期拒绝抛 TransactionRejected；普通异常完整恢复后
+Draft 和 `read` selector 接收的 Read 是同步回调内的借用视图，不得逃逸。预期拒绝抛 TransactionRejected；普通异常完整恢复后
 原样抛出。正常返回 false/undefined 是业务结果，不表示拒绝。
 
 object 暴露可编辑成员；field 是原子值，包括对象和数组。Infer 与作用域内原子值深只读；

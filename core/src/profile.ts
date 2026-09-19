@@ -34,6 +34,7 @@ const counters = () => ({
     listItems: 0,
   },
   impact: { affectsChecks: 0, indexes: 0 },
+  collectionIndex: { nodes: 0, builds: 0, builtItems: 0 },
   collectionView: { mappedItems: 0, idsScanned: 0, arraysCopied: 0 },
   materialized: { updated: 0, rebuilt: 0, notifications: 0 },
 });
@@ -105,6 +106,17 @@ export const profile = {
     },
     affects: () => {
       if (active) active.impact.affectsChecks++;
+    },
+  },
+  collectionIndex: {
+    node: () => {
+      if (active) active.collectionIndex.nodes++;
+    },
+    build: (items: number) => {
+      if (active) {
+        active.collectionIndex.builds++;
+        active.collectionIndex.builtItems += items;
+      }
     },
   },
   collectionView: {

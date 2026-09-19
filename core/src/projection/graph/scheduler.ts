@@ -1,7 +1,7 @@
-import { profile } from '../profile';
-import type { ObserverError, Unsubscribe } from '../runtime/contract';
-import type { BatchContext, CollectionChange, SourceContext } from './contract';
-import { ProjectionDisposedError, ProjectionError } from './contract';
+import { profile } from '../../profile';
+import type { ObserverError, Unsubscribe } from '../../runtime/contract';
+import type { BatchContext, CollectionChange, SourceContext } from '../contract';
+import { ProjectionDisposedError, ProjectionError } from '../contract';
 
 type BatchOptions = { readonly cause?: unknown };
 

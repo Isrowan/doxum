@@ -1,5 +1,6 @@
 import type { DocumentNode, ObjectNode } from '../schema';
-import * as anchor from './anchor';
+import * as ordered from '../ordered-key';
+import { installOwn } from '../value/record';
 
 export type CanonicalState = { schema: ObjectNode; document: unknown };
 
@@ -13,23 +14,15 @@ export const installMember = (
   if (Array.isArray(parent)) {
     const index = Number(key);
     if (present) {
-      if (index < 0) anchor.insert(parent, parent.length, value);
+      if (index < 0) ordered.insert(parent, parent.length, value);
       else parent[index] = value;
-    } else if (index >= 0) anchor.remove(parent, index);
-  } else if (!present) delete parent[key];
-  else if (Object.hasOwn(parent, key)) parent[key] = value;
-  else
-    Object.defineProperty(parent, key, {
-      value,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
+    } else if (index >= 0) ordered.remove(parent, index);
+  } else installOwn(parent, key, present, value);
 };
 
 export const orderOf = (node: DocumentNode, value: unknown): string[] => {
   if (node.kind === 'list')
-    return anchor.toArray(anchor.indexedKeys(value as unknown[], node.keyOf));
+    return ordered.toArray(ordered.indexedKeys(value as unknown[], node.keyOf));
   if (node.kind === 'table') return [...(value as { ids: string[] }).ids];
   throw new Error('Order requires a table or list.');
 };
@@ -39,7 +32,7 @@ export const installOrder = (
   value: unknown,
   order: readonly string[]
 ): void => {
-  if (node.kind === 'list') anchor.install(value as unknown[], node.keyOf, order);
+  if (node.kind === 'list') ordered.install(value as unknown[], node.keyOf, order);
   else if (node.kind === 'table') (value as { ids: string[] }).ids = [...order];
   else throw new Error('Order requires a table or list.');
 };

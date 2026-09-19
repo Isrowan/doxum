@@ -1,6 +1,6 @@
-import { profile } from '../profile';
-import { createCollectionOutput, type CollectionOutputState } from './collection-output';
-import { ProjectionDisposedError } from './contract';
+import { profile } from '../../profile';
+import { createCollectionOutput, type CollectionOutputState } from '../output/collection';
+import { ProjectionDisposedError } from '../contract';
 import type {
   CollectionOutputEvaluation,
   OutputDefinition,
@@ -8,14 +8,14 @@ import type {
   ProcessorDefinition,
   ProcessorInstance,
   ValueOutputEvaluation,
-} from './definition';
+} from '../definition';
 import {
   assertSynchronous,
   type OutputRecord,
   type ProcessorRecord,
   type Scheduler,
 } from './scheduler';
-import { createValueOutput, type ValueOutputState } from './value-output';
+import { createValueOutput, type ValueOutputState } from '../output/value';
 
 type BoundOutput =
   | {
@@ -85,7 +85,7 @@ export const createProcessor = (
       reset: state.reset,
       subscribe: listener => {
         check();
-        const wrapped = (change: import('./contract').CollectionChange<string, unknown>) =>
+        const wrapped = (change: import('../contract').CollectionChange<string, unknown>) =>
           listener(change);
         state.subscribe(wrapped);
         return () => state.unsubscribe(wrapped);

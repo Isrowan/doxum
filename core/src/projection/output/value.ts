@@ -1,6 +1,6 @@
-import { profile } from '../profile';
-import type { ValueContext } from './contract';
-import { assertScope } from './scheduler';
+import { profile } from '../../profile';
+import type { ValueContext } from '../contract';
+import { assertScope } from '../graph/scheduler';
 
 const unset = Symbol('projection-value-unset');
 

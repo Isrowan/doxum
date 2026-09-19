@@ -1,5 +1,5 @@
 import type { DocumentAddress, DocumentNode, ObjectNode, ObjectShape } from './schema';
-import * as anchor from './mutation/anchor';
+import * as ordered from './ordered-key';
 import { profile } from './profile';
 import type { MutableTree } from './mutation/tree';
 import { is as isTree } from './mutation/tree';
@@ -126,7 +126,7 @@ export const nodeAt = (
 export const readSegment = (value: unknown, segment: string, node?: DocumentNode): unknown => {
   if (!isRecord(value) && !Array.isArray(value)) return undefined;
   if (node?.kind === 'list' && Array.isArray(value))
-    return value[anchor.indexedKeys(value, node.keyOf).index(segment)];
+    return value[ordered.indexedKeys(value, node.keyOf).index(segment)];
   if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId)) {
     return Object.hasOwn(value.byId, segment) ? value.byId[segment] : undefined;
   }
@@ -254,7 +254,7 @@ export const memberKey = (
   key: string
 ): string | number =>
   container.node.kind === 'list'
-    ? anchor.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
+    ? ordered.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
     : key;
 
 type ResolutionPrefix = {
@@ -378,7 +378,7 @@ export const resolveChild = (
     parent: current,
     key:
       node?.kind === 'list' && Array.isArray(current)
-        ? anchor.indexedKeys(current, node.keyOf).index(last)
+        ? ordered.indexedKeys(current, node.keyOf).index(last)
         : last,
   };
 };

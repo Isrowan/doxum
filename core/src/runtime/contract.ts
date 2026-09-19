@@ -4,7 +4,7 @@ import type { ChangeSet } from '../changes';
 import type { DocumentImpact } from '../impact';
 import type { Draft } from '../access/scope';
 import type { MutationIssue } from '../mutation/issue';
-import type { Readable } from '../projection/readable';
+import type { Readable } from '../projection/readable/contract';
 export type Unsubscribe = () => void;
 export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';

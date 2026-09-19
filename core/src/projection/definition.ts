@@ -13,7 +13,7 @@ import type {
   ValueSelector,
 } from '../schema';
 import { compilePath } from '../schema';
-import { snapshotCollectionView } from './collection-output';
+import { snapshotCollectionView } from './collection/view';
 import type {
   CollectionChange,
   CollectionDraft,
@@ -22,8 +22,8 @@ import type {
   ExternalValueSource,
   SourceContext,
 } from './contract';
-import type { Readable } from './readable';
-import { assertSynchronous } from './scheduler';
+import type { Readable } from './readable/contract';
+import { assertSynchronous } from './graph/scheduler';
 
 declare const projectionDefinition: unique symbol;
 declare const projectionChanges: unique symbol;

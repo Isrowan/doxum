@@ -115,7 +115,9 @@ create/remove/member replacement, `list` owns insert/remove/member replacement,
 complete ChangeSet groups. Generic assignment and whole-container replacement
 remain session primitives. These modules take the existing session, own no state,
 and are not public exports. There are no forwarding methods left on session.
-`anchor.ts` owns ordered-key semantics; `tree.ts` owns topology validation and
+`ordered-key.ts` owns shared keyed-sequence lookup, list-index caching, equality and
+sequence installation. `mutation/anchor.ts` owns only `DocumentAnchor` validation,
+position resolution and move planning; `tree.ts` owns topology validation and
 read-only traversal. Tree writes live in operations/tree and capture touched nodes directly, without session or capture callbacks. ResolvedTreeContainer carries a real tree schema and value; it has no member layout. Ordinary members replay cannot address tree topology.
 A bulk operation resolves its container once and reuses its member layout and
 the command-local `writeMember` entry. Ordinary retained member handles are refreshed
@@ -123,7 +125,10 @@ by replace/remove; bulk commands retain their local storage until the command en
 The private located kernel receives already computed definitions and indexes.
 `ResolvedContainer` includes both the container value and its member storage
 (for a table, the latter is `byId`). `mutation/state.ts` owns installation of validated
-members and orders, shared by session and recorder restoration. It stores no second
+members and orders, shared by session and recorder restoration. Record installation
+uses the shared safe-own-property primitive in `value/record.ts`, so projection
+materialization and mutation agree on special string keys without one depending on
+the other's state layer. Mutation state stores no second
 document and performs no validation or capture of its own.
 `mutation/issue.ts` creates engine issues and maps value parse failures through
 `invalidValue`. The field success path validates without constructing an address;
@@ -136,7 +141,7 @@ accepts a resolved location and a `set`/`remove` operation, with no replacement
 permission flag. The command-local member entry resolves definitions internally; located list operations pass
 their already resolved index directly. No per-write command object is allocated.
 
-Sequence insert/remove/install operations in `anchor.ts` own list-index invalidation
+Sequence insert/remove/install operations in `ordered-key.ts` own list-index invalidation
 or replacement as part of the structural write. Ordered move/reorder planning is pure;
 `operations/order.ts` performs one final sequence install and one session invalidation.
 Session and rollback call the same installation primitives; neither maintains a
@@ -359,6 +364,15 @@ value-only update path-copies only the affected key paths and reuses the immutab
 id sequence; membership or order changes create a new id sequence because order is
 observable. Older `ReadonlyMap` views therefore stay stable without copying every
 unchanged value on each revision.
+Projection implementation ownership is deliberately split by semantic layer:
+`output/collection.ts` owns only staged/published collection lifecycle;
+`collection/index.ts` owns the immutable keyed lookup; `collection/change.ts` owns
+the exact added/updated/removed/common-order algebra; and `collection/view.ts` owns
+`CollectionRead`/`ReadonlyMap` boundary views. `source/boundary.ts` owns the common
+source prepare/publish/fault lifecycle, while `source/document.ts` owns document
+connections, ChangeSet-to-dirty routing and document-specific reads.
+`source/materialization.ts` remains a pure previous/current/dirty structural-sharing
+algorithm and has no mutation-session dependency.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already accepted commit.
 
@@ -373,7 +387,7 @@ distinct accessed containers, not assignment count. Scope counters expose proxy,
 address and cache-refresh work; recorder counters distinguish groups, first-touch
 members and published transitions. Impact counters expose explicit index builds.
 The first membership/order change of an ordered container may copy O(N) keys.
-`anchor.ts` owns a lazy key-to-index cache for canonical list value access,
+`ordered-key.ts` owns a lazy key-to-index cache for canonical list value access,
 address resolution, writes and sealing. Building it costs O(N); subsequent key
 lookups are O(1) until a membership/order change invalidates it. Cache identity
 includes the array and keyOf function; externally supplied arrays are validated
@@ -393,6 +407,9 @@ node snapshot references are retained. An aggregate tree still exposes a plain
 references, but it does not rebuild O(N) node structures. `profile.copy.treeNodes`
 measures actual detached tree-node copies. These costs are deliberate and
 instrumented, not hidden behind a constant-time promise.
+Projection collection profiles additionally expose `collectionIndex.nodes`,
+`collectionIndex.builds` and `collectionIndex.builtItems`, separating persistent
+index path-copy work from source mapping and ID scans.
 `profile.recorder.orderItems` counts first-touch baseline keys;
 `publishedOrderItems` counts detached final order keys. `core/bench/profile.ts`
 also reports generation advances for membership, value replay, sequence, tree and
@@ -403,7 +420,7 @@ timing and sampled allocation runs separate.
 Payload capture, publication and replay preserve references regardless of payload
 size. Only application validation can traverse a payload. `profile.copy.structures`
 counts schema structure nodes copied by the shared copier; `profile.equality` counts
-ordered-key comparisons in `anchor.ts`. These replace the old generic clone counters, which did not
+ordered-key comparisons in `ordered-key.ts`. These replace the old generic clone counters, which did not
 cover schema copies. Snapshot and whole-structure replacement still visit their
 schema structure, and tree topology snapshots still copy affected child arrays.
 

@@ -49,7 +49,7 @@ export type {
   ObserverError,
 } from './runtime/contract';
 export type { MutationIssue, MutationIssueCode } from './mutation/issue';
-export type { Readable } from './projection/readable';
+export type { Readable } from './projection/readable/contract';
 export { read } from './projection/select';
 export type { DocumentSelector } from './projection/select';
 export { input, observe, derive } from './projection/definition';

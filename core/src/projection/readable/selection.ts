@@ -1,7 +1,12 @@
-import type { Unsubscribe } from '../runtime/contract';
-import { collectionChangeBetween } from './collection-output';
-import type { CollectionChange } from './contract';
-import type { Readable } from './readable';
+import type { Unsubscribe } from '../../runtime/contract';
+import {
+  collectionChangedKeys,
+  collectionHasAnyChange,
+  collectionHasStructuralChange,
+  diffCollection,
+} from '../collection/change';
+import type { CollectionChange } from '../contract';
+import type { Readable } from './contract';
 
 export type ProjectionReadableSource<T> = {
   readonly kind: 'value' | 'collection';
@@ -87,21 +92,10 @@ const selectionAffects = (
   change: CollectionChange<string, unknown> | undefined
 ): boolean => {
   if (!change || change.kind === 'reset') return true;
-  if (
-    selection.all &&
-    (change.added.length || change.removed.length || change.updated.length || change.order)
-  )
-    return true;
-  if (selection.structure && (change.added.length || change.removed.length || change.order))
-    return true;
-  for (const key of selection.keys) {
-    if (
-      change.added.some(entry => entry.key === key) ||
-      change.removed.some(entry => entry.key === key) ||
-      change.updated.some(entry => entry.key === key)
-    )
-      return true;
-  }
+  if (selection.all && collectionHasAnyChange(change)) return true;
+  if (selection.structure && collectionHasStructuralChange(change)) return true;
+  const changedKeys = collectionChangedKeys(change);
+  for (const key of selection.keys) if (changedKeys.has(key)) return true;
   return false;
 };
 
@@ -177,7 +171,7 @@ export const createSelectorReadable = <T, R>(
     if (!change && previousCollection) {
       const current = source.current();
       if (isMapLike(current)) {
-        change = collectionChangeBetween(previousCollection, current);
+        change = diffCollection(previousCollection, current);
         previousCollection = current;
         if (!change) {
           sourceRevision = source.revision();

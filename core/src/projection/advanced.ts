@@ -1,4 +1,4 @@
-import { collectionView } from './collection-output';
+import { collectionView } from './collection/view';
 import type { CollectionChange, CollectionDraft, CollectionRead, SourceContext } from './contract';
 import type {
   CollectionOutputEvaluation,
@@ -8,7 +8,7 @@ import type {
   Rebuild,
 } from './definition';
 import { defineProcessor, projectionRef } from './definition';
-import { assertSynchronous } from './scheduler';
+import { assertSynchronous } from './graph/scheduler';
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;

@@ -1,7 +1,7 @@
 import type { ChangeDirection, ChangeSet } from '../../changes';
 import type { MutationSession } from '../session';
 import { installOrder, installMember, orderOf } from '../state';
-import * as anchor from '../anchor';
+import * as ordered from '../../ordered-key';
 import { fail, invalidValue } from '../issue';
 import { checkTreePayload, copyTreeNode } from '../../schema-value';
 import { validate as validTree } from '../tree';
@@ -39,7 +39,7 @@ export function apply(
       }
       if (change.order) {
         const keys = node.kind === 'table' ? Object.keys(container.parent) : orderOf(node, current);
-        if (!anchor.matches(change.order[side], keys))
+        if (!ordered.matches(change.order[side], keys))
           return fail(
             change.at,
             'invalid-changes',
@@ -49,7 +49,7 @@ export function apply(
         session.invalidate();
       } else if (membershipChanged && node.kind === 'table') {
         const ids = (current as { ids: string[] }).ids;
-        if (!anchor.matches(ids, Object.keys(container.parent)))
+        if (!ordered.matches(ids, Object.keys(container.parent)))
           return fail(
             change.at,
             'invalid-changes',

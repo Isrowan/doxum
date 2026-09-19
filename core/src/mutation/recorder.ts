@@ -12,7 +12,7 @@ import {
   compiledShape,
   type FixedLayout,
 } from '../address';
-import * as anchor from './anchor';
+import * as ordered from '../ordered-key';
 import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../schema-value';
 import type { MutableTree, MutableTreeNode } from './tree';
 import { profile } from '../profile';
@@ -154,7 +154,7 @@ const diffMember = (
         if (!Object.hasOwn(left, id))
           diffMember(changes, children, node.value, childAt, id, false, undefined, true, right[id]);
       let order: { before: readonly string[]; after: readonly string[] } | undefined;
-      if (node.kind === 'table' && !anchor.equal(a.ids as string[], b.ids as string[])) {
+      if (node.kind === 'table' && !ordered.equal(a.ids as string[], b.ids as string[])) {
         profile.recorder('publishedOrderItems', (b.ids as string[]).length);
         order = { before: a.ids as string[], after: [...(b.ids as string[])] };
       }
@@ -237,9 +237,9 @@ const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   if (fact.order) {
     const current =
       fact.node.kind === 'list'
-        ? anchor.indexedKeys(fact.value as unknown[], fact.node.keyOf)
+        ? ordered.indexedKeys(fact.value as unknown[], fact.node.keyOf)
         : (fact.value as { ids: string[] }).ids;
-    if (!anchor.equal(fact.order, current)) {
+    if (!ordered.equal(fact.order, current)) {
       const after = orderOf(fact.node, fact.value);
       profile.recorder('publishedOrderItems', after.length);
       order = { before: fact.order, after };

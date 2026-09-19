@@ -1,7 +1,7 @@
 # Projection API
 
-Projection 的最终 producer/output 架构、实现边界和删除清单见根目录的
-[Projection Architecture Target State](../PROJECTION_ARCHITECTURE_TARGET_STATE.md)。
+Projection 的最终内部分层、算法 owner 和删除清单见根目录的
+[Projection Layering Refactor Plan](../PROJECTION_LAYERING_REFACTOR_PLAN.md)。
 
 Projection definitions are lazy. Root declarations are reusable across Runtimes;
 scope declarations belong to one local lifetime. A `Projection` contains no
@@ -206,6 +206,14 @@ for (const [id, task] of rows) {
 Unchanged entry values keep their references. That stable-reference rule is what
 makes keyed selectors and memoized derived values useful without requiring deep
 equality everywhere.
+
+内部实现按职责分层：`output/collection.ts` 只维护 staged/published 生命周期；
+持久 keyed lookup、`CollectionChange` 代数和 `CollectionRead`/`ReadonlyMap` view
+分别由 `collection/index.ts`、`collection/change.ts`、`collection/view.ts` 拥有。
+通用 source prepare/publish/fault 生命周期在 `source/boundary.ts`，document 的
+订阅路由、dirty location 归并和读取在 `source/document.ts`；aggregate snapshot
+的结构共享仍由纯 `source/materialization.ts` 算法完成。公开 API 不暴露这些
+内部组件。
 
 ## The one collection transition protocol
 

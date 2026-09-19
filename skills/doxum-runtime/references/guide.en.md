@@ -3,7 +3,7 @@
 ## Define, Update And Read
 
 ```ts
-import { createDocument, field, map, object, select, snapshot, type Infer } from 'doxum';
+import { createDocument, field, map, object, read, snapshot, type Infer } from 'doxum';
 
 const task = object({ title: field<string>(), done: field<boolean>() });
 const model = object({ tasks: map(task) });
@@ -18,8 +18,8 @@ document.update(draft => {
   draft.tasks.put('b', { title: 'Review', done: false });
   return { warnings: [] };
 });
-const done = select(document, state => state.tasks.get('a')?.done);
-const tasks = select(document, state => snapshot(state.tasks));
+const done = read(document, state => state.tasks.get('a')?.done);
+const tasks = read(document, state => snapshot(state.tasks));
 document.subscribe(
   path => path.tasks.item('a').done,
   commit => console.log(commit.changes)
@@ -27,8 +27,8 @@ document.subscribe(
 ```
 
 Root object is definition identity; runtime owns its data/revision. Updates are
-synchronous and atomic. Reads see preceding writes. Draft and trusted internal
-readWith scopes are borrowed for the synchronous callback and must not escape.
+synchronous and atomic. Reads see preceding writes. Draft and the Read passed to a
+`read` selector are borrowed for the synchronous callback and must not escape.
 Throw TransactionRejected for expected rejection; ordinary throws
 restore all work and rethrow unchanged. False/undefined returns are business values.
 

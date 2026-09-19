@@ -2,7 +2,7 @@ import type { DocumentAddress, DocumentNode, DocumentTreeNode, FieldNode, Infer 
 import { compiledShape } from './address';
 import { isPlainObject, isRecord } from './value/ownership';
 import { validate as validTree } from './mutation/tree';
-import * as anchor from './mutation/anchor';
+import * as ordered from './ordered-key';
 import { profile } from './profile';
 
 /** Pure synchronous validation. Successful output is ignored; input is never transformed. */
@@ -161,7 +161,7 @@ export const checkValue = (
   if (node.kind === 'list') {
     if (!Array.isArray(value)) return issue(address, 'Expected a list.');
     const seen = new Set<string>();
-    const order = anchor.keys(value, node.keyOf);
+    const order = ordered.keys(value, node.keyOf);
     for (let i = 0; i < value.length; i++) {
       const failure = checkValue(node.value, value[i], [...address, String(i)], strict);
       if (failure) return failure;
@@ -212,7 +212,7 @@ export const equalTreeNode = (
   if (!left || !right) return false;
   return (
     left.parentId === right.parentId &&
-    anchor.equal(left.children, right.children) &&
+    ordered.equal(left.children, right.children) &&
     Object.hasOwn(left, 'value') === Object.hasOwn(right, 'value') &&
     Object.is(left.value, right.value)
   );
@@ -276,7 +276,7 @@ export const equalValue = (node: DocumentNode, left: unknown, right: unknown): b
     );
   if (node.kind === 'table' && isRecord(left) && isRecord(right))
     return (
-      anchor.equal(left.ids as string[], right.ids as string[]) &&
+      ordered.equal(left.ids as string[], right.ids as string[]) &&
       equalValue({ kind: 'map', value: node.value }, left.byId, right.byId)
     );
   if (node.kind === 'tree' && isRecord(left) && isRecord(right)) {

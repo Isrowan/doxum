@@ -34,7 +34,7 @@ import * as listOperations from '../mutation/operations/list';
 import * as treeOperations from '../mutation/operations/tree';
 import * as orderOperations from '../mutation/operations/order';
 import * as tree from '../mutation/tree';
-import * as anchor from '../mutation/anchor';
+import * as ordered from '../ordered-key';
 import { profile } from '../profile';
 import * as impactTarget from '../impact-target';
 
@@ -406,7 +406,7 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         collect(context, at, 'collection', id);
         return node.kind === 'table'
           ? Object.hasOwn((current as { byId: object }).byId, id)
-          : anchor.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
+          : ordered.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
       };
     if (property === 'get')
       return (id: string) => {

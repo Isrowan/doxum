@@ -1,10 +1,10 @@
-import { compiledShape } from '../address';
-import * as anchor from '../mutation/anchor';
-import { installMember } from '../mutation/state';
-import { profile } from '../profile';
-import type { DocumentNode, DocumentTreeNode } from '../schema';
-import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../schema-value';
-import { isRecord } from '../value/ownership';
+import { compiledShape } from '../../address';
+import * as ordered from '../../ordered-key';
+import { profile } from '../../profile';
+import type { DocumentNode, DocumentTreeNode } from '../../schema';
+import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../../schema-value';
+import { isRecord } from '../../value/ownership';
+import { installOwn } from '../../value/record';
 
 export type DocumentDirty = {
   replace: boolean;
@@ -129,7 +129,7 @@ const materializeObject = (
     const child = materializeRecordChild(member.node, previous, current, key, childDirty);
     if (!child.changed) continue;
     result ??= cloneRecord(previous);
-    installMember(result, key, child.present, child.value);
+    installOwn(result, key, child.present, child.value);
   }
   return result ?? previous;
 };
@@ -145,7 +145,7 @@ const materializeMap = (
     const child = materializeRecordChild(node.value, previous, current, key, childDirty);
     if (!child.changed) continue;
     result ??= cloneRecord(previous);
-    installMember(result, key, child.present, child.value);
+    installOwn(result, key, child.present, child.value);
   }
   return result ?? previous;
 };
@@ -166,20 +166,20 @@ const materializeTable = (
     const child = materializeRecordChild(node.value, beforeById, afterById, key, childDirty);
     if (!child.changed) continue;
     nextById ??= cloneRecord(beforeById);
-    installMember(nextById, key, child.present, child.value);
+    installOwn(nextById, key, child.present, child.value);
   }
   if (nextById) {
     result = cloneRecord(previous);
-    installMember(result, 'byId', true, nextById);
+    installOwn(result, 'byId', true, nextById);
   }
   if (dirty.order) {
     const beforeIds = previous.ids;
     const afterIds = current.ids;
     if (!Array.isArray(beforeIds) || !Array.isArray(afterIds))
       return replaceValue(node, previous, current);
-    if (!anchor.equal(beforeIds as string[], afterIds as string[])) {
+    if (!ordered.equal(beforeIds as string[], afterIds as string[])) {
       result ??= cloneRecord(previous);
-      installMember(result, 'ids', true, [...(afterIds as string[])]);
+      installOwn(result, 'ids', true, [...(afterIds as string[])]);
     }
   }
   return result ?? previous;
@@ -192,9 +192,9 @@ const materializeList = (
   dirty: DocumentDirty
 ): unknown => {
   if (dirty.order) {
-    const before = anchor.listSequence(previous, node.keyOf);
-    const after = anchor.listSequence(current, node.keyOf);
-    const sameOrder = anchor.equal(before.order, after.order);
+    const before = ordered.listSequence(previous, node.keyOf);
+    const after = ordered.listSequence(current, node.keyOf);
+    const sameOrder = ordered.equal(before.order, after.order);
     let changed = !sameOrder;
     const result = new Array<unknown>(after.order.length);
     for (let index = 0; index < after.order.length; index++) {
@@ -217,8 +217,8 @@ const materializeList = (
   }
 
   let result: unknown[] | undefined;
-  const before = anchor.indexedKeys(previous, node.keyOf);
-  const after = anchor.indexedKeys(current, node.keyOf);
+  const before = ordered.indexedKeys(previous, node.keyOf);
+  const after = ordered.indexedKeys(current, node.keyOf);
   for (const [key, childDirty] of dirty.children) {
     const previousIndex = before.index(key);
     const currentIndex = after.index(key);
@@ -251,7 +251,7 @@ const materializeTree = (
     const afterPresent = Object.hasOwn(current, 'rootId');
     if (beforePresent !== afterPresent || !Object.is(previous.rootId, current.rootId)) {
       result = cloneRecord(previous);
-      installMember(result, 'rootId', afterPresent, current.rootId);
+      installOwn(result, 'rootId', afterPresent, current.rootId);
     }
   }
 
@@ -267,11 +267,11 @@ const materializeTree = (
       : undefined;
     if (beforePresent === afterPresent && equalTreeNode(before, after)) continue;
     nodes ??= cloneRecord(previous.nodes);
-    installMember(nodes, id, afterPresent, after && copyTreeNode(after));
+    installOwn(nodes, id, afterPresent, after && copyTreeNode(after));
   }
   if (nodes) {
     result ??= cloneRecord(previous);
-    installMember(result, 'nodes', true, nodes);
+    installOwn(result, 'nodes', true, nodes);
   }
   return result ?? previous;
 };

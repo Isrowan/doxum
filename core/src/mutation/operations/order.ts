@@ -1,6 +1,7 @@
 import type { DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
 import type { ResolvedContainer } from '../../address';
+import * as ordered from '../../ordered-key';
 import * as anchor from '../anchor';
 import { fail } from '../issue';
 
@@ -45,16 +46,16 @@ export function move(
   if (node.kind === 'table') {
     const order = (container.value as { ids: string[] }).ids;
     const next = plannedOrder(container.at, order, selection, position);
-    if (anchor.equal(order, next)) return;
+    if (ordered.equal(order, next)) return;
     session.recorder.order(container);
-    anchor.installKeys(order, next);
+    ordered.installKeys(order, next);
   } else {
     const items = container.value as unknown[];
-    const sequence = anchor.listSequence(items, node.keyOf);
+    const sequence = ordered.listSequence(items, node.keyOf);
     const next = plannedOrder(container.at, sequence.order, selection, position);
-    if (anchor.equal(sequence.order, next)) return;
+    if (ordered.equal(sequence.order, next)) return;
     session.recorder.order(container);
-    anchor.installList(items, node.keyOf, sequence, next);
+    ordered.installList(items, node.keyOf, sequence, next);
   }
   session.invalidate();
 }
@@ -67,19 +68,19 @@ export function reorder(
   const node = assertOrdered(container);
   if (node.kind === 'table') {
     const current = (container.value as { ids: string[] }).ids;
-    if (!anchor.matches(next, current))
+    if (!ordered.matches(next, current))
       return fail(container.at, 'invalid-collection', 'Order must contain every key exactly once.');
-    if (anchor.equal(current, next)) return;
+    if (ordered.equal(current, next)) return;
     session.recorder.order(container);
-    anchor.installKeys(current, next);
+    ordered.installKeys(current, next);
   } else {
     const items = container.value as unknown[];
-    const sequence = anchor.listSequence(items, node.keyOf);
-    if (!anchor.matches(next, sequence.order))
+    const sequence = ordered.listSequence(items, node.keyOf);
+    if (!ordered.matches(next, sequence.order))
       return fail(container.at, 'invalid-collection', 'Order must contain every key exactly once.');
-    if (anchor.equal(sequence.order, next)) return;
+    if (ordered.equal(sequence.order, next)) return;
     session.recorder.order(container);
-    anchor.installList(items, node.keyOf, sequence, next);
+    ordered.installList(items, node.keyOf, sequence, next);
   }
   session.invalidate();
 }

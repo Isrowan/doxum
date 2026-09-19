@@ -7,7 +7,7 @@ import {
   type IncrementalGroupProcessor,
   type IncrementalValueProcessor,
 } from './advanced';
-import { collectionView, mapRead, snapshotCollectionView } from './collection-output';
+import { collectionView, mapRead, snapshotCollectionView } from './collection/view';
 import type { CollectionChange, CollectionRead } from './contract';
 import { ProjectionDisposedError } from './contract';
 import {
@@ -21,16 +21,17 @@ import {
   type ProducerDefinition,
   type Projection,
 } from './definition';
-import { createProcessor } from './processor';
+import { createProcessor } from './graph/processor';
 import {
   createDirectReadable,
   createSelectorReadable,
   isMapLike,
   type ProjectionReadableSource,
-} from './projection-readable';
-import type { Readable } from './readable';
-import { createScheduler, type OutputRecord, type ProducerRecord } from './scheduler';
-import { createSourceRegistry, type KeyedInputDraft, type SourceWrite } from './source';
+} from './readable/selection';
+import type { Readable } from './readable/contract';
+import { createScheduler, type OutputRecord, type ProducerRecord } from './graph/scheduler';
+import { createSourceRegistry } from './source/registry';
+import type { KeyedInputDraft, SourceWrite } from './source/boundary';
 
 type KeyedDraft<K extends string, V> = {
   get(key: K): V | undefined;
