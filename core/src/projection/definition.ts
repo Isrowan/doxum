@@ -1,5 +1,5 @@
 import { contextOf } from '../runtime/context';
-import type { DocumentReadable, Synchronous } from '../runtime/contract';
+import type { DocumentReadable } from '../runtime/contract';
 import type {
   CollectionEntry,
   CollectionId,
@@ -13,7 +13,6 @@ import type {
   ValueSelector,
 } from '../schema';
 import { compilePath } from '../schema';
-import { snapshotCollectionView } from './collection/view';
 import type {
   CollectionChange,
   CollectionDraft,
@@ -23,7 +22,6 @@ import type {
   SourceContext,
 } from './contract';
 import type { Readable } from '../readable';
-import { assertSynchronous } from './graph/scheduler';
 
 declare const projectionDefinition: unique symbol;
 declare const projectionChanges: unique symbol;
@@ -37,10 +35,6 @@ export type Projection<T, C = undefined> = {
 
 /** A writable source projection. */
 export type Input<T, C = undefined> = Projection<T, C> & { readonly [writableInput]: true };
-
-type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
-  readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
-};
 
 type Equality = (a: unknown, b: unknown) => boolean;
 type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unknown;
@@ -222,9 +216,6 @@ const defineSource = <T, C = undefined>(
   return defineRef<T, C>(producer, 0);
 };
 
-const sourceValue = (source: SourceContext): unknown =>
-  source.kind === 'value' ? source.value : snapshotCollectionView(source.read);
-
 const valueInput = <T>(
   initial: T,
   equality: (previous: T, next: T) => boolean = Object.is
@@ -324,24 +315,3 @@ const isExternalSource = (
     typeof candidate.subscribe === 'function'
   );
 };
-
-export function derive<const D extends readonly Projection<unknown, unknown>[], T>(
-  dependencies: D,
-  compute: (...values: ProjectionValues<D>) => Synchronous<T>,
-  equality: (previous: T, next: T) => boolean = Object.is
-): Projection<T> {
-  const [projection] = defineProcessor({
-    dependencies,
-    outputs: [{ kind: 'value', equality: equality as Equality }],
-    create: () => ({
-      evaluate: evaluation => {
-        const output = evaluation.outputs[0];
-        if (output.kind !== 'value') throw new Error('derive requires a value output.');
-        const next = compute(...(evaluation.sources.map(sourceValue) as ProjectionValues<D>));
-        assertSynchronous(next);
-        output.output.set(next);
-      },
-    }),
-  });
-  return projection as Projection<T>;
-}

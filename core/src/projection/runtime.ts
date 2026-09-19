@@ -1,4 +1,5 @@
 import type { Unsubscribe } from '../runtime/contract';
+import { derive } from './derive';
 import {
   incremental,
   type IncrementalCollectionProcessor,
@@ -11,7 +12,6 @@ import { collectionView, mapRead, snapshotCollectionView } from './collection/vi
 import type { CollectionChange, CollectionRead } from './contract';
 import { ProjectionDisposedError } from './contract';
 import {
-  derive,
   input,
   isProjection,
   ownProjection,
@@ -332,8 +332,18 @@ export const createProjectionRuntime = (options?: {
           own(input.collection(initial)),
       }
     );
-    const scopedDerive: typeof derive = (dependencies, compute, equality) =>
-      own(derive(dependencies, compute, equality));
+    const scopedKeyedDerive = ((...args: unknown[]) =>
+      own(
+        Reflect.apply(derive.keyed, undefined, args) as Projection<unknown, unknown>
+      )) as typeof derive.keyed;
+    const scopedDerive: typeof derive = Object.assign(
+      <const D extends readonly Projection<unknown, unknown>[], T>(
+        dependencies: D,
+        compute: Parameters<typeof derive<D, T>>[1],
+        equality?: (previous: T, next: T) => boolean
+      ) => own(derive(dependencies, compute, equality)),
+      { keyed: scopedKeyedDerive }
+    );
     const scopedIncremental: typeof incremental = Object.assign(
       <const D extends readonly Projection<unknown, unknown>[], T>(
         dependencies: D,

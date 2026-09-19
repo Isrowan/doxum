@@ -24,6 +24,38 @@ There are three declaration functions:
 - `observe(...)` establishes a document, Doxum `Readable`, or external source boundary.
 - `derive(dependencies, compute, equality?)` declares a pure projection with explicit dependencies.
 
+`derive.keyed` is the key-preserving form of `derive`. Its driver is a keyed
+collection projection; the driver owns output membership and order, while each
+driver entry is selected independently:
+
+```ts
+const fieldValues = derive.keyed(records, record => record.values[fieldId]);
+```
+
+An updated driver entry is selected again, but the output key publishes only when
+the selected value fails the output equality check. Added, removed and order-only
+driver transitions remain ordinary `CollectionChange` transitions. Initial build,
+source reset and fault recovery rebuild through the normal Projection Runtime
+lifecycle.
+
+Keyed derivations may also declare dynamic lookups into another keyed projection:
+
+```ts
+const cardContent = derive.keyed(
+  items,
+  [{ source: records, key: item => item.recordId }, activeView, visibleFields],
+  (item, itemId, record, view, fields) => renderCard(item, record, view, fields)
+);
+```
+
+The source projection is still a static processor dependency. Only its source key
+is dynamic per output key. The materialized processor owns the forward and reverse
+key bindings, so a record update recomputes only the output keys currently bound to
+that record. A binding is retained when the source entry is absent, allowing a later
+add of that key to recompute its dependents. Plain projection dependencies such as
+`activeView` invalidate all driver keys. Processor code never calls `runtime.get()`
+to discover dependencies.
+
 The same root definition can be materialized by multiple runtimes without
 sharing its current value, retained state, subscriptions or errors. A scoped
 definition cannot be materialized by another Runtime or scope.
@@ -146,6 +178,7 @@ const filter = scope.input<'all' | 'open'>('all');
 const visible = scope.derive([tasks, filter], (tasks, mode) =>
   mode === 'all' ? tasks : filterTasks(tasks)
 );
+const titles = scope.derive.keyed(tasks, task => task.title);
 const index = scope.incremental.collection([tasks, filter], processor);
 const row = scope.readable(visible, tasks => tasks.get(taskId));
 scope.set(filter, 'open');
@@ -242,9 +275,10 @@ projection change and is never passed to an application processor.
 
 ## Advanced incremental processors
 
-Use the isolated advanced entry point only when retained state, reverse indexes,
-cross-key coordination or keyed patches are materially cheaper than ordinary
-`derive` recomputation.
+Use `derive.keyed` for key-preserving entry selection and declared dynamic keyed
+dependencies. Use the isolated advanced entry point when application-specific
+retained state, cross-key indexes or keyed patches cannot be expressed through that
+dependency model and are materially cheaper than ordinary `derive` recomputation.
 
 ```ts
 import { incremental } from 'doxum/advanced';

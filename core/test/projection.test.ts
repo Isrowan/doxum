@@ -640,6 +640,205 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
+  it('derives keyed entry values and suppresses equal selected updates', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { value: 1, label: 'A' }],
+        ['b', { value: 2, label: 'B' }],
+      ])
+    );
+    const select = vi.fn(
+      (entry: { readonly value: number; readonly label: string }) => entry.value
+    );
+    const values = derive.keyed(rows, select);
+    const seen: unknown[] = [];
+    const probe = incremental([values], ({ changes }) => {
+      if (changes[0]) seen.push(changes[0]);
+      return 0;
+    });
+    const runtime = createProjectionRuntime();
+
+    expect([...runtime.get(values)]).toEqual([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    runtime.get(probe);
+    expect(select).toHaveBeenCalledTimes(2);
+    seen.length = 0;
+    select.mockClear();
+
+    runtime.update(rows, draft => draft.set('a', { value: 1, label: 'renamed' }));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([]);
+    expect(runtime.get(values).get('a')).toBe(1);
+
+    select.mockClear();
+    runtime.update(rows, draft => draft.set('b', { value: 3, label: 'B' }));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([
+      {
+        kind: 'incremental',
+        added: [],
+        updated: [{ key: 'b', before: 2, after: 3 }],
+        removed: [],
+      },
+    ]);
+    runtime.dispose();
+  });
+
+  it('preserves driver membership and order without recomputing unchanged entries', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: {},
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const ordered = observe(document, path => path.ordered);
+    const select = vi.fn((entry: { readonly value: number }) => entry.value);
+    const values = derive.keyed(ordered, select);
+    const changes: unknown[] = [];
+    const probe = incremental([values], ({ changes: next }) => {
+      if (next[0]) changes.push(next[0]);
+      return 0;
+    });
+    const runtime = createProjectionRuntime();
+    runtime.get(probe);
+    select.mockClear();
+    changes.length = 0;
+
+    document.update(draft => draft.ordered.move('b', { at: 'start' }));
+
+    expect(select).not.toHaveBeenCalled();
+    expect([...runtime.get(values).keys()]).toEqual(['b', 'a']);
+    expect(changes).toEqual([
+      {
+        kind: 'incremental',
+        added: [],
+        updated: [],
+        removed: [],
+        order: { before: ['a', 'b'], after: ['b', 'a'] },
+      },
+    ]);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('rebuilds a keyed derivation from the current driver after a document reset', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: { ids: [], byId: {} },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const select = vi.fn((entry: { readonly value: number }) => entry.value);
+    const values = derive.keyed(rows, select);
+    const runtime = createProjectionRuntime();
+    expect([...runtime.get(values)]).toEqual([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    select.mockClear();
+
+    document.replace({
+      rows: { b: { value: 20, label: 'B2' }, c: { value: 3, label: 'C' } },
+      ordered: { ids: [], byId: {} },
+    });
+
+    expect([...runtime.get(values)]).toEqual([
+      ['b', 20],
+      ['c', 3],
+    ]);
+    expect(select).toHaveBeenCalledTimes(2);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('owns dynamic keyed dependencies and rebinds them when the driver key changes', () => {
+    const items = input.collection(
+      new Map([
+        ['i1', { recordId: 'r1' }],
+        ['i2', { recordId: 'r2' }],
+      ])
+    );
+    const records = input.collection(
+      new Map([
+        ['r1', { title: 'One' }],
+        ['r2', { title: 'Two' }],
+        ['unused', { title: 'Unused' }],
+      ])
+    );
+    const mode = input<'compact' | 'full'>('compact');
+    const select = vi.fn(
+      (
+        item: { readonly recordId: string },
+        _itemId: string,
+        record: { readonly title: string } | undefined,
+        currentMode: 'compact' | 'full'
+      ) => `${currentMode}:${item.recordId}:${record?.title ?? 'missing'}`
+    );
+    const content = derive.keyed(
+      items,
+      [{ source: records, key: item => item.recordId }, mode],
+      select
+    );
+    const runtime = createProjectionRuntime();
+
+    expect([...runtime.get(content)]).toEqual([
+      ['i1', 'compact:r1:One'],
+      ['i2', 'compact:r2:Two'],
+    ]);
+    select.mockClear();
+
+    runtime.update(records, draft => draft.set('unused', { title: 'Still unused' }));
+    expect(select).not.toHaveBeenCalled();
+
+    runtime.update(records, draft => draft.set('r1', { title: 'One+' }));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.get(content).get('i1')).toBe('compact:r1:One+');
+    select.mockClear();
+
+    runtime.update(items, draft => draft.set('i1', { recordId: 'r2' }));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.get(content).get('i1')).toBe('compact:r2:Two');
+    select.mockClear();
+
+    runtime.update(records, draft => draft.set('r1', { title: 'detached' }));
+    expect(select).not.toHaveBeenCalled();
+    runtime.update(records, draft => draft.set('r2', { title: 'Two+' }));
+    expect(select).toHaveBeenCalledTimes(2);
+    select.mockClear();
+
+    runtime.update(items, draft => draft.set('i1', { recordId: 'missing' }));
+    expect(runtime.get(content).get('i1')).toBe('compact:missing:missing');
+    select.mockClear();
+    runtime.update(records, draft => draft.set('missing', { title: 'Arrived' }));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.get(content).get('i1')).toBe('compact:missing:Arrived');
+    select.mockClear();
+
+    runtime.set(mode, 'full');
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(runtime.get(content).get('i2')).toBe('full:r2:Two+');
+    runtime.dispose();
+  });
+
+  it('keeps keyed derivations owned by a projection scope', () => {
+    const rows = input.collection(new Map([['a', { value: 1 }]]));
+    const runtime = createProjectionRuntime();
+    const scope = runtime.scope();
+    const values = scope.derive.keyed(rows, entry => entry.value);
+    expect(scope.get(values).get('a')).toBe(1);
+    scope.dispose();
+    expect(() => scope.get(values)).toThrow(ProjectionDisposedError);
+    runtime.dispose();
+  });
+
   it('can observe and derive external readables through the same graph', () => {
     let value = 1;
     const listeners = new Set<() => void>();

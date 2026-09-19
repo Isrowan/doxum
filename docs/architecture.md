@@ -324,6 +324,18 @@ Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
 `get`, `readable`, scalar `set`, keyed `update`, `scope`, `batch` and `dispose`.
+`derive.keyed` remains an ordinary processor producer. One keyed driver owns the
+output key domain and order. Driver entry changes reevaluate only those keys and
+the existing collection output equality removes equal selected values before
+publication. Dynamic keyed dependencies are declared with their source projection
+and a driver-entry-to-source-key mapping. The producer DAG therefore remains static;
+the materialized processor owns only the per-output-key bindings and their reverse
+index. Source entry changes use that reverse index to identify affected output keys,
+while ordinary scalar or whole-value dependencies invalidate the full driver key
+set. Missing source entries keep their binding so later membership adds invalidate
+the correct output keys. Reset, recovery, output sealing and disposal remain owned
+by the existing processor lifecycle; there is no join runtime, dependency event bus
+or processor-side `runtime.get()` tracking protocol.
 `runtime.scope()` creates a local definition and subscription lifetime inside
 that same Runtime, not a child Runtime. Local input, derive and incremental
 producers can depend directly on root document or session projections. Scope

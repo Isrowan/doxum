@@ -263,6 +263,31 @@ one Runtime. Collection values are
 immutable `ReadonlyMap`-like snapshots, while a `Readable` owns selector
 tracking, equality and subscription lifecycle.
 
+`derive.keyed` preserves a keyed source's membership and order while deriving each
+entry independently. Per-entry equality removes source updates whose selected value
+did not change:
+
+```ts
+const fieldValues = derive.keyed(records, record => record.values[fieldId]);
+```
+
+It also supports explicitly declared dynamic keyed dependencies without exposing a
+document path grammar or allowing processors to discover dependencies with
+`runtime.get()`:
+
+```ts
+const cardContent = derive.keyed(
+  items,
+  [{ source: records, key: item => item.recordId }, activeView, visibleFields],
+  (item, itemId, record, view, fields) => renderCard(item, record, view, fields)
+);
+```
+
+The Runtime owns the resulting output-key/source-key bindings and reverse lookup.
+A missing source key remains bound, so adding it later invalidates the dependent
+output keys. Scalar dependencies invalidate all driver keys; reset and recovery use
+the same projection rebuild lifecycle.
+
 Local projections share the parent Runtime's scheduler and materialization owner:
 
 ```ts
@@ -308,9 +333,9 @@ public `{ rootId?, nodes: Record }` shape, so changing a node may shallow-copy t
 `nodes` record, while native `tree.nodes` observation remains keyed and touches only
 changed nodes.
 
-For retained state, reverse indexes and keyed patches, use the isolated advanced
-entry point. Whole-value processors use `incremental(...)`; keyed collection
-processors use `incremental.collection(...)`:
+For retained state, cross-key indexes and keyed patches that cannot be expressed by
+`derive.keyed`, use the isolated advanced entry point. Whole-value processors use
+`incremental(...)`; keyed collection processors use `incremental.collection(...)`:
 
 ```ts
 import { incremental } from 'doxum/advanced';
