@@ -19,15 +19,27 @@ Edit position.x, replace stroke whole, and use rows.replace(key, value) for keye
 const model = object({
   entries: map(object({ rows: table(object({ title: field<string>() })) })),
 });
-const document = createDocument({ schema: model, initial: { entries: {} } });
+const document = createDocument({
+  schema: model,
+  initial: {
+    entries: {
+      a: { rows: { ids: ['x'], byId: { x: { title: 'First' } } } },
+    },
+  },
+});
 document.update(draft => {
-  draft.entries.put('a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
-  draft.entries.get('a')!.rows.get('x')!.title = 'Updated';
+  const entry = draft.entries.get('a')!;
+  replace(entry, 'rows', {
+    ids: ['y'],
+    byId: { y: { title: 'Replacement' } },
+  });
 });
 ```
 
-Map entries use put. Use top-level replace for object/variant members whose Draft
-type contains collection tools; collection replace(next) handles whole containers.
+Use top-level `replace(parent, key, value)` for object/variant members whose Draft
+type contains collection tools. Map membership still uses `put`/`remove`; a
+collection's own `replace(next)` handles replacement when the collection itself is
+the mutation target.
 
 ## Domain Keys
 
@@ -45,7 +57,7 @@ const model = object({ people: map(object({ name: field(text) }), { key: personI
 const initial = parse(model, { people: { 'person:1': { name: 'Ada' } } });
 ```
 
-Brands flow through map/table methods, symbolic paths and collection impact.
+Branded key types flow through map/table methods, symbolic paths and collection impact.
 
 ## Ordered Edits, History And Replay
 
@@ -85,18 +97,28 @@ envelopes or treat its container address as whole-container invalidation.
 ## Projection And React
 
 ```ts
-const tasks = observe(document, path => path.tasks);
-const titles = derive([tasks], tasks => new Map([...tasks].map(([id, task]) => [id, task.title])));
-const total = derive([titles], titles => titles.size);
-const zoom = input(1);
-const scaled = derive([total, zoom], (total, zoom) => total * zoom);
+const rows = observe(document, path => path.rows);
+const metadata = observe(document, path => path.metadata);
+const density = input<'compact' | 'comfortable'>('comfortable');
+
+const labels = derive.keyed(rows, row => row.label);
+const decorated = derive.keyed(
+  rows,
+  [{ source: metadata, key: row => row.metadataId }, density],
+  (row, _rowId, meta, density) => formatRow(row, meta, density)
+);
+const count = derive([labels], labels => labels.size);
 const runtime = createProjectionRuntime({ onError: console.error });
-runtime.get(scaled);
-const title = runtime.get(tasks).get(taskId);
+runtime.get(decorated);
+runtime.get(count);
 ```
 
 Provide the Runtime through `ProjectionProvider`, then use `useProjection` for
 projection definitions and `useProjection(projection, selector)` for keyed reads.
-`useInput` returns a value and setter. Advanced collection processors in `doxum/advanced` stage
-`output.set/remove/order` and use scoped previous/next reads. Processor
-dependencies remain explicit even though React selectors track actual reads.
+`useInput` returns a value and setter. `derive.keyed` owns key-preserving selection
+and declared dynamic keyed lookup; the Runtime owns its reverse dependency index.
+Use tuple `derive` when the result is an aggregate or otherwise has no preserved
+per-key identity.
+Advanced collection processors in `doxum/advanced` stage `output.set/remove/order`
+and use scoped previous/next reads for custom retained/cross-key algorithms.
+Processor dependencies remain explicit even though React selectors track actual reads.

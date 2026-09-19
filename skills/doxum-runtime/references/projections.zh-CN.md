@@ -1,7 +1,8 @@
 # Projection 参考
 
 根 Projection 定义惰性且可跨 Runtime 复用；scope 定义惰性但只属于其局部生命周期。默认入口包含 `Projection<T>`、
-`ProjectionRuntime`、`input`、`observe` 和 tuple 形式的 `derive`。
+`ProjectionRuntime`、`input`、`observe`、tuple 形式的 `derive` 和保持 key 的
+`derive.keyed`。
 
 ```ts
 const tasks = observe(document, path => path.tasks);
@@ -37,6 +38,37 @@ impact。
 `derive(dependencies, compute, equality?)` 使用 tuple，依赖在定义创建时固定。
 Processor 不能通过读取另一个 Projection 隐式建立图依赖。
 
+当一个 keyed collection 决定 output 的 membership 与 order 时使用
+`derive.keyed`：
+
+```ts
+const labels = derive.keyed(entries, entry => entry.label);
+```
+
+只有 added / updated 的 driver entry 执行 selector；removed 删除同 key output，
+纯 order 变化直接保持 driver 顺序，不重新计算未变化 entry。Collection output
+继续按每个 entry 的 equality 比较，因此 source entry 虽然 updated，但 selected
+value 相等时不会产生 output `updated`。首次物化、source reset 和故障恢复继续走
+ProjectionRuntime 原有 processor rebuild 生命周期。
+
+跨 keyed collection 的动态 lookup 也使用同一个 derivation，不由应用层再维护 join
+协议：
+
+```ts
+const resolved = derive.keyed(
+  links,
+  [{ source: entities, key: link => link.entityId }, mode],
+  (link, _linkId, entity, mode) => projectLink(link, entity, mode)
+);
+```
+
+source Projection 仍是静态 producer dependency，只有每个 output key 对应的
+source key 动态变化。物化后的 processor 拥有正向 binding 与 reverse index；一个
+source entry 更新只重算当前绑定它的 output keys。source entry 暂时不存在时仍保留
+binding，因此以后添加该 key 会正确唤醒依赖者。`mode` 这类普通 Projection
+依赖变化则使整个 driver key set 失效。不要为此增加 processor 内 `runtime.get()`
+追踪、wildcard document path grammar 或独立 join Runtime。
+
 Runtime 的公开脊柱只有：
 
 ```ts
@@ -54,7 +86,7 @@ runtime.dispose();
 `input.collection<K, V>(initial?)` 声明 Runtime 本地 keyed 状态。`update` 的借用 draft
 提供 `get`、`has`、`set`、`remove`；单次 callback 同步且原子，Runtime batch 发布一次
 精确的净 `CollectionChange`。scope 用 `scope.input`、`scope.derive`、
-`scope.incremental` 声明局部投影，直接依赖同一 Runtime 中的根投影；dispose 只释放
+`scope.derive.keyed` 和 `scope.incremental` 声明局部投影，直接依赖同一 Runtime 中的根投影；dispose 只释放
 局部 producer、状态和订阅。
 
 Runtime 的 scheduler/output internals、item handle、rebuild、release 都是内部事实，不是应用层操作；
@@ -63,37 +95,47 @@ Materialization、keyed storage、故障恢复和释放只有一个 owner。
 
 ## 增量 Processor
 
-保留状态和 keyed patch 从 `doxum/advanced` 引入：
+保持 key 的 selector 和声明式 dynamic keyed dependency 优先使用 `derive.keyed`。
+只有算法需要该模型无法表达的应用级 retained state、跨 key index 或 output patch 时，
+才从 `doxum/advanced` 引入增量 processor：
 
 ```ts
-const total = incremental([tasks], ({ sources, previous, state }) => {
-  state.calls = Number(state.calls ?? 0) + 1;
-  return sources[0].size + Number(state.calls) + (previous ?? 0);
+const totalWeight = incremental([tasks], ({ sources, changes, previous, reset }) => {
+  const change = changes[0];
+  if (reset || change?.kind === 'reset')
+    return [...sources[0].values()].reduce((sum, task) => sum + task.weight, 0);
+  if (!change) return previous ?? 0;
+  let next = previous ?? 0;
+  for (const entry of change.added) next += entry.after.weight;
+  for (const entry of change.updated) next += entry.after.weight - entry.before.weight;
+  for (const entry of change.removed) next -= entry.before.weight;
+  return next;
 });
 
-const doubled = incremental.collection([tasks], ({ sources, output }) => {
-  for (const [id, task] of sources[0]) output.set(id, task.value * 2);
+const weights = incremental.collection([tasks], ({ sources, changes, output, reset }) => {
+  const change = changes[0];
+  if (reset || change?.kind === 'reset') {
+    for (const [id, task] of sources[0]) output.set(id, task.weight);
+    output.order([...sources[0].keys()]);
+    return;
+  }
+  if (!change) return;
+  for (const entry of change.added) output.set(entry.key, entry.after.weight);
+  for (const entry of change.updated) output.set(entry.key, entry.after.weight);
+  for (const entry of change.removed) output.remove(entry.key);
+  if (change.order) output.order([...sources[0].keys()]);
 });
 
 const render = incremental.group(
-  [tasks],
+  [selection],
   define => ({
-    node: {
-      shell: define.collection<string, Shell>(),
-      content: define.collection<string, Content>(),
-    },
-    labels: define.collection<string, Label>(),
-    chrome: define.value<Chrome>(),
-    revision: define.value<number>(),
+    geometry: define.value<Geometry>(),
+    label: define.value<Label>(),
   }),
   ({ sources, outputs }) => {
-    for (const [id, task] of sources[0]) {
-      outputs.node.shell.set(id, makeShell(task));
-      outputs.node.content.set(id, makeContent(task));
-      outputs.labels.set(id, makeLabel(task));
-    }
-    outputs.chrome.set(makeChrome(sources[0]));
-    outputs.revision.set(sources[0].size);
+    const layout = computeLayout(sources[0]);
+    outputs.geometry.set(layout.geometry);
+    outputs.label.set(layout.label);
   }
 );
 ```

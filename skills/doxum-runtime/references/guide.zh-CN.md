@@ -16,7 +16,6 @@ document.update(draft => {
   const task = draft.tasks.get('a');
   if (task) task.done = !task.done;
   draft.tasks.put('b', { title: 'Review', done: false });
-  return { warnings: [] };
 });
 const done = read(document, state => state.tasks.get('a')?.done);
 const tasks = read(document, state => snapshot(state.tasks));
@@ -85,8 +84,12 @@ observerErrors 属于已提交结果。
 
 集合边界使用 `observe(document, path => path.tasks)`，纯派生值使用
 `derive([tasks, filter], (tasks, filter) => ...)`。定义是惰性的，由一个
-`createProjectionRuntime({ onError })` owner 物化和管理。保留状态、反向索引和
-keyed patch 放在隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
+`createProjectionRuntime({ onError })` owner 物化和管理。当一个 keyed source 决定
+output key/order 时，用 `derive.keyed(entries, entry => entry.label)` 独立映射每个
+entry；跨 collection 的动态 key lookup 继续在同一个 derivation 中声明
+`{ source, key }` dependency，由 Runtime 拥有 binding/reverse index，producer DAG
+仍保持显式。只有 `derive.keyed` 无法表达的 retained state、自定义跨 key index 或
+keyed patch 才放到隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
 selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。
 tree 结构复用同一套 projection source 协议：`path.tree.rootId` 是 scalar，
 `path.tree.nodes` 是 keyed collection，`path.tree.nodes.item(id)` 是单节点 value。

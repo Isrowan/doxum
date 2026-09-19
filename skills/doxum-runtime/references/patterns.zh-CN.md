@@ -19,15 +19,26 @@ position.x 细粒度赋值；stroke 整体替换；rows.replace(key, value) 按�
 const model = object({
   entries: map(object({ rows: table(object({ title: field<string>() })) })),
 });
-const document = createDocument({ schema: model, initial: { entries: {} } });
+const document = createDocument({
+  schema: model,
+  initial: {
+    entries: {
+      a: { rows: { ids: ['x'], byId: { x: { title: 'First' } } } },
+    },
+  },
+});
 document.update(draft => {
-  draft.entries.put('a', { rows: { ids: ['x'], byId: { x: { title: 'First' } } } });
-  draft.entries.get('a')!.rows.get('x')!.title = 'Updated';
+  const entry = draft.entries.get('a')!;
+  replace(entry, 'rows', {
+    ids: ['y'],
+    byId: { y: { title: 'Replacement' } },
+  });
 });
 ```
 
-map 条目使用 put。Draft 类型含集合方法的 object/variant 成员使用顶层 replace；
-集合整体替换使用集合自身的 replace(next)，并经同一 mutation session 修改。
+Draft 类型含集合方法的 object/variant 成员使用顶层 `replace(parent, key, value)`；
+map membership 仍使用 `put`/`remove`。当集合本身就是 mutation target 时，整体替换
+使用集合自身的 `replace(next)`。
 
 ## 领域键
 
@@ -45,7 +56,7 @@ const model = object({ people: map(object({ name: field(text) }), { key: personI
 const initial = parse(model, { people: { 'person:1': { name: 'Ada' } } });
 ```
 
-品牌类型贯穿 map/table 方法、符号路径和 collection impact。
+品牌键类型贯穿 map/table 方法、符号路径和 collection impact。
 
 ## 顺序、History 与重放
 
@@ -84,18 +95,26 @@ document.apply(
 ## 投影与 React
 
 ```ts
-const tasks = observe(document, path => path.tasks);
-const titles = derive([tasks], tasks => new Map([...tasks].map(([id, task]) => [id, task.title])));
-const total = derive([titles], titles => titles.size);
-const zoom = input(1);
-const scaled = derive([total, zoom], (total, zoom) => total * zoom);
+const rows = observe(document, path => path.rows);
+const metadata = observe(document, path => path.metadata);
+const density = input<'compact' | 'comfortable'>('comfortable');
+
+const labels = derive.keyed(rows, row => row.label);
+const decorated = derive.keyed(
+  rows,
+  [{ source: metadata, key: row => row.metadataId }, density],
+  (row, _rowId, meta, density) => formatRow(row, meta, density)
+);
+const count = derive([labels], labels => labels.size);
 const runtime = createProjectionRuntime({ onError: console.error });
-runtime.get(scaled);
-const title = runtime.get(tasks).get(taskId);
+runtime.get(decorated);
+runtime.get(count);
 ```
 
 React 使用 `ProjectionProvider` 提供 Runtime，再用 `useProjection` 读取 Projection，单键读取写成
-`useProjection(projection, selector)`；`useInput` 返回值和 setter。高级集合 processor
-从 `doxum/advanced` 引入，在同步 callback 中使用
-`output.set/remove/order` 与 previous/next。Processor 依赖仍显式声明，
-React selector 追踪只属于消费端。
+`useProjection(projection, selector)`；`useInput` 返回值和 setter。`derive.keyed`
+负责保持 key 的 selector 与声明式 dynamic keyed lookup，reverse dependency index
+由 Runtime 拥有；结果是聚合值或不存在可保留的逐 key identity 时使用 tuple
+`derive`。需要自定义 retained/cross-key 算法时再从 `doxum/advanced` 引入高级
+collection processor，在同步 callback 中使用 `output.set/remove/order` 与
+previous/next。Processor 依赖仍显式声明，React selector 追踪只属于消费端。

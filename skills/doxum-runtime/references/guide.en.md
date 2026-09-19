@@ -16,7 +16,6 @@ document.update(draft => {
   const task = draft.tasks.get('a');
   if (task) task.done = !task.done;
   draft.tasks.put('b', { title: 'Review', done: false });
-  return { warnings: [] };
 });
 const done = read(document, state => state.tasks.get('a')?.done);
 const tasks = read(document, state => snapshot(state.tasks));
@@ -97,9 +96,13 @@ after acceptance.
 
 Use `observe(document, path => path.tasks)` for a collection boundary and
 `derive([tasks, filter], (tasks, filter) => ...)` for pure values. Definitions are
-lazy and materialized by one `createProjectionRuntime({ onError })` owner. Sources
-remain explicit. Retained state, reverse indexes and keyed output patches belong to
-the isolated `doxum/advanced` incremental entry points. See the [projection
+lazy and materialized by one `createProjectionRuntime({ onError })` owner. When a
+keyed source determines output keys/order, map entries independently with
+`derive.keyed(entries, entry => entry.label)`. Dynamic keyed lookup stays in that
+same derivation through declared `{ source, key }` dependencies; the Runtime owns
+their binding/reverse index while the producer DAG remains explicit. Use isolated
+`doxum/advanced` incremental entry points only for retained state, custom cross-key
+indexes or keyed patches that `derive.keyed` cannot express. See the [projection
 reference](projections.en.md) for lifecycle, draft semantics, selector tracking,
 batching and recovery.
 Tree structure uses the same projection source protocols: observe `path.tree.rootId`

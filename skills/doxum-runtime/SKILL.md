@@ -38,11 +38,14 @@ Before runtime changes read [invariants](references/invariants.en.md) or
 - Paths belong in subscription, impact and collection source callbacks.
 - Projection definitions are lazy; one ProjectionRuntime owns all materialized
   producers, outputs, scheduling and source attachments for that Runtime.
-  Use tuple `derive` for pure values. Advanced `incremental` processors declare every
-  source, own any forward/reverse dependency indexes, derive from final batched source
-  state, and recover from resets internally. Core projections never track reads
-  automatically; React selectors do through `ProjectionProvider` and
-  `useProjection(projection, selector)`.
+  Use tuple `derive` for pure aggregate values. Use `derive.keyed` when one keyed
+  driver owns the output key domain/order: per-entry equality suppresses unchanged
+  selected values, and declared `{ source, key }` dependencies let the Runtime own
+  output-key/source-key bindings and reverse lookup. The producer graph remains
+  explicit and static; processors never discover dependencies with `runtime.get()`.
+  Use advanced `incremental` only for retained state or cross-key coordination that
+  cannot be expressed by `derive.keyed`. React selector tracking remains a consumer
+  concern through `ProjectionProvider` and `useProjection(projection, selector)`.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters consume standard `Readable`,
   document `select`, and projection readables without internal target/address protocols.
@@ -50,4 +53,5 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   collaborative undo belong at a separate boundary.
 
 Update examples and tests when behavior changes. Never add compatibility APIs,
-a second path grammar or another writable derived cache.
+a second path grammar, a parallel join/dependency protocol, or another writable
+derived cache.

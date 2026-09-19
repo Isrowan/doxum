@@ -2,7 +2,8 @@
 
 Root projection definitions are lazy and reusable; scoped definitions are lazy
 and bound to one scope. The public core consists of
-`Projection<T>`, `ProjectionRuntime`, `input`, `observe`, and tuple `derive`.
+`Projection<T>`, `ProjectionRuntime`, `input`, `observe`, tuple `derive`, and
+key-preserving `derive.keyed`.
 
 ```ts
 const tasks = observe(document, path => path.tasks);
@@ -40,6 +41,40 @@ External events are smaller than Runtime contexts. A value event carries the new
 explicit and fixed when the definition is created. Processors must not discover
 graph dependencies by reading other projections.
 
+Use `derive.keyed` when one keyed collection determines the output membership and
+order:
+
+```ts
+const labels = derive.keyed(entries, entry => entry.label);
+```
+
+Only added or updated driver entries run the selector; removals delete the same
+output key and order changes preserve driver order without reevaluating unchanged
+entries. The collection output applies per-entry equality, so an updated source
+entry whose selected value is equal produces no output `updated` transition.
+Initial materialization, source reset and fault recovery rebuild through the normal
+ProjectionRuntime processor lifecycle.
+
+Dynamic keyed lookups use the same derivation instead of an application-owned join
+protocol:
+
+```ts
+const resolved = derive.keyed(
+  links,
+  [{ source: entities, key: link => link.entityId }, mode],
+  (link, _linkId, entity, mode) => projectLink(link, entity, mode)
+);
+```
+
+The source projection remains a static producer dependency; only the selected
+source key varies per output key. The materialized processor owns the forward and
+reverse key bindings. Updating one source entry recomputes only the output keys
+currently bound to it. A missing source entry keeps its binding so a later add of
+that key also recomputes its dependents. Ordinary projection dependencies such as
+`mode` invalidate the full driver key set. Do not add processor-side
+`runtime.get()` tracking, wildcard document path grammars, or a separate join
+runtime for this case.
+
 The Runtime API is intentionally small:
 
 ```ts
@@ -58,7 +93,8 @@ runtime.dispose();
 `update` draft has `get`, `has`, `set`, and `remove`; edits are synchronous and
 atomic per callback, and a Runtime batch publishes one exact net
 `CollectionChange`. A scope declares local inputs, derives, and incremental
-processors through `scope.input`, `scope.derive`, and `scope.incremental`. They
+processors through `scope.input`, `scope.derive` (including `scope.derive.keyed`),
+and `scope.incremental`. They
 depend directly on root projections in the same Runtime. Disposing the scope
 releases local producers, state and subscriptions without disposing its root
 dependencies.
@@ -69,37 +105,48 @@ Runtime materialization, keyed storage, recovery and disposal are one owner.
 
 ## Incremental processors
 
-Import retained-state processors from `doxum/advanced`:
+Use `derive.keyed` for key-preserving selection and declared dynamic keyed
+dependencies. Import retained-state processors from `doxum/advanced` when the
+algorithm needs application-specific retained state, cross-key indexes, or output
+patches that this dependency model cannot express:
 
 ```ts
-const total = incremental([tasks], ({ sources, previous, state }) => {
-  state.calls = Number(state.calls ?? 0) + 1;
-  return sources[0].size + Number(state.calls) + (previous ?? 0);
+const totalWeight = incremental([tasks], ({ sources, changes, previous, reset }) => {
+  const change = changes[0];
+  if (reset || change?.kind === 'reset')
+    return [...sources[0].values()].reduce((sum, task) => sum + task.weight, 0);
+  if (!change) return previous ?? 0;
+  let next = previous ?? 0;
+  for (const entry of change.added) next += entry.after.weight;
+  for (const entry of change.updated) next += entry.after.weight - entry.before.weight;
+  for (const entry of change.removed) next -= entry.before.weight;
+  return next;
 });
 
-const doubled = incremental.collection([tasks], ({ sources, output }) => {
-  for (const [id, task] of sources[0]) output.set(id, task.value * 2);
+const weights = incremental.collection([tasks], ({ sources, changes, output, reset }) => {
+  const change = changes[0];
+  if (reset || change?.kind === 'reset') {
+    for (const [id, task] of sources[0]) output.set(id, task.weight);
+    output.order([...sources[0].keys()]);
+    return;
+  }
+  if (!change) return;
+  for (const entry of change.added) output.set(entry.key, entry.after.weight);
+  for (const entry of change.updated) output.set(entry.key, entry.after.weight);
+  for (const entry of change.removed) output.remove(entry.key);
+  if (change.order) output.order([...sources[0].keys()]);
 });
 
 const render = incremental.group(
-  [tasks],
+  [selection],
   define => ({
-    node: {
-      shell: define.collection<string, Shell>(),
-      content: define.collection<string, Content>(),
-    },
-    labels: define.collection<string, Label>(),
-    chrome: define.value<Chrome>(),
-    revision: define.value<number>(),
+    geometry: define.value<Geometry>(),
+    label: define.value<Label>(),
   }),
   ({ sources, outputs }) => {
-    for (const [id, task] of sources[0]) {
-      outputs.node.shell.set(id, makeShell(task));
-      outputs.node.content.set(id, makeContent(task));
-      outputs.labels.set(id, makeLabel(task));
-    }
-    outputs.chrome.set(makeChrome(sources[0]));
-    outputs.revision.set(sources[0].size);
+    const layout = computeLayout(sources[0]);
+    outputs.geometry.set(layout.geometry);
+    outputs.label.set(layout.label);
   }
 );
 ```
