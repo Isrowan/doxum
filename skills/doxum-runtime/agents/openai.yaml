@@ -1,4 +1,4 @@
 interface:
   display_name: 'Doxum Runtime'
-  short_description: 'Build, modify, and review Doxum runtime code safely.'
+  short_description: 'Build and review Doxum core, projections, React, and local-sync.'
   default_prompt: 'Use $doxum-runtime to implement this Doxum feature while preserving its runtime invariants.'

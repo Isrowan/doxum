@@ -1,5 +1,7 @@
 # Doxum Patterns
 
+Exact call shapes and callback fields are listed in the [API reference](api.en.md).
+
 ## Payload Or Structure
 
 ```ts
@@ -104,8 +106,11 @@ const density = input<'compact' | 'comfortable'>('comfortable');
 const labels = derive.keyed(rows, row => row.label);
 const decorated = derive.keyed(
   rows,
-  [{ source: metadata, key: row => row.metadataId }, density],
-  (row, _rowId, meta, density) => formatRow(row, meta, density)
+  {
+    meta: { source: metadata, key: row => row.metadataId },
+    density,
+  },
+  (row, { meta, density }) => formatRow(row, meta, density)
 );
 const count = derive([labels], labels => labels.size);
 const runtime = createProjectionRuntime({ onError: console.error });
@@ -122,3 +127,25 @@ per-key identity.
 Advanced collection processors in `doxum/advanced` stage `output.set/remove/order`
 and use scoped previous/next reads for custom retained/cross-key algorithms.
 Processor dependencies remain explicit even though React selectors track actual reads.
+
+## Multi-output incremental processor
+
+```ts
+const render = incremental.group(
+  [scene],
+  define => ({
+    cards: define.collection<string, Card>(),
+    count: define.value<number>(),
+  }),
+  ({ sources, outputs }) => {
+    const cards = buildCards(sources[0]);
+    for (const [id, card] of cards) outputs.cards.set(id, card);
+    outputs.cards.order([...cards.keys()]);
+    outputs.count.set(cards.size);
+  }
+);
+```
+
+`define.value` / `define.collection` exist only inside the `incremental.group`
+declaration callback. Return a nested plain object when related output namespaces belong
+to the same processor.

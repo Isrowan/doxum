@@ -9,6 +9,7 @@ import {
   type ProducerDefinition,
 } from './definition';
 import { assertSynchronous } from './graph/scheduler';
+import { isPlainObject } from '../value/record';
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
@@ -29,17 +30,26 @@ export type KeyedDependency<
 };
 
 type KeyedDeriveDependency<K extends string, V> =
-  Projection<unknown, unknown> | KeyedDependency<K, V, string, unknown>;
+  | (Projection<unknown, unknown> & { readonly source?: never; readonly key?: never })
+  | KeyedDependency<K, V, string, unknown>;
 
-type KeyedDependencyValues<D extends readonly unknown[]> = {
-  readonly [I in keyof D]: D[I] extends {
+type KeyedDeriveDependencyRecord<K extends string, V> = Readonly<
+  Record<string, KeyedDeriveDependency<K, V>>
+>;
+
+type KeyedDeriveDependencies<K extends string, V, D extends object> = {
+  readonly [P in keyof D]: P extends string ? KeyedDeriveDependency<K, V> : never;
+};
+
+type KeyedDependencyValues<D extends Readonly<Record<string, unknown>>> = {
+  readonly [P in keyof D]: D[P] extends {
     readonly source: Projection<
       ReadonlyMap<infer _K extends string, infer V>,
       CollectionChange<infer _K extends string, infer V>
     >;
   }
     ? V | undefined
-    : D[I] extends Projection<infer T, unknown>
+    : D[P] extends Projection<infer T, unknown>
       ? T
       : never;
 };
@@ -127,44 +137,61 @@ export function createKeyedDerive<K extends string, V, T>(
 export function createKeyedDerive<
   K extends string,
   V,
-  const D extends readonly KeyedDeriveDependency<K, V>[],
+  const D extends object & KeyedDeriveDependencies<K, V, D>,
   T,
 >(
   source: KeyedProjection<K, V>,
   dependencies: D,
-  select: (value: V, key: K, ...dependencies: KeyedDependencyValues<D>) => Synchronous<T>,
+  select: (value: V, dependencies: KeyedDependencyValues<D>, key: K) => Synchronous<T>,
   equality?: Equality<T>
 ): KeyedProjection<K, T>;
 export function createKeyedDerive<K extends string, V, T>(
   source: KeyedProjection<K, V>,
-  dependenciesOrSelect:
-    readonly KeyedDeriveDependency<K, V>[] | ((value: V, key: K) => Synchronous<T>),
+  dependenciesOrSelect: KeyedDeriveDependencyRecord<K, V> | ((value: V, key: K) => Synchronous<T>),
   selectOrEquality?:
-    ((value: V, key: K, ...dependencies: readonly unknown[]) => Synchronous<T>) | Equality<T>,
+    | ((value: V, dependencies: Readonly<Record<string, unknown>>, key: K) => Synchronous<T>)
+    | Equality<T>,
   maybeEquality?: Equality<T>
 ): KeyedProjection<K, T> {
   assertKeyedProjection(source, 'Keyed derive source');
-  const dependencySpecs = Array.isArray(dependenciesOrSelect) ? dependenciesOrSelect : [];
-  const select = (
-    Array.isArray(dependenciesOrSelect) ? selectOrEquality : dependenciesOrSelect
-  ) as (value: V, key: K, ...dependencies: readonly unknown[]) => Synchronous<T>;
-  const equality = (Array.isArray(dependenciesOrSelect) ? maybeEquality : selectOrEquality) as
+  const dependencySpecs =
+    typeof dependenciesOrSelect === 'function' ? undefined : dependenciesOrSelect;
+  const select = (dependencySpecs === undefined
+    ? dependenciesOrSelect
+    : selectOrEquality) as unknown as (
+    value: V,
+    dependenciesOrKey: Readonly<Record<string, unknown>> | K,
+    key?: K
+  ) => Synchronous<T>;
+  const equality = (dependencySpecs === undefined ? selectOrEquality : maybeEquality) as
     Equality<T> | undefined;
   if (typeof select !== 'function') throw new TypeError('Keyed derive requires a selector.');
 
   const dependencies: Projection<unknown, unknown>[] = [source];
+  const dependencyNames: string[] = [];
   const keyed: Array<RuntimeKeyedDependency | undefined> = [];
-  for (const dependency of dependencySpecs) {
-    if (isProjection(dependency)) {
-      dependencies.push(dependency);
-      keyed.push(undefined);
-      continue;
+  if (dependencySpecs !== undefined) {
+    if (!isPlainObject(dependencySpecs) || isProjection(dependencySpecs))
+      throw new TypeError('Keyed derive dependencies must be a plain object.');
+    for (const name of Reflect.ownKeys(dependencySpecs)) {
+      if (typeof name !== 'string')
+        throw new TypeError('Keyed derive dependency names must be strings.');
+      const descriptor = Object.getOwnPropertyDescriptor(dependencySpecs, name);
+      if (!descriptor?.enumerable || !('value' in descriptor))
+        throw new TypeError('Keyed derive dependencies must be enumerable data properties.');
+      const dependency = descriptor.value as KeyedDeriveDependency<K, V>;
+      dependencyNames.push(name);
+      if (isProjection(dependency)) {
+        dependencies.push(dependency);
+        keyed.push(undefined);
+        continue;
+      }
+      if (!isKeyedDependency(dependency))
+        throw new TypeError('Keyed derive dependencies must be projections or keyed lookups.');
+      assertKeyedProjection(dependency.source, 'Dynamic keyed dependency source');
+      dependencies.push(dependency.source);
+      keyed.push(dependency);
     }
-    if (!isKeyedDependency(dependency))
-      throw new TypeError('Keyed derive dependencies must be projections or keyed lookups.');
-    assertKeyedProjection(dependency.source, 'Dynamic keyed dependency source');
-    dependencies.push(dependency.source);
-    keyed.push(dependency);
   }
 
   const [projection] = defineProcessor({
@@ -199,8 +226,16 @@ export function createKeyedDerive<K extends string, V, T>(
           const project = (key: string): void => {
             if (!driver.read.has(key)) return;
             const value = driver.read.get(key) as V;
-            const dependencyValues = keyed.map((dependency, index) => {
-              if (!dependency) return globalValues[index];
+            const dependencyValues: Record<string, unknown> = Object.create(null) as Record<
+              string,
+              unknown
+            >;
+            for (let index = 0; index < keyed.length; index++) {
+              const dependency = keyed[index];
+              if (!dependency) {
+                dependencyValues[dependencyNames[index]] = globalValues[index];
+                continue;
+              }
               const sourceContext = evaluation.sources[index + 1];
               if (sourceContext.kind !== 'collection')
                 throw new TypeError(
@@ -211,9 +246,13 @@ export function createKeyedDerive<K extends string, V, T>(
               if (selectedKey !== undefined && typeof selectedKey !== 'string')
                 throw new TypeError('Dynamic keyed dependency keys must be strings or undefined.');
               bindKey(bindings[index]!, key, selectedKey);
-              return selectedKey === undefined ? undefined : sourceContext.read.get(selectedKey);
-            });
-            const next = select(value, key as K, ...dependencyValues);
+              dependencyValues[dependencyNames[index]] =
+                selectedKey === undefined ? undefined : sourceContext.read.get(selectedKey);
+            }
+            const next =
+              dependencySpecs === undefined
+                ? select(value, key as K)
+                : select(value, Object.freeze(dependencyValues), key as K);
             assertSynchronous(next);
             output.output.set(key, next);
           };

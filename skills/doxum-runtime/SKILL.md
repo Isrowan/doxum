@@ -1,12 +1,15 @@
 ---
 name: doxum-runtime
-description: 'Use doxum and doxum/react for schemas, scoped draft updates, ChangeSets, history, projections, subscriptions and React integration.'
+description: 'Use Doxum core, advanced projections, React, and local-sync for schemas, document state, ChangeSets, history, projections, subscriptions, persistence, and adapters.'
 ---
 
 # Doxum Runtime
 
 Read the [English guide](references/guide.en.md) or [中文指南](references/guide.zh-CN.md).
 For examples read [patterns](references/patterns.en.md) or [中文模式](references/patterns.zh-CN.md).
+For exact public call shapes, exported package surface, callback contexts, result
+types, and supported errors, read the [API reference](references/api.en.md) or
+[中文 API 参考](references/api.zh-CN.md) instead of implementation source.
 For any projection design or implementation, especially custom processors or
 cross-collection dependencies, read the [projection reference](references/projections.en.md)
 or [中文 Projection 参考](references/projections.zh-CN.md).
@@ -40,12 +43,17 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   producers, outputs, scheduling and source attachments for that Runtime.
   Use tuple `derive` for pure aggregate values. Use `derive.keyed` when one keyed
   driver owns the output key domain/order: per-entry equality suppresses unchanged
-  selected values, and declared `{ source, key }` dependencies let the Runtime own
-  output-key/source-key bindings and reverse lookup. The producer graph remains
-  explicit and static; processors never discover dependencies with `runtime.get()`.
+  selected values. Its dependency form uses a named object: plain Projection members
+  invalidate the driver key set, while `{ source, key }` members let the Runtime own
+  per-output-key source bindings and reverse lookup. Selectors receive
+  `(entry, dependencies, key)`. The producer graph remains explicit and static;
+  processors never discover dependencies with `runtime.get()`.
   Use advanced `incremental` only for retained state or cross-key coordination that
   cannot be expressed by `derive.keyed`. React selector tracking remains a consumer
   concern through `ProjectionProvider` and `useProjection(projection, selector)`.
+- `incremental.group` declares several outputs through its synchronous `define`
+  callback. `define.value` and `define.collection` are callback methods, not separate
+  imports; every returned leaf is an ordinary Projection from the same producer.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters consume standard `Readable`,
   document `select`, and projection readables without internal target/address protocols.

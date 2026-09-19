@@ -1,5 +1,9 @@
 # Projection 参考
 
+`input.collection`、Runtime/Scope 方法、external source 契约、全部 `incremental.*`
+形态以及 `define.value/collection` 的精确可调用 surface 见 [API 参考](api.zh-CN.md)。
+本文只解释 projection 的行为、所有权与增量语义。
+
 根 Projection 定义惰性且可跨 Runtime 复用；scope 定义惰性但只属于其局部生命周期。默认入口包含 `Projection<T>`、
 `ProjectionRuntime`、`input`、`observe`、tuple 形式的 `derive` 和保持 key 的
 `derive.keyed`。
@@ -57,10 +61,18 @@ ProjectionRuntime 原有 processor rebuild 生命周期。
 ```ts
 const resolved = derive.keyed(
   links,
-  [{ source: entities, key: link => link.entityId }, mode],
-  (link, _linkId, entity, mode) => projectLink(link, entity, mode)
+  {
+    entity: { source: entities, key: link => link.entityId },
+    mode,
+  },
+  (link, { entity, mode }) => projectLink(link, entity, mode)
 );
 ```
+
+依赖形式使用命名对象，selector 形态为 `(entry, dependencies, key)`。普通 Projection
+成员使整个 driver key set 失效，`{ source, key }` 成员把每个 output key 绑定到动态
+source key。无额外依赖时仍使用
+`derive.keyed(source, (entry, key) => value, equality?)`。
 
 source Projection 仍是静态 producer dependency，只有每个 output key 对应的
 source key 动态变化。物化后的 processor 拥有正向 binding 与 reverse index；一个

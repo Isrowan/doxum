@@ -1,5 +1,8 @@
 # Doxum 使用指南
 
+`doxum`、`doxum/advanced`、`doxum/react`、`doxum/local-sync` 的精确公开签名见
+[API 参考](api.zh-CN.md)。本指南只保留选择原则与生命周期语义。
+
 ## 定义、修改与读取
 
 ```ts
@@ -86,8 +89,9 @@ observerErrors 属于已提交结果。
 `derive([tasks, filter], (tasks, filter) => ...)`。定义是惰性的，由一个
 `createProjectionRuntime({ onError })` owner 物化和管理。当一个 keyed source 决定
 output key/order 时，用 `derive.keyed(entries, entry => entry.label)` 独立映射每个
-entry；跨 collection 的动态 key lookup 继续在同一个 derivation 中声明
-`{ source, key }` dependency，由 Runtime 拥有 binding/reverse index，producer DAG
+entry；跨 collection 的动态 key lookup 继续在同一个 derivation 中用命名依赖对象声明：
+普通 Projection 成员是全局依赖，`{ source, key }` 成员是逐 output key lookup，selector
+接收 `(entry, dependencies, key)`。Runtime 拥有 binding/reverse index，producer DAG
 仍保持显式。只有 `derive.keyed` 无法表达的 retained state、自定义跨 key index 或
 keyed patch 才放到隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
 selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。

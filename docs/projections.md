@@ -43,10 +43,18 @@ Keyed derivations may also declare dynamic lookups into another keyed projection
 ```ts
 const cardContent = derive.keyed(
   items,
-  [{ source: records, key: item => item.recordId }, activeView, visibleFields],
-  (item, itemId, record, view, fields) => renderCard(item, record, view, fields)
+  {
+    record: { source: records, key: item => item.recordId },
+    view: activeView,
+    fields: visibleFields,
+  },
+  (item, { record, view, fields }) => renderCard(item, record, view, fields)
 );
 ```
+
+This form calls the selector as `(entry, dependencies, key)`: dependency values are
+read by name, and the output key is the third argument so selectors that do not need
+it can simply omit it. The no-dependency shorthand remains `(entry, key)`.
 
 The source projection is still a static processor dependency. Only its source key
 is dynamic per output key. The materialized processor owns the forward and reverse

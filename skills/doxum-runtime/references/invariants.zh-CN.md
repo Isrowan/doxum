@@ -1,5 +1,7 @@
 # Runtime 不变量
 
+公开调用形态统一放在 [api.zh-CN.md](api.zh-CN.md)；本文只保留影响实现和 review 的不变量。
+
 1. createDocument 唯一拥有 canonical state；Draft、apply、replace 共用 MutationSession。
    runtime 统一执行、回滚、seal、发布边界，history 同样复用。
    mutation/operations 按 table/list/order/tree/replay 分类完整操作，session 持有写入内核。
@@ -25,10 +27,11 @@
 8. apply 要求 expectedRevision，记录本地真实旧状态。本地 reset 可撤销，
    remote commit 使 history 失效；group 在单个 session 中旅行。
 9. projection 显式声明 producer source，先于监听结算，producer DAG 保持静态。
-   `derive.keyed` 可以把每个 output key 绑定到已显式声明 keyed source 的某个 key；
-   物化后的 Runtime 拥有这些 binding 和 reverse index，包括当前尚不存在的 source
-   entry。processor 不通过 `runtime.get()` 创建图依赖。通知失败不撤销提交；batch
-   推迟投影发布，不推迟文档提交与文档监听。
+   `derive.keyed` 用一个命名依赖对象声明额外 source；其中 `{ source, key }` 成员可以
+   把每个 output key 绑定到已显式声明 keyed source 的某个 key。物化后的 Runtime
+   拥有这些 binding 和 reverse index，包括当前尚不存在的 source entry。processor
+   不通过 `runtime.get()` 创建图依赖。通知失败不撤销提交；batch 推迟投影发布，不推迟
+   文档提交与文档监听。
 10. local-sync 使用 Web Lock 领导权和连续 durable seq，先可见后异步持久化。
     版本 5 / 格式 3 拒绝旧数据库并保留原数据，附着期间禁止外部 replace 和 remote apply。
 11. core 框架无关，公开导出需明确用途；根 dist 为构建产物。

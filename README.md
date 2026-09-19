@@ -278,10 +278,19 @@ document path grammar or allowing processors to discover dependencies with
 ```ts
 const cardContent = derive.keyed(
   items,
-  [{ source: records, key: item => item.recordId }, activeView, visibleFields],
-  (item, itemId, record, view, fields) => renderCard(item, record, view, fields)
+  {
+    record: { source: records, key: item => item.recordId },
+    view: activeView,
+    fields: visibleFields,
+  },
+  (item, { record, view, fields }) => renderCard(item, record, view, fields)
 );
 ```
+
+The dependency form passes `(entry, dependencies, key)` to the selector. Dependency
+values are named instead of positional; the third `key` argument can be omitted when
+the selector does not need it. The no-dependency shorthand remains
+`derive.keyed(source, (entry, key) => value, equality?)`.
 
 The Runtime owns the resulting output-key/source-key bindings and reverse lookup.
 A missing source key remains bound, so adding it later invalidates the dependent

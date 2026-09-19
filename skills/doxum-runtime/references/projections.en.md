@@ -1,5 +1,9 @@
 # Projection Reference
 
+For the concise callable surface, including `input.collection`, Runtime/Scope methods,
+external source contracts, every `incremental.*` form and `define.value/collection`,
+see the [API reference](api.en.md). This document explains behavior and ownership.
+
 Root projection definitions are lazy and reusable; scoped definitions are lazy
 and bound to one scope. The public core consists of
 `Projection<T>`, `ProjectionRuntime`, `input`, `observe`, tuple `derive`, and
@@ -61,10 +65,18 @@ protocol:
 ```ts
 const resolved = derive.keyed(
   links,
-  [{ source: entities, key: link => link.entityId }, mode],
-  (link, _linkId, entity, mode) => projectLink(link, entity, mode)
+  {
+    entity: { source: entities, key: link => link.entityId },
+    mode,
+  },
+  (link, { entity, mode }) => projectLink(link, entity, mode)
 );
 ```
+
+The dependency form is named and calls the selector as `(entry, dependencies, key)`.
+Plain Projection members invalidate the full driver key set; `{ source, key }` members
+bind each output key to a dynamic source key. The no-dependency shorthand stays
+`derive.keyed(source, (entry, key) => value, equality?)`.
 
 The source projection remains a static producer dependency; only the selected
 source key varies per output key. The materialized processor owns the forward and

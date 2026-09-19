@@ -1,5 +1,7 @@
 # Doxum 常见模式
 
+精确调用形态和 callback 字段见 [API 参考](api.zh-CN.md)。
+
 ## 原子值与结构
 
 ```ts
@@ -102,8 +104,11 @@ const density = input<'compact' | 'comfortable'>('comfortable');
 const labels = derive.keyed(rows, row => row.label);
 const decorated = derive.keyed(
   rows,
-  [{ source: metadata, key: row => row.metadataId }, density],
-  (row, _rowId, meta, density) => formatRow(row, meta, density)
+  {
+    meta: { source: metadata, key: row => row.metadataId },
+    density,
+  },
+  (row, { meta, density }) => formatRow(row, meta, density)
 );
 const count = derive([labels], labels => labels.size);
 const runtime = createProjectionRuntime({ onError: console.error });
@@ -118,3 +123,24 @@ React 使用 `ProjectionProvider` 提供 Runtime，再用 `useProjection` 读取
 `derive`。需要自定义 retained/cross-key 算法时再从 `doxum/advanced` 引入高级
 collection processor，在同步 callback 中使用 `output.set/remove/order` 与
 previous/next。Processor 依赖仍显式声明，React selector 追踪只属于消费端。
+
+## 多输出 incremental processor
+
+```ts
+const render = incremental.group(
+  [scene],
+  define => ({
+    cards: define.collection<string, Card>(),
+    count: define.value<number>(),
+  }),
+  ({ sources, outputs }) => {
+    const cards = buildCards(sources[0]);
+    for (const [id, card] of cards) outputs.cards.set(id, card);
+    outputs.cards.order([...cards.keys()]);
+    outputs.count.set(cards.size);
+  }
+);
+```
+
+`define.value` / `define.collection` 只存在于 `incremental.group` 的声明 callback 内。
+同一 processor 有多组相关输出时，直接返回嵌套 plain object 组织 namespace。

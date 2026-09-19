@@ -1,5 +1,8 @@
 # Runtime Invariants
 
+Public call shapes belong in [api.en.md](api.en.md); keep this file limited to
+implementation invariants that affect design and review decisions.
+
 1. createDocument owns canonical state; Draft, apply and replace share MutationSession.
    runtime owns one execution/rollback/seal/publish boundary, also used by history.
    mutation/operations groups table/list/order/tree/replay commands by domain; session
@@ -32,11 +35,12 @@
 8. Apply requires expectedRevision and captures actual local old state. Local reset is
    reversible; remote commits invalidate history. Groups travel in one session.
 9. Projections declare producer sources and settle before listeners. The producer DAG
-   remains static. `derive.keyed` may bind each output key to a key in an explicitly
-   declared keyed source; the materialized Runtime owns those bindings and reverse
-   indexes, including bindings to currently missing source entries. Processors do not
-   create graph dependencies with `runtime.get()`. Notification failures leave commits
-   accepted. Batch defers projection publication, not document commits/listeners.
+   remains static. `derive.keyed` declares extra sources in one named dependency object;
+   `{ source, key }` members may bind each output key to a key in an explicitly declared
+   keyed source. The materialized Runtime owns those bindings and reverse indexes,
+   including bindings to currently missing source entries. Processors do not create graph
+   dependencies with `runtime.get()`. Notification failures leave commits accepted. Batch
+   defers projection publication, not document commits/listeners.
 10. Local sync uses Web Lock leadership and contiguous durable sequence. Writes precede
     asynchronous persistence. Version 5 / format 3 rejects old databases without editing
     them. External replace and remote apply are prohibited while attached.

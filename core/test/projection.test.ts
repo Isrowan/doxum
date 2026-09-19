@@ -777,21 +777,27 @@ describe('projection runtime', () => {
     const select = vi.fn(
       (
         item: { readonly recordId: string },
-        _itemId: string,
-        record: { readonly title: string } | undefined,
-        currentMode: 'compact' | 'full'
-      ) => `${currentMode}:${item.recordId}:${record?.title ?? 'missing'}`
+        dependencies: {
+          readonly record: { readonly title: string } | undefined;
+          readonly mode: 'compact' | 'full';
+        },
+        itemId: string
+      ) =>
+        `${itemId}:${dependencies.mode}:${item.recordId}:${dependencies.record?.title ?? 'missing'}`
     );
     const content = derive.keyed(
       items,
-      [{ source: records, key: item => item.recordId }, mode],
+      {
+        record: { source: records, key: item => item.recordId },
+        mode,
+      },
       select
     );
     const runtime = createProjectionRuntime();
 
     expect([...runtime.get(content)]).toEqual([
-      ['i1', 'compact:r1:One'],
-      ['i2', 'compact:r2:Two'],
+      ['i1', 'i1:compact:r1:One'],
+      ['i2', 'i2:compact:r2:Two'],
     ]);
     select.mockClear();
 
@@ -800,12 +806,12 @@ describe('projection runtime', () => {
 
     runtime.update(records, draft => draft.set('r1', { title: 'One+' }));
     expect(select).toHaveBeenCalledTimes(1);
-    expect(runtime.get(content).get('i1')).toBe('compact:r1:One+');
+    expect(runtime.get(content).get('i1')).toBe('i1:compact:r1:One+');
     select.mockClear();
 
     runtime.update(items, draft => draft.set('i1', { recordId: 'r2' }));
     expect(select).toHaveBeenCalledTimes(1);
-    expect(runtime.get(content).get('i1')).toBe('compact:r2:Two');
+    expect(runtime.get(content).get('i1')).toBe('i1:compact:r2:Two');
     select.mockClear();
 
     runtime.update(records, draft => draft.set('r1', { title: 'detached' }));
@@ -815,16 +821,16 @@ describe('projection runtime', () => {
     select.mockClear();
 
     runtime.update(items, draft => draft.set('i1', { recordId: 'missing' }));
-    expect(runtime.get(content).get('i1')).toBe('compact:missing:missing');
+    expect(runtime.get(content).get('i1')).toBe('i1:compact:missing:missing');
     select.mockClear();
     runtime.update(records, draft => draft.set('missing', { title: 'Arrived' }));
     expect(select).toHaveBeenCalledTimes(1);
-    expect(runtime.get(content).get('i1')).toBe('compact:missing:Arrived');
+    expect(runtime.get(content).get('i1')).toBe('i1:compact:missing:Arrived');
     select.mockClear();
 
     runtime.set(mode, 'full');
     expect(select).toHaveBeenCalledTimes(2);
-    expect(runtime.get(content).get('i2')).toBe('full:r2:Two+');
+    expect(runtime.get(content).get('i2')).toBe('i2:full:r2:Two+');
     runtime.dispose();
   });
 

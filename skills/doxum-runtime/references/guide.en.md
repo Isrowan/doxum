@@ -1,5 +1,9 @@
 # Doxum Guide
 
+For exact signatures across `doxum`, `doxum/advanced`, `doxum/react`, and
+`doxum/local-sync`, use the [API reference](api.en.md). This guide focuses on choices
+and lifecycle semantics.
+
 ## Define, Update And Read
 
 ```ts
@@ -99,8 +103,10 @@ Use `observe(document, path => path.tasks)` for a collection boundary and
 lazy and materialized by one `createProjectionRuntime({ onError })` owner. When a
 keyed source determines output keys/order, map entries independently with
 `derive.keyed(entries, entry => entry.label)`. Dynamic keyed lookup stays in that
-same derivation through declared `{ source, key }` dependencies; the Runtime owns
-their binding/reverse index while the producer DAG remains explicit. Use isolated
+same derivation through a named dependency object; plain Projection members are
+global dependencies and `{ source, key }` members are per-output-key lookups. The
+selector receives `(entry, dependencies, key)`, while the Runtime owns the
+binding/reverse index and the producer DAG remains explicit. Use isolated
 `doxum/advanced` incremental entry points only for retained state, custom cross-key
 indexes or keyed patches that `derive.keyed` cannot express. See the [projection
 reference](projections.en.md) for lifecycle, draft semantics, selector tracking,
