@@ -12,12 +12,15 @@ const requiredFiles = [
   'dist/index.cjs',
   'dist/index.d.ts',
   'dist/index.js',
-  'dist/integration.cjs',
-  'dist/integration.d.ts',
-  'dist/integration.js',
+  'dist/local-sync.cjs',
+  'dist/local-sync.d.ts',
+  'dist/local-sync.js',
   'dist/react.cjs',
   'dist/react.d.ts',
   'dist/react.js',
+  'dist/advanced.cjs',
+  'dist/advanced.d.ts',
+  'dist/advanced.js',
   'skills/doxum-runtime/SKILL.md',
 ];
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
