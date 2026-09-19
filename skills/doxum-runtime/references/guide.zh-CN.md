@@ -66,7 +66,9 @@ tree 成员是否可以缺失。
 成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。
 parse(model, unknown) 复制校验后的结构并共享只读 payload；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 方法、
 符号路径和 impact。路径回调描述地址，包括缺失键，订阅注册时解析。
-React useDocumentSelector 追踪实际读取，并在选择分支改变时更新依赖。
+Core 的 `select(document, selector, equality?)` 追踪实际读取，在选择分支改变时更新
+依赖，并返回标准 `Readable`；React 的 `useDocumentSelector` 只负责把这个 Core
+readable 接到 React。
 
 ## 变化与消费者
 

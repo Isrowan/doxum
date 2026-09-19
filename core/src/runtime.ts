@@ -1,16 +1,15 @@
 import type { ObjectNode, Infer, PathPick } from './schema';
 import { compilePath } from './schema';
-import { contains, debugKey, overlaps, read, resolveAddress } from './address';
 import { createImpact } from './impact';
 import { createHistory } from './history';
 import { createAccess, type Draft } from './access/scope';
 import { MutationSession } from './mutation/session';
 import * as replay from './mutation/operations/replay';
 import type { RuntimeWriteIntent } from './runtime/driver';
-import { decodeChanges } from './mutation/changes';
-import { MutationRejected, fail } from './mutation/issue';
+import * as changeSet from './mutation/changes';
+import * as issue from './mutation/issue';
 import type { ChangeSet } from './changes';
-import { checkValue, copyValue, ParseError } from './schema-value';
+import * as schemaValue from './schema/value';
 import {
   DocumentDisposedError,
   DocumentReentrancyError,
@@ -24,17 +23,9 @@ import type {
   OperationResult,
   TransactionResult,
 } from './runtime/contract';
-import { bindRuntimeAccess, accessOf } from './runtime/access';
-import { assertRuntimeWritable, bindRuntimeDriver, disposeRuntimeDriver } from './runtime/driver';
-import {
-  bindDocumentReadable,
-  createNotification,
-  disposeNotification,
-  notify,
-  subscribeRoot,
-  subscribeTargets,
-  type RuntimeNotification,
-} from './runtime/notification';
+import { assertRuntimeWritable } from './runtime/driver';
+import { bindContext, type RuntimeContext, type RuntimeState } from './runtime/context';
+import { createNotificationCenter } from './runtime/notification';
 
 export const createDocument = <S extends ObjectNode>(input: {
   readonly schema: S;
@@ -43,19 +34,20 @@ export const createDocument = <S extends ObjectNode>(input: {
 }): DocumentRuntime<S> => {
   if (input.schema.kind !== 'object')
     throw new TypeError('Document schema must be a root object node.');
-  const invalid = checkValue(input.schema, input.initial);
-  if (invalid) throw new ParseError(invalid);
-  const state = {
+  const invalid = schemaValue.checkValue(input.schema, input.initial);
+  if (invalid) throw new schemaValue.ParseError(invalid);
+  const state: RuntimeState<S> = {
     schema: input.schema,
-    document: copyValue(input.schema, input.initial) as Infer<S>,
+    document: schemaValue.copyValue(input.schema, input.initial) as Infer<S>,
     disposed: false,
   };
   let revision = 0,
     busy = false;
-  let runtime!: DocumentRuntime<S>, notification!: RuntimeNotification<S>;
+  const notifications = createNotificationCenter(input.schema);
+  let runtime!: DocumentRuntime<S>, context!: RuntimeContext<S>;
   const idle = () => {
     if (state.disposed) throw new DocumentDisposedError();
-    if (busy || accessOf(runtime).projectionLocks) throw new DocumentReentrancyError();
+    if (busy || state.projectionLocks) throw new DocumentReentrancyError();
   };
   const writable = (intent: Parameters<typeof assertRuntimeWritable>[1]) => {
     idle();
@@ -96,7 +88,7 @@ export const createDocument = <S extends ObjectNode>(input: {
     return {
       status: 'committed',
       commit,
-      observerErrors: notify(notification, commit, history.flush),
+      observerErrors: notifications.publish(commit, history.flush),
     };
   };
   function mutate(
@@ -128,7 +120,7 @@ export const createDocument = <S extends ObjectNode>(input: {
         changes = session.finish();
       } catch (error) {
         session.rollback();
-        if (error instanceof MutationRejected)
+        if (error instanceof issue.MutationRejected)
           return { status: 'rejected', issues: [error.issue], revision };
         if (intent.kind === 'update' && error instanceof TransactionRejected)
           return { status: 'rejected', issues: error.issues, revision };
@@ -143,13 +135,6 @@ export const createDocument = <S extends ObjectNode>(input: {
   }
   runtime = {
     schema: input.schema,
-    address: {
-      resolve: at => resolveAddress(input.schema, at, state.document),
-      read: at => read(state.document, at, input.schema),
-      contains,
-      overlaps,
-      debugKey,
-    },
     revision: () => revision,
     update: <V>(
       run: (draft: Draft<S>) => V,
@@ -179,8 +164,8 @@ export const createDocument = <S extends ObjectNode>(input: {
         options?.history ?? true,
         session => {
           if (!options || options.expectedRevision !== revision)
-            fail([], 'baseline-mismatch', 'apply requires the current expectedRevision.');
-          replay.apply(session, decodeChanges(inputChanges), 'forward');
+            issue.fail([], 'baseline-mismatch', 'apply requires the current expectedRevision.');
+          replay.apply(session, changeSet.decodeChanges(inputChanges), 'forward');
         }
       ),
     replace: (value, options) => {
@@ -191,18 +176,17 @@ export const createDocument = <S extends ObjectNode>(input: {
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();
-      return copyValue(input.schema, state.document) as Infer<S>;
+      return schemaValue.copyValue(input.schema, state.document) as Infer<S>;
     },
     subscribe: ((
       pick: PathPick<S> | readonly PathPick<S>[] | CommitListener<S>,
       listener?: CommitListener<S>
     ) => {
       if (state.disposed) throw new DocumentDisposedError();
-      if (!listener) return subscribeRoot(notification, pick as CommitListener<S>);
+      if (!listener) return notifications.subscribe(pick as CommitListener<S>);
       const picks: readonly PathPick<S>[] = Array.isArray(pick) ? pick : [pick as PathPick<S>];
       if (!picks.length) throw new TypeError('Expected at least one subscription path.');
-      return subscribeTargets(
-        notification,
+      return notifications.subscribeTargets(
         picks.map(p => compilePath<S['shape']>(input.schema, 'value', p)),
         listener
       );
@@ -213,16 +197,21 @@ export const createDocument = <S extends ObjectNode>(input: {
       idle();
       state.disposed = true;
       try {
-        disposeNotification(notification);
+        notifications.dispose();
       } finally {
         history.dispose();
-        disposeRuntimeDriver(runtime);
+        context.driver = undefined;
       }
     },
   };
-  bindRuntimeAccess(runtime, state);
-  bindRuntimeDriver(runtime);
-  notification = createNotification(runtime);
-  bindDocumentReadable(history.api, runtime);
+  context = {
+    state,
+    owner: runtime,
+    notifications,
+    driver: undefined,
+    bypassDepth: 0,
+  };
+  bindContext(runtime, context);
+  bindContext(history.api, context);
   return runtime;
 };

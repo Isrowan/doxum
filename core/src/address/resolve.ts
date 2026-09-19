@@ -1,8 +1,8 @@
-import type { DocumentAddress, DocumentNode, ObjectNode, ObjectShape } from './schema';
-import * as ordered from './ordered-key';
-import { profile } from './profile';
-import type { MutableTree } from './mutation/tree';
-import { is as isTree } from './mutation/tree';
+import * as sequence from '../order/sequence';
+import { profile } from '../profile';
+import type { DocumentAddress, DocumentNode, ObjectNode } from '../schema';
+import { compiledLayout, type MemberLayout } from '../schema/layout';
+import * as tree from '../tree/topology';
 
 /** The only resolved address representation used inside the runtime. */
 export type AddressRef = {
@@ -123,10 +123,10 @@ export const nodeAt = (
   return node;
 };
 
-export const readSegment = (value: unknown, segment: string, node?: DocumentNode): unknown => {
+const readSegment = (value: unknown, segment: string, node?: DocumentNode): unknown => {
   if (!isRecord(value) && !Array.isArray(value)) return undefined;
   if (node?.kind === 'list' && Array.isArray(value))
-    return value[ordered.indexedKeys(value, node.keyOf).index(segment)];
+    return value[sequence.indexedKeys(value, node.keyOf).index(segment)];
   if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId)) {
     return Object.hasOwn(value.byId, segment) ? value.byId[segment] : undefined;
   }
@@ -153,48 +153,6 @@ export type ResolvedAddress = {
   readonly node: DocumentNode;
 };
 
-type MemberDefinition = {
-  readonly node: DocumentNode;
-  readonly field: boolean;
-};
-export type FixedMember = MemberDefinition & {
-  readonly kind: 'fixed';
-  readonly key: string;
-  readonly slot: number;
-};
-type CollectionMember = MemberDefinition & { readonly kind: 'entry' };
-export type CompiledMember = FixedMember | CollectionMember;
-export type FixedLayout = {
-  readonly kind: 'fixed';
-  readonly members: ReadonlyMap<string, FixedMember>;
-};
-type DynamicLayout = { readonly kind: 'dynamic'; readonly entry: CollectionMember };
-export type MemberLayout = FixedLayout | DynamicLayout;
-const compiledObjects = new WeakMap<object, FixedLayout>();
-const compiledEntries = new WeakMap<DocumentNode, DynamicLayout>();
-export const compiledShape = (node: DocumentNode, value: unknown): FixedLayout | undefined => {
-  const branch = node.kind === 'variant' ? variantNode(node, value) : node;
-  if (branch?.kind !== 'object') return undefined;
-  const shape: ObjectShape = branch.shape;
-  let layout = compiledObjects.get(shape);
-  if (!layout) {
-    const compiled = new Map<string, FixedMember>();
-    for (const key of Object.keys(shape).sort()) {
-      profile.address.schemaStep();
-      compiled.set(key, {
-        kind: 'fixed',
-        key,
-        node: shape[key],
-        field: shape[key].kind === 'field',
-        slot: compiled.size,
-      });
-    }
-    layout = { kind: 'fixed', members: compiled };
-    compiledObjects.set(shape, layout);
-  }
-  return layout;
-};
-
 /** Immutable location facts, valid only for the resolving session generation. */
 export type ResolvedContainer = {
   readonly owner: object;
@@ -210,7 +168,7 @@ export type ResolvedTreeContainer = {
   readonly generation: number;
   readonly at: DocumentAddress;
   readonly node: Extract<DocumentNode, { kind: 'tree' }>;
-  readonly value: MutableTree;
+  readonly value: tree.MutableTree;
 };
 export const resolveContainer = (
   owner: object,
@@ -223,22 +181,8 @@ export const resolveContainer = (
   const parent = node.kind === 'table' && isRecord(value) ? value.byId : value;
   if (!isRecord(parent) && !Array.isArray(parent)) return undefined;
   if (node.kind === 'tree') return undefined;
-  let layout: MemberLayout;
-  if (node.kind === 'map' || node.kind === 'table' || node.kind === 'list') {
-    let dynamic = compiledEntries.get(node);
-    if (!dynamic) {
-      dynamic = {
-        kind: 'dynamic',
-        entry: { kind: 'entry', node: node.value, field: node.value.kind === 'field' },
-      };
-      compiledEntries.set(node, dynamic);
-    }
-    layout = dynamic;
-  } else {
-    const fixed = compiledShape(node, value);
-    if (!fixed) return undefined;
-    layout = fixed;
-  }
+  const layout = compiledLayout(node, value);
+  if (!layout) return undefined;
   return { owner, generation, at, node, parent, value, layout };
 };
 export const resolveTreeContainer = (
@@ -248,13 +192,13 @@ export const resolveTreeContainer = (
   node: DocumentNode | undefined,
   value: unknown
 ): ResolvedTreeContainer | undefined =>
-  node?.kind === 'tree' && isTree(value) ? { owner, generation, at, node, value } : undefined;
+  node?.kind === 'tree' && tree.is(value) ? { owner, generation, at, node, value } : undefined;
 export const memberKey = (
   container: { readonly node: DocumentNode; readonly parent: Record<string, unknown> | unknown[] },
   key: string
 ): string | number =>
   container.node.kind === 'list'
-    ? ordered.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
+    ? sequence.indexedKeys(container.parent as unknown[], container.node.keyOf).index(key)
     : key;
 
 type ResolutionPrefix = {
@@ -378,178 +322,7 @@ export const resolveChild = (
     parent: current,
     key:
       node?.kind === 'list' && Array.isArray(current)
-        ? ordered.indexedKeys(current, node.keyOf).index(last)
+        ? sequence.indexedKeys(current, node.keyOf).index(last)
         : last,
   };
 };
-
-export const contains = (parent: DocumentAddress, child: DocumentAddress): boolean => {
-  profile.address.prefixComparison();
-  if (parent.length > child.length) return false;
-  for (let index = 0; index < parent.length; index += 1) {
-    profile.address.segmentCompared();
-    if (parent[index] !== child[index]) return false;
-  }
-  return true;
-};
-
-export const overlaps = (a: DocumentAddress, b: DocumentAddress): boolean =>
-  contains(a, b) || contains(b, a);
-
-export const debugKey = (address: DocumentAddress): string => {
-  let result = '';
-  for (let index = 0; index < address.length; index += 1) {
-    if (index > 0) result += '/';
-    result += address[index].replaceAll('~', '~~').replaceAll('/', '~/');
-  }
-  return result;
-};
-
-export const same = (a: AddressRef, b: AddressRef): boolean => {
-  if (a.path !== b.path || a.address.length !== b.address.length) return false;
-  for (let index = 0; index < a.address.length; index += 1) {
-    profile.address.segmentCompared();
-    if (a.address[index] !== b.address[index]) return false;
-  }
-  return true;
-};
-
-export type { DocumentAddress } from './schema';
-
-type AddressIndexNode<T> = {
-  readonly children: Map<string, AddressIndexNode<T>>;
-  readonly values: Set<T>;
-};
-
-/** An index over canonical address segments, shared by impact and subscriptions. */
-export class AddressIndex<T> {
-  private readonly root: AddressIndexNode<T> = { children: new Map(), values: new Set() };
-
-  add(address: DocumentAddress, value: T, member?: string): void {
-    let node = this.root;
-    for (let i = 0; i < address.length + (member === undefined ? 0 : 1); i++) {
-      const segment = i < address.length ? address[i] : member!;
-      let child = node.children.get(segment);
-      if (!child) {
-        child = { children: new Map(), values: new Set() };
-        node.children.set(segment, child);
-      }
-      node = child;
-    }
-    node.values.add(value);
-  }
-
-  delete(address: DocumentAddress, value: T, member?: string): void {
-    const parents: AddressIndexNode<T>[] = [];
-    let node = this.root;
-    const segments = member === undefined ? address : [...address, member];
-    for (const segment of segments) {
-      const child = node.children.get(segment);
-      if (!child) return;
-      parents.push(node);
-      node = child;
-    }
-    node.values.delete(value);
-    for (let i = segments.length - 1; i >= 0 && !node.values.size && !node.children.size; i--) {
-      node = parents[i];
-      node.children.delete(segments[i]);
-    }
-  }
-
-  exact(address: DocumentAddress): ReadonlySet<T> | undefined {
-    let node = this.root;
-    for (const segment of address) {
-      const child = node.children.get(segment);
-      if (!child) return undefined;
-      node = child;
-    }
-    return node.values;
-  }
-
-  hasAncestor(address: DocumentAddress, strict = false): boolean {
-    let node = this.root;
-    for (let i = 0; i < address.length; i++) {
-      if (node.values.size) return true;
-      const child = node.children.get(address[i]);
-      if (!child) return false;
-      node = child;
-    }
-    return !strict && node.values.size > 0;
-  }
-
-  someAncestor(address: DocumentAddress, predicate: (value: T) => boolean): boolean {
-    let node = this.root;
-    for (let i = 0; ; i++) {
-      for (const value of node.values) if (predicate(value)) return true;
-      if (i === address.length) return false;
-      const child = node.children.get(address[i]);
-      if (!child) return false;
-      node = child;
-    }
-  }
-
-  overlaps(address: DocumentAddress): boolean {
-    let node = this.root;
-    for (const segment of address) {
-      if (node.values.size) return true;
-      const child = node.children.get(segment);
-      if (!child) return false;
-      node = child;
-    }
-    return node.values.size > 0 || node.children.size > 0;
-  }
-
-  hasDescendant(address: DocumentAddress): boolean {
-    let node = this.root;
-    for (const segment of address) {
-      const child = node.children.get(segment);
-      if (!child) return false;
-      node = child;
-    }
-    return node.values.size > 0 || node.children.size > 0;
-  }
-
-  query(
-    visit: (value: T) => void,
-    relation: 'overlap' | 'ancestors' | 'descendants' = 'overlap'
-  ): (address: DocumentAddress, members?: readonly { readonly key: string }[]) => void {
-    const visited = new Set<AddressIndexNode<T>>();
-    const subtrees = new Set<AddressIndexNode<T>>();
-    const values = (node: AddressIndexNode<T>) => {
-      if (visited.has(node)) return;
-      visited.add(node);
-      node.values.forEach(visit);
-    };
-    const descend = (current: AddressIndexNode<T>): void => {
-      if (subtrees.has(current)) return;
-      subtrees.add(current);
-      values(current);
-      current.children.forEach(descend);
-    };
-    const terminal = (node: AddressIndexNode<T>) =>
-      relation === 'ancestors' ? values(node) : descend(node);
-    return (address, members) => {
-      let node = this.root;
-      for (const segment of address) {
-        if (subtrees.has(node)) return;
-        if (relation !== 'descendants') values(node);
-        const child = node.children.get(segment);
-        if (!child) return;
-        node = child;
-      }
-      if (!members) terminal(node);
-      else {
-        if (relation !== 'descendants') values(node);
-        for (const member of members) {
-          const child = node.children.get(member.key);
-          if (child) terminal(child);
-        }
-      }
-    };
-  }
-
-  clear(): void {
-    this.root.values.clear();
-    this.root.children.clear();
-  }
-}

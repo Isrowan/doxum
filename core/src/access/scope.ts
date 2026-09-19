@@ -15,16 +15,9 @@ import type {
   ValueSchemaNode,
   VariantNode,
 } from '../schema';
-import {
-  nodeAt,
-  resolveChild,
-  resolveLocated,
-  compiledShape,
-  type FixedMember,
-  type ResolvedContainer,
-  type ResolvedTreeContainer,
-} from '../address';
-import { copyValue } from '../schema-value';
+import * as address from '../address/resolve';
+import { compiledShape, type FixedMember } from '../schema/layout';
+import * as schemaValue from '../schema/value';
 import type { DependencyTracker } from './dependency';
 import type { CanonicalState } from '../mutation/state';
 import type { MutationSession } from '../mutation/session';
@@ -33,10 +26,10 @@ import * as tableOperations from '../mutation/operations/table';
 import * as listOperations from '../mutation/operations/list';
 import * as treeOperations from '../mutation/operations/tree';
 import * as orderOperations from '../mutation/operations/order';
-import * as tree from '../mutation/tree';
-import * as ordered from '../ordered-key';
+import * as sequence from '../order/sequence';
+import * as tree from '../tree/topology';
 import { profile } from '../profile';
-import * as impactTarget from '../impact-target';
+import * as target from '../impact/target';
 
 declare const scopeValue: unique symbol;
 type Scoped<N extends DocumentNode, W extends boolean, V = Infer<N>> = {
@@ -155,7 +148,7 @@ type Target = {
     | { kind: 'dynamic'; keys: Map<string, Target> }
     | undefined;
   proxy: object | undefined;
-  container?: ResolvedContainer | ResolvedTreeContainer;
+  container?: address.ResolvedContainer | address.ResolvedTreeContainer;
 };
 type Location = { readonly context: AccessContext; readonly target: Target };
 const locations = new WeakMap<object, Location>();
@@ -189,7 +182,7 @@ const collectTree = (
   context: AccessContext,
   at: DocumentAddress,
   selection: { readonly kind: 'root' } | { readonly kind: 'node'; readonly id: string }
-) => context.dependencies?.record(impactTarget.tree(at, selection));
+) => context.dependencies?.record(target.tree(at, selection));
 export const snapshot = <T>(value: T): Snapshot<T> => {
   const location = value && typeof value === 'object' ? locationOf(value) : undefined;
   if (!location) return value as Snapshot<T>;
@@ -199,7 +192,7 @@ export const snapshot = <T>(value: T): Snapshot<T> => {
   collect(context, at);
   const resolved = resolve(context, location.target);
   if (!resolved.node) throw new Error('The selected schema address no longer exists.');
-  return copyValue(resolved.node, resolved.value) as Snapshot<T>;
+  return schemaValue.copyValue(resolved.node, resolved.value) as Snapshot<T>;
 };
 /** Replace a member with its plain Infer value through the owning draft session. */
 type ReplaceParentAccess = {
@@ -219,12 +212,6 @@ export const replace = <T extends object & ReplaceParentAccess, K extends keyof 
   if (typeof key !== 'string') throw new TypeError('Document keys must be strings.');
   Reflect.set(container, key, value);
 };
-/** Projection collection contexts use the same scoped access, with explicit collection tools. */
-export type CollectionAccess<K extends string, N extends ValueSchemaNode> = TableAccess<
-  K,
-  N,
-  false
->;
 const resolve = (context: AccessContext, target: Target): Target => {
   assertActive(context);
   const generation = context.session?.generation ?? 0;
@@ -236,10 +223,11 @@ const resolve = (context: AccessContext, target: Target): Target => {
     } else {
       const parent = target.parent && resolve(context, target.parent);
       const location = parent
-        ? resolveChild(parent.node, parent.value, target.key)
-        : resolveLocated(context.state.schema, context.state.document, target.at!);
+        ? address.resolveChild(parent.node, parent.value, target.key)
+        : address.resolveLocated(context.state.schema, context.state.document, target.at!);
       target.node =
-        location?.node ?? nodeAt(context.state.schema, addressOf(target), context.state.document);
+        location?.node ??
+        address.nodeAt(context.state.schema, addressOf(target), context.state.document);
       target.value =
         location && Object.hasOwn(location.parent, location.key)
           ? (location.parent as Record<string | number, unknown>)[location.key]
@@ -257,7 +245,10 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     if (!context.session) throw new TypeError('Cannot modify read-only document access.');
     return context.session;
   };
-  const writableContainer = (target: Target, session: MutationSession): ResolvedContainer => {
+  const writableContainer = (
+    target: Target,
+    session: MutationSession
+  ): address.ResolvedContainer => {
     if (target.container?.generation === session.generation && 'layout' in target.container)
       return target.container;
     return (target.container = session.bind(addressOf(target), target.node, target.value));
@@ -328,12 +319,12 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       throw new TypeError('The collection method belongs to a replaced schema branch.');
     return current.value;
   };
-  const writableCollection = (target: Target, node: DocumentNode): ResolvedContainer => {
+  const writableCollection = (target: Target, node: DocumentNode): address.ResolvedContainer => {
     const session = mutable();
     collectionValue(target, node);
     return writableContainer(target, session);
   };
-  const writableTree = (target: Target, node: DocumentNode): ResolvedTreeContainer => {
+  const writableTree = (target: Target, node: DocumentNode): address.ResolvedTreeContainer => {
     const session = mutable();
     collectionValue(target, node);
     if (target.container?.generation === session.generation && !('layout' in target.container))
@@ -406,13 +397,13 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         collect(context, at, 'collection', id);
         return node.kind === 'table'
           ? Object.hasOwn((current as { byId: object }).byId, id)
-          : ordered.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
+          : sequence.indexedKeys(current as unknown[], node.keyOf).index(id) >= 0;
       };
     if (property === 'get')
       return (id: string) => {
         const current = collectionValue(target, node);
         collect(context, at, 'collection', id);
-        const location = resolveChild(node, current, id);
+        const location = address.resolveChild(node, current, id);
         if (!location || !Object.hasOwn(location.parent, location.key)) return undefined;
         return childAccess(
           target,
@@ -639,26 +630,4 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
     return root.value;
   }
   return access(root);
-};
-export const collectionAccess = (
-  context: AccessContext,
-  at: DocumentAddress
-): CollectionAccess<string, ValueSchemaNode> => {
-  const value = createAccess(context, at);
-  if (value === undefined)
-    return {
-      get: () => {
-        assertActive(context);
-        return undefined;
-      },
-      has: () => {
-        assertActive(context);
-        return false;
-      },
-      ids: () => {
-        assertActive(context);
-        return [];
-      },
-    };
-  return value as CollectionAccess<string, ValueSchemaNode>;
 };

@@ -1,5 +1,5 @@
 import type { DocumentAddress } from '../schema';
-import type { ParseIssue } from '../schema-value';
+import type { ParseIssue } from '../schema/value';
 
 export type MutationIssueCode =
   | 'invalid-address'

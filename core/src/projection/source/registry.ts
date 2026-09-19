@@ -1,4 +1,4 @@
-import { documentReadableOwner } from '../../runtime/notification';
+import { contextOf } from '../../runtime/context';
 import type { Unsubscribe } from '../../runtime/contract';
 import type { ExternalCollectionSource } from '../contract';
 import { mapRead } from '../collection/view';
@@ -181,7 +181,7 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
           readables.delete(readable);
         },
       };
-      const owner = documentReadableOwner(readable);
+      const owner = contextOf(readable, false)?.owner;
       if (owner) {
         detachDocument = documents.attachRoot(owner, {
           capture: () => receive(false),

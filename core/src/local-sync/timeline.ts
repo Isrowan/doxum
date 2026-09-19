@@ -5,7 +5,7 @@ import {
 } from './contract';
 import { json, jsonChanges, type JsonValue } from './json';
 import type { ChangeSet } from '../changes';
-import { isRecord } from '../value/ownership';
+import { isRecord } from '../value/record';
 
 const DATABASE_VERSION = 5;
 const FORMAT_VERSION = 3;

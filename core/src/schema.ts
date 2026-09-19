@@ -1,5 +1,5 @@
-import type { Validator } from './schema-value';
-import { checkKey } from './schema-value';
+import type { Validator } from './schema/value';
+import * as schemaValue from './schema/value';
 export type DocumentAddress = readonly string[];
 
 /** Shared payloads are immutable through every alias, including builtin methods. */
@@ -345,7 +345,7 @@ const pathProxy = (
             if (typeof id !== 'string') throw new TypeError('Collection keys must be strings.');
             for (const node of nodes)
               if (node.kind === 'table' || node.kind === 'map') {
-                const invalid = checkKey(node.key, id, [...address, id]);
+                const invalid = schemaValue.checkKey(node.key, id, [...address, id]);
                 if (invalid) throw new TypeError(invalid.message);
               }
             return pathProxy(

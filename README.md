@@ -60,10 +60,14 @@ Committed observer failures are returned in `observerErrors` without rollback.
 ## Read And Observe
 
 ```ts
-import { read, snapshot } from 'doxum';
+import { read, select, snapshot } from 'doxum';
 
 const title = read(document, state => state.title);
 const tasks = read(document, state => snapshot(state.tasks));
+const selectedTitle = select(document, state => state.title);
+const stop = selectedTitle.subscribe(() => {
+  console.log(selectedTitle.current());
+});
 document.subscribe(
   path => path.tasks.item('b').title,
   commit => {
@@ -81,6 +85,10 @@ supported types, while classes/functions need application-specific handling.
 Use ordinary properties for fine-grained reads. Data callbacks read real values;
 path callbacks describe symbolic schema locations, including missing entries.
 Subscription paths compile once during registration.
+`select(document, selector, equality?)` returns a standard `Readable`. Core
+tracks exactly the document locations read by the selector, rebinds dependencies
+when selector branches change, and preserves the previous selected reference and
+publication revision when `equality` reports no result change.
 
 React integration:
 
@@ -91,9 +99,10 @@ const title = useDocumentSelector(document, state => state.title);
 const history = useHistory(document.history);
 ```
 
-React tracks fields actually read and updates dependencies when the selector
-branches. The core has no React dependency. `asReadable(document)` removes write
-capabilities while retaining selection, subscription and projection support.
+Document dependency tracking belongs to Core's `select`; the React adapter only
+subscribes to the resulting `Readable`. The core has no React dependency.
+`asReadable(document)` removes write capabilities while retaining selection,
+subscription and projection support.
 
 ## Containers And Parsing
 
@@ -395,7 +404,7 @@ It also reports structural generation advances and distinguishes captured order
 baselines from final published order copies. Architecture workloads include order
 round trips and repeated tree edits to expose costs hidden by commit-only benchmarks.
 
-Builds produce root `dist` ESM/CJS/declarations for `doxum`, `doxum/integration`,
+Builds produce root `dist` ESM/CJS/declarations for `doxum`,
 `doxum/local-sync`, `doxum/react` and `doxum/advanced`. Source ownership is described in
 [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 The runtime shares one transaction lifecycle; complete mutation operations are

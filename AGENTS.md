@@ -56,23 +56,26 @@ when a change touches addressing, mutation, impact, notifications, or views.
   `MutationIssue` for runtime failures and `DocumentDiagnostic` only for
   application-level `TransactionRejected`. Ordinary exceptions roll back and
   rethrow unchanged; business notices use callback return values.
-- `mutation/tree.ts` owns tree validation and traversal. Trees are empty or
+- `tree/topology.ts` owns tree validation and traversal. Trees are empty or
   single-root, connected, acyclic structures with reciprocal parent/child
   links; validate replacement and import boundaries before writing them.
-- `mutation/anchor.ts` owns ordered-key and Anchor semantics. Table, list, and
-  recorder code must call it rather than recreate key/index calculations.
+- `order/sequence.ts` owns keyed-sequence lookup, derived list indexes and
+  structural sequence installation. `order/anchor.ts` owns Anchor validation,
+  position resolution and move planning. Table, list, and recorder code must call
+  these owners rather than recreate key/index calculations.
   Canonical list key indexes are derived caches; structural writes and rollback
-  use anchor sequence operations that own invalidation. Do not expose a separate
+  use sequence operations that own invalidation. Do not expose a separate
   manual cache-invalidation protocol. Pure value replay must not revalidate unrelated collection values.
-- `impact-target.ts` owns `ImpactTarget` address, schema ownership, identity,
+- `impact/target.ts` owns `ImpactTarget` address, schema ownership, identity,
   equality, bucketing, and exact subscription matching. Notifications must not
-  construct commit impact indexes to filter candidates. Core and React must not inspect selector target
-  shapes locally.
+  construct commit impact indexes to filter candidates. Framework adapters must
+  never inspect selector target shapes.
 - Schema resolution is authoritative for changes and selectors. Do not add
   alternate string-path parsers or separate address models.
-  Fixed and dynamic member layouts are discriminated schema facts; fixed members
-  always have slots. Object/variant input is closed to undeclared own properties;
-  use maps for dynamic keys and fields for arbitrary payloads.
+  `schema/layout.ts` owns fixed/dynamic member layouts and compiled slots;
+  `address/resolve.ts` consumes those facts but does not define schema layout.
+  Object/variant input is closed to undeclared own properties; use maps for dynamic
+  keys and fields for arbitrary payloads.
 - `access/scope.ts` owns Read/Draft access. Draft and trusted internal readers are
   borrowed for synchronous callbacks and must not escape; public reader lifetimes
   retain explicit checks where required. Atomic field interiors are readonly under
@@ -87,6 +90,13 @@ when a change touches addressing, mutation, impact, notifications, or views.
   address walk for every field write. Collection dispatch remains local by domain.
 - Root ObjectNode is schema identity. Subscription/impact/collection paths compile
   at their consumer boundary; do not export application target constructors.
+- `runtime/context.ts` is the only runtime identity registry. A document, its
+  history and read-only aliases bind to one `RuntimeContext`; do not reintroduce
+  per-capability WeakMaps or bind/share registries. `runtime/notification.ts`
+  owns one `NotificationCenter` for processor settlement and external listeners.
+  `runtime/select.ts` owns document dependency tracking and dynamic rebinding;
+  React and other adapters consume only `Readable`, `DocumentReadable`,
+  `select` and projection readables.
 - Projection definitions are lazy and reusable. `ProjectionRuntime` is the only
   owner of materialized derived state; values are recomputed from runtime state
   and declared sources, never manually kept in sync by callers.
@@ -114,8 +124,8 @@ when a change touches addressing, mutation, impact, notifications, or views.
 
 ## Public API And Packaging
 
-- `doxum` is the public package identity. Keep its root, `integration`,
-  `local-sync` and `react` exports aligned with `dist` output.
+- `doxum` is the public package identity. Keep its root, `local-sync`,
+  `react` and `advanced` exports aligned with `dist` output.
 - Public behavior is exported deliberately from package entry points. Keep
   internal runtime plumbing unexported unless it forms a stable external
   contract.

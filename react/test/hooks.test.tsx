@@ -12,7 +12,7 @@ import {
   observe,
   derive,
 } from 'doxum';
-import { ProjectionProvider, useInput, useProjection } from '../src';
+import { ProjectionProvider, useDocumentSelector, useInput, useProjection } from '../src';
 
 describe('projection React adapter', () => {
   it('uses the same hook for values, selectors, and inputs', () => {
@@ -149,5 +149,64 @@ describe('projection React adapter', () => {
     act(() => renderer.unmount());
     scope.dispose();
     runtime.dispose();
+  });
+});
+
+describe('document React adapter', () => {
+  it('delegates dynamic selector dependencies to the Core readable', () => {
+    const schema = object({
+      useA: field<boolean>(),
+      a: field<number>(),
+      b: field<number>(),
+    });
+    const document = createDocument({
+      schema,
+      initial: { useA: true, a: 1, b: 2 },
+    });
+    let renders = 0;
+    const Probe = () => {
+      renders += 1;
+      const value = useDocumentSelector(document, state => (state.useA ? state.a : state.b));
+      return React.createElement('span', null, String(value));
+    };
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(React.createElement(Probe));
+    });
+    const initialRenders = renders;
+    expect(renderer.toJSON()).toMatchObject({ children: ['1'] });
+
+    act(() => {
+      document.update(draft => {
+        draft.b = 3;
+      });
+    });
+    expect(renders).toBe(initialRenders);
+
+    act(() => {
+      document.update(draft => {
+        draft.useA = false;
+      });
+    });
+    expect(renderer.toJSON()).toMatchObject({ children: ['3'] });
+    expect(renders).toBe(initialRenders + 1);
+
+    act(() => {
+      document.update(draft => {
+        draft.a = 4;
+      });
+    });
+    expect(renders).toBe(initialRenders + 1);
+
+    act(() => {
+      document.update(draft => {
+        draft.b = 5;
+      });
+    });
+    expect(renderer.toJSON()).toMatchObject({ children: ['5'] });
+    expect(renders).toBe(initialRenders + 2);
+
+    act(() => renderer.unmount());
+    document.dispose();
   });
 });

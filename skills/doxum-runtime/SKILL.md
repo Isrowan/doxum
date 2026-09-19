@@ -44,7 +44,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   automatically; React selectors do through `ProjectionProvider` and
   `useProjection(projection, selector)`.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
-- Core stays framework-neutral; adapters use integration capabilities.
+- Core stays framework-neutral; adapters consume standard `Readable`,
+  document `select`, and projection readables without internal target/address protocols.
 - Local sync owns browser persistence/leadership. Network conflict policy and
   collaborative undo belong at a separate boundary.
 

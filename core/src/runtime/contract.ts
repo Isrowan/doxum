@@ -1,11 +1,10 @@
 import type { DocumentAddress, ObjectNode, PathPick, Infer } from '../schema';
-import type { AddressRef } from '../address';
 import type { ChangeSet } from '../changes';
 import type { DocumentImpact } from '../impact';
 import type { Draft } from '../access/scope';
 import type { MutationIssue } from '../mutation/issue';
-import type { Readable } from '../projection/readable/contract';
-export type Unsubscribe = () => void;
+import type { Readable, Unsubscribe } from '../readable';
+export type { Unsubscribe } from '../readable';
 export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';
 export class DocumentReentrancyError extends Error {
@@ -91,13 +90,6 @@ export type LocalHistory<C> = Readable<HistoryState> & {
 };
 export type CommitListener<S extends ObjectNode> = (commit: DocumentCommit<S>) => void;
 export type DocumentReadable<S extends ObjectNode> = {
-  readonly address: {
-    resolve(address: DocumentAddress): AddressRef | undefined;
-    read(address: DocumentAddress): unknown;
-    contains(parent: DocumentAddress, child: DocumentAddress): boolean;
-    overlaps(left: DocumentAddress, right: DocumentAddress): boolean;
-    debugKey(address: DocumentAddress): string;
-  };
   revision(): number;
   subscribe(listener: CommitListener<S>): Unsubscribe;
   subscribe(

@@ -1,13 +1,6 @@
 import type { ObjectNode, ImpactTarget } from '../schema';
-import type {
-  CommitListener,
-  DocumentCommit,
-  DocumentReadable,
-  DocumentRuntime,
-  Unsubscribe,
-  ObserverError,
-} from './contract';
-import * as target from '../impact-target';
+import type { CommitListener, DocumentCommit, Unsubscribe, ObserverError } from './contract';
+import * as target from '../impact/target';
 
 export type ProjectionAttachment<TSchema extends ObjectNode> = {
   capture(commit: DocumentCommit<TSchema>): void;
@@ -28,7 +21,7 @@ type FilteredEntry<TSchema extends ObjectNode> = {
   readonly listener: CommitListener<TSchema>;
   active: boolean;
 };
-export type RuntimeNotification<TSchema extends ObjectNode> = {
+type NotificationState<TSchema extends ObjectNode> = {
   readonly root: Set<RootEntry<TSchema>>;
   readonly filtered: Set<FilteredEntry<TSchema>>;
   readonly index: target.SubscriptionIndex<FilteredEntry<TSchema>>;
@@ -38,56 +31,24 @@ export type RuntimeNotification<TSchema extends ObjectNode> = {
   readonly rootSnapshot: RootEntry<TSchema>[];
   notifying: boolean;
 };
-
-const notifications = new WeakMap<object, RuntimeNotification<ObjectNode>>();
-const readableOwners = new WeakMap<object, DocumentReadable<ObjectNode>>();
-
-export const bindDocumentReadable = (
-  readable: object,
-  runtime: DocumentReadable<ObjectNode>
-): void => {
-  readableOwners.set(readable, runtime);
-};
-export const documentReadableOwner = (readable: object): DocumentReadable<ObjectNode> | undefined =>
-  readableOwners.get(readable);
-
-export const createNotification = <TSchema extends ObjectNode>(
-  runtime: DocumentRuntime<TSchema>
-): RuntimeNotification<TSchema> => {
-  const notification: RuntimeNotification<TSchema> = {
-    root: new Set(),
-    filtered: new Set(),
-    index: new target.SubscriptionIndex(runtime.schema),
-    cleanups: new Set(),
-    processors: [],
-    candidates: new Set(),
-    rootSnapshot: [],
-    notifying: false,
-  };
-  notifications.set(runtime as object, notification as RuntimeNotification<ObjectNode>);
-  return notification;
+export type NotificationCenter<TSchema extends ObjectNode> = {
+  subscribe(listener: CommitListener<TSchema>): Unsubscribe;
+  subscribeTargets(
+    targets: readonly ImpactTarget<unknown>[],
+    listener: CommitListener<TSchema>
+  ): Unsubscribe;
+  attachProjection(processor: ProjectionAttachment<TSchema>): Unsubscribe;
+  publish(
+    commit: DocumentCommit<TSchema>,
+    afterSettle?: () => readonly ObserverError[]
+  ): readonly ObserverError[];
+  dispose(): void;
 };
 
-const notificationOf = <TSchema extends ObjectNode>(
-  runtime: DocumentReadable<TSchema>
-): RuntimeNotification<TSchema> => {
-  const value = notifications.get(runtime as object);
-  if (!value) throw new Error('Unknown Doxum runtime.');
-  return value as RuntimeNotification<TSchema>;
-};
-
-export const shareNotification = <TSchema extends ObjectNode>(
-  source: DocumentRuntime<TSchema>,
-  target: DocumentReadable<TSchema>
-): void => {
-  notifications.set(target as object, notificationOf(source) as RuntimeNotification<ObjectNode>);
-};
-
-export const attachProjection = <TSchema extends ObjectNode>(
-  runtime: DocumentReadable<TSchema>,
+const attachProjection = <TSchema extends ObjectNode>(
+  notification: NotificationState<TSchema>,
   processor: ProjectionAttachment<TSchema>
 ): Unsubscribe => {
-  const notification = notificationOf(runtime);
   const entry: ProcessorEntry<TSchema> = { processor, active: true };
   notification.processors.push(entry);
   return () => {
@@ -100,8 +61,8 @@ export const attachProjection = <TSchema extends ObjectNode>(
   };
 };
 
-export const subscribeRoot = <TSchema extends ObjectNode>(
-  notification: RuntimeNotification<TSchema>,
+const addRoot = <TSchema extends ObjectNode>(
+  notification: NotificationState<TSchema>,
   listener: CommitListener<TSchema>
 ): Unsubscribe => {
   const entry: RootEntry<TSchema> = { listener, active: true };
@@ -116,8 +77,8 @@ export const subscribeRoot = <TSchema extends ObjectNode>(
   };
 };
 
-export const subscribeTargets = <TSchema extends ObjectNode>(
-  notification: RuntimeNotification<TSchema>,
+const addFiltered = <TSchema extends ObjectNode>(
+  notification: NotificationState<TSchema>,
   targets: readonly ImpactTarget<unknown>[],
   listener: CommitListener<TSchema>
 ): Unsubscribe => {
@@ -140,8 +101,8 @@ export const subscribeTargets = <TSchema extends ObjectNode>(
   };
 };
 
-export const notify = <TSchema extends ObjectNode>(
-  notification: RuntimeNotification<TSchema>,
+const publishState = <TSchema extends ObjectNode>(
+  notification: NotificationState<TSchema>,
   commit: DocumentCommit<TSchema>,
   afterSettle?: () => readonly ObserverError[]
 ): readonly ObserverError[] => {
@@ -208,14 +169,8 @@ export const notify = <TSchema extends ObjectNode>(
   return Object.freeze(errors);
 };
 
-export const subscribeDependencies = <S extends ObjectNode>(
-  runtime: DocumentReadable<S>,
-  targets: readonly ImpactTarget[],
-  listener: CommitListener<S>
-): Unsubscribe => subscribeTargets(notificationOf(runtime), targets, listener);
-
-export const disposeNotification = <TSchema extends ObjectNode>(
-  notification: RuntimeNotification<TSchema>
+const disposeState = <TSchema extends ObjectNode>(
+  notification: NotificationState<TSchema>
 ): void => {
   const attachments = notification.processors.slice();
   notification.root.clear();
@@ -235,4 +190,31 @@ export const disposeNotification = <TSchema extends ObjectNode>(
     }
   });
   if (errors.length) throw new AggregateError(errors, 'Projection disposal notification failed.');
+};
+
+export const createNotificationCenter = <TSchema extends ObjectNode>(
+  schema: TSchema
+): NotificationCenter<TSchema> => {
+  const state: NotificationState<TSchema> = {
+    root: new Set(),
+    filtered: new Set(),
+    index: new target.SubscriptionIndex(schema),
+    cleanups: new Set(),
+    processors: [],
+    candidates: new Set(),
+    rootSnapshot: [],
+    notifying: false,
+  };
+  return Object.freeze({
+    subscribe: (listener: CommitListener<TSchema>) => addRoot(state, listener),
+    subscribeTargets: (
+      targets: readonly ImpactTarget<unknown>[],
+      listener: CommitListener<TSchema>
+    ) => addFiltered(state, targets, listener),
+    attachProjection: (processor: ProjectionAttachment<TSchema>) =>
+      attachProjection(state, processor),
+    publish: (commit: DocumentCommit<TSchema>, afterSettle?: () => readonly ObserverError[]) =>
+      publishState(state, commit, afterSettle),
+    dispose: () => disposeState(state),
+  });
 };

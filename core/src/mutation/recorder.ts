@@ -1,23 +1,15 @@
 import type { Change, ChangeSet, MemberChange } from '../changes';
 import type { DocumentAddress, DocumentNode } from '../schema';
-import {
-  AddressIndex,
-  contains,
-  resolveValue,
-  resolveLocated,
-  memberKey,
-  type ResolvedContainer,
-  type ResolvedTreeContainer,
-  type CompiledMember,
-  compiledShape,
-  type FixedLayout,
-} from '../address';
-import * as ordered from '../ordered-key';
-import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../schema-value';
-import type { MutableTree, MutableTreeNode } from './tree';
+import { AddressIndex } from '../address/index';
+import * as address from '../address/resolve';
+import * as relation from '../address/relation';
+import * as sequence from '../order/sequence';
 import { profile } from '../profile';
-import { sealChanges } from './changes';
-import { installMember, installOrder, orderOf, type CanonicalState } from './state';
+import { compiledShape, type CompiledMember, type FixedLayout } from '../schema/layout';
+import * as schemaValue from '../schema/value';
+import type { MutableTree, MutableTreeNode } from '../tree/topology';
+import * as changeSet from './changes';
+import * as state from './state';
 type MemberFact = { key: string; node: DocumentNode; present: boolean; value: unknown };
 type MemberGroup = {
   kind: 'members';
@@ -66,9 +58,17 @@ const transition = (
   after: unknown
 ): MemberChange | undefined => {
   if (beforePresent === afterPresent && (!beforePresent || Object.is(before, after))) return;
-  if (node.kind !== 'field' && beforePresent === afterPresent && equalValue(node, before, after))
+  if (
+    node.kind !== 'field' &&
+    beforePresent === afterPresent &&
+    schemaValue.equalValue(node, before, after)
+  )
     return;
-  const value = afterPresent ? (node.kind === 'field' ? after : copyValue(node, after)) : undefined;
+  const value = afterPresent
+    ? node.kind === 'field'
+      ? after
+      : schemaValue.copyValue(node, after)
+    : undefined;
   profile.recorder('transitions');
   return !beforePresent
     ? { key, kind: 'added', after: value }
@@ -154,7 +154,7 @@ const diffMember = (
         if (!Object.hasOwn(left, id))
           diffMember(changes, children, node.value, childAt, id, false, undefined, true, right[id]);
       let order: { before: readonly string[]; after: readonly string[] } | undefined;
-      if (node.kind === 'table' && !ordered.equal(a.ids as string[], b.ids as string[])) {
+      if (node.kind === 'table' && !sequence.equal(a.ids as string[], b.ids as string[])) {
         profile.recorder('publishedOrderItems', (b.ids as string[]).length);
         order = { before: a.ids as string[], after: [...(b.ids as string[])] };
       }
@@ -169,22 +169,27 @@ const restore = (fact: RestoreFact, schema: DocumentNode, root: unknown, skip = 
   const at = skip ? fact.at.slice(skip) : fact.at;
   if (fact.kind === 'member') {
     const member = fact.member;
-    const value = member.present ? copyValue(member.node, member.value) : undefined;
+    const value = member.present ? schemaValue.copyValue(member.node, member.value) : undefined;
     if (!at.length) return value;
-    const location = resolveLocated(schema, root, at);
+    const location = address.resolveLocated(schema, root, at);
     if (!location) throw new Error('Cannot restore an unresolved member.');
-    installMember(location.parent, location.key, member.present, value);
+    state.installMember(location.parent, location.key, member.present, value);
     return root;
   }
-  const location = resolveValue(schema, root, at);
+  const location = address.resolveValue(schema, root, at);
   if (!location) throw new Error('Cannot restore an unresolved subtree.');
-  if (fact.kind === 'order') installOrder(location.node, location.value, fact.group.order!);
+  if (fact.kind === 'order') state.installOrder(location.node, location.value, fact.group.order!);
   else {
     const tree = location.value as MutableTree;
     if (fact.before === null) delete tree.rootId;
     else tree.rootId = fact.before;
     for (const [id, node] of fact.nodes)
-      installMember(tree.nodes, id, node !== undefined, node && copyTreeNode(node));
+      state.installMember(
+        tree.nodes,
+        id,
+        node !== undefined,
+        node && schemaValue.copyTreeNode(node)
+      );
   }
   return root;
 };
@@ -195,7 +200,7 @@ const reconstructBefore = (
   records: readonly RestoreFact[],
   offset: number
 ): unknown => {
-  let before = copyValue(node, current);
+  let before = schemaValue.copyValue(node, current);
   for (let i = records.length - 1; i >= 0; i--)
     if (records[i].kind !== 'order') before = restore(records[i], node, before, offset);
   for (const record of records)
@@ -207,7 +212,7 @@ const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   const members: MemberChange[] = [];
   for (const member of fact.members?.values() ?? []) {
     if (!member) continue;
-    const key = memberKey(fact, member.key);
+    const key = address.memberKey(fact, member.key);
     const present = Object.hasOwn(fact.parent, key);
     const value = (fact.parent as Record<string | number, unknown>)[key];
     if (member.node.kind === 'field') {
@@ -237,10 +242,10 @@ const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   if (fact.order) {
     const current =
       fact.node.kind === 'list'
-        ? ordered.indexedKeys(fact.value as unknown[], fact.node.keyOf)
+        ? sequence.indexedKeys(fact.value as unknown[], fact.node.keyOf)
         : (fact.value as { ids: string[] }).ids;
-    if (!ordered.equal(fact.order, current)) {
-      const after = orderOf(fact.node, fact.value);
+    if (!sequence.equal(fact.order, current)) {
+      const after = state.orderOf(fact.node, fact.value);
       profile.recorder('publishedOrderItems', after.length);
       order = { before: fact.order, after };
     }
@@ -248,8 +253,8 @@ const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   publishMembers(changes, fact.at, members, order);
 };
 
-const sealTree = (fact: TreeFact, state: CanonicalState, changes: Change[]): void => {
-  const location = resolveValue(state.schema, state.document, fact.at);
+const sealTree = (fact: TreeFact, canonical: state.CanonicalState, changes: Change[]): void => {
+  const location = address.resolveValue(canonical.schema, canonical.document, fact.at);
   const tree = location?.value as MutableTree;
   const node = location?.node;
   if (node?.kind !== 'tree') throw new Error('Tree schema disappeared before sealing.');
@@ -257,13 +262,13 @@ const sealTree = (fact: TreeFact, state: CanonicalState, changes: Change[]): voi
   for (const [id, before] of fact.nodes) {
     const after = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
     if (!before && !after) continue;
-    if (before && after && equalTreeNode(before, after)) continue;
+    if (before && after && schemaValue.equalTreeNode(before, after)) continue;
     nodes.push(
       !before
-        ? { id, kind: 'added', after: copyTreeNode(after!) }
+        ? { id, kind: 'added', after: schemaValue.copyTreeNode(after!) }
         : !after
           ? { id, kind: 'removed', before }
-          : { id, kind: 'updated', before, after: copyTreeNode(after) }
+          : { id, kind: 'updated', before, after: schemaValue.copyTreeNode(after) }
     );
   }
   const after = tree.rootId ?? null;
@@ -284,7 +289,7 @@ export class ChangeRecorder {
   private index?: AddressIndex<Fact>;
   private indexedGroups = false;
   private resetBefore?: { value: unknown };
-  constructor(private readonly state: CanonicalState) {}
+  constructor(private readonly state: state.CanonicalState) {}
   private indexGroups(): AddressIndex<Fact> {
     const index = (this.index ??= new AddressIndex());
     if (!this.indexedGroups) {
@@ -329,15 +334,15 @@ export class ChangeRecorder {
           }
           return;
         }
-        if (fact.order && contains(at, fact.at))
+        if (fact.order && relation.contains(at, fact.at))
           children.push({ kind: 'order', at: fact.at, group: fact });
         for (const member of fact.members?.values() ?? []) {
           if (!member) continue;
           const memberAt = fact.at.concat(member.key);
-          if (contains(at, memberAt))
+          if (relation.contains(at, memberAt))
             children.push({ kind: 'member', at: memberAt, group: fact, member });
         }
-      } else if (contains(at, fact.at)) children.push(fact);
+      } else if (relation.contains(at, fact.at)) children.push(fact);
     })(at);
     if (present) value = reconstructBefore(node, value, children, at.length);
     this.releaseCovered(children);
@@ -380,7 +385,7 @@ export class ChangeRecorder {
     if (fact.kind === 'members') this.groups.delete(fact.parent);
   }
   member(
-    container: ResolvedContainer,
+    container: address.ResolvedContainer,
     key: string,
     definition: CompiledMember,
     physicalKey: string | number
@@ -412,7 +417,7 @@ export class ChangeRecorder {
     this.groups = new WeakMap();
     profile.recorder('facts');
   }
-  private createGroup(container: ResolvedContainer): MemberGroup {
+  private createGroup(container: address.ResolvedContainer): MemberGroup {
     const group: MemberGroup =
       container.layout.kind === 'fixed'
         ? {
@@ -437,16 +442,16 @@ export class ChangeRecorder {
     this.register(group);
     return group;
   }
-  order(container: ResolvedContainer): void {
+  order(container: address.ResolvedContainer): void {
     profile.recorder('orderCaptures');
     let group = this.groups.get(container.parent);
     if (group?.order || this.covered(container.at)) return;
     group ??= this.createGroup(container);
-    group.order = orderOf(container.node, container.value);
+    group.order = state.orderOf(container.node, container.value);
     profile.recorder('orderSnapshots');
     profile.recorder('orderItems', group.order.length);
   }
-  tree(container: ResolvedTreeContainer, id?: string): void {
+  tree(container: address.ResolvedTreeContainer, id?: string): void {
     const { at, value: tree } = container;
     if (this.covered(at)) return;
     const index = (this.index ??= new AddressIndex());
@@ -458,7 +463,10 @@ export class ChangeRecorder {
     }
     if (id !== undefined && !fact.nodes.has(id)) {
       profile.recorder('treeNodes');
-      fact.nodes.set(id, Object.hasOwn(tree.nodes, id) ? copyTreeNode(tree.nodes[id]) : undefined);
+      fact.nodes.set(
+        id,
+        Object.hasOwn(tree.nodes, id) ? schemaValue.copyTreeNode(tree.nodes[id]) : undefined
+      );
     }
   }
   rollback(): void {
@@ -472,28 +480,29 @@ export class ChangeRecorder {
       if (fact.kind === 'members') {
         for (const member of fact.members?.values() ?? []) {
           if (!member) continue;
-          installMember(
+          state.installMember(
             fact.parent,
-            memberKey(fact, member.key),
+            address.memberKey(fact, member.key),
             member.present,
-            member.present ? copyValue(member.node, member.value) : undefined
+            member.present ? schemaValue.copyValue(member.node, member.value) : undefined
           );
         }
       } else if (fact.kind === 'tree') restore(fact, this.state.schema, this.state.document);
     }
     for (const fact of facts)
-      if (fact.kind === 'members' && fact.order) installOrder(fact.node, fact.value, fact.order);
+      if (fact.kind === 'members' && fact.order)
+        state.installOrder(fact.node, fact.value, fact.order);
   }
   seal(): ChangeSet {
     if (this.resetBefore) {
-      if (equalValue(this.state.schema, this.resetBefore.value, this.state.document))
-        return sealChanges([]);
+      if (schemaValue.equalValue(this.state.schema, this.resetBefore.value, this.state.document))
+        return changeSet.sealChanges([]);
       profile.recorder('sealed');
-      return sealChanges([
+      return changeSet.sealChanges([
         {
           kind: 'reset',
           before: this.resetBefore.value,
-          after: copyValue(this.state.schema, this.state.document),
+          after: schemaValue.copyValue(this.state.schema, this.state.document),
         },
       ]);
     }
@@ -502,7 +511,7 @@ export class ChangeRecorder {
       if (fact.kind === 'members') sealMembers(fact, changes);
       else sealTree(fact, this.state, changes);
     }
-    const result = sealChanges(changes);
+    const result = changeSet.sealChanges(changes);
     profile.recorder('sealed', result.changes.length);
     return result;
   }

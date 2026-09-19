@@ -1,5 +1,6 @@
 import type { CommitSource, DocumentRuntime } from './contract';
 import type { ObjectNode } from '../schema';
+import { contextOf } from './context';
 
 export type RuntimeWriteIntent =
   | { readonly kind: 'update'; readonly source: Extract<CommitSource, 'local' | 'system'> }
@@ -15,54 +16,33 @@ export type RuntimeWriteDriverLease = {
   readonly dispose: () => void;
 };
 
-type RuntimeDriverState = {
-  driver: RuntimeWriteDriver | undefined;
-  bypassDepth: number;
-};
-
-const states = new WeakMap<object, RuntimeDriverState>();
-
-const stateOf = (runtime: object): RuntimeDriverState => {
-  const state = states.get(runtime);
-  if (!state) throw new Error('Unknown Doxum runtime.');
-  return state;
-};
-
-export const bindRuntimeDriver = (runtime: object): void => {
-  states.set(runtime, { driver: undefined, bypassDepth: 0 });
-};
-
 export const assertRuntimeWritable = (runtime: object, intent: RuntimeWriteIntent): void => {
-  const state = stateOf(runtime);
-  if (state.bypassDepth === 0) state.driver?.assertWritable(intent);
+  const context = contextOf(runtime);
+  if (context.bypassDepth === 0) context.driver?.assertWritable(intent);
 };
 
 export const installRuntimeWriteDriver = <TSchema extends ObjectNode>(
   runtime: DocumentRuntime<TSchema>,
   driver: RuntimeWriteDriver
 ): RuntimeWriteDriverLease => {
-  const state = stateOf(runtime);
-  if (state.driver) throw new Error('Doxum runtime already has a write driver.');
-  state.driver = driver;
+  const context = contextOf(runtime);
+  if (context.driver) throw new Error('Doxum runtime already has a write driver.');
+  context.driver = driver;
   let active = true;
   return Object.freeze({
     run: <TResult>(run: () => TResult): TResult => {
       if (!active) throw new Error('Doxum runtime write driver is no longer active.');
-      state.bypassDepth += 1;
+      context.bypassDepth += 1;
       try {
         return run();
       } finally {
-        state.bypassDepth -= 1;
+        context.bypassDepth -= 1;
       }
     },
     dispose: (): void => {
       if (!active) return;
       active = false;
-      if (state.driver === driver) state.driver = undefined;
+      if (context.driver === driver) context.driver = undefined;
     },
   });
-};
-
-export const disposeRuntimeDriver = (runtime: object): void => {
-  states.delete(runtime);
 };

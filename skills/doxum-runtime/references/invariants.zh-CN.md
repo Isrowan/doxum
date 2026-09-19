@@ -18,9 +18,10 @@
    校验器直接读取原始输入，必须纯同步，成功返回值被忽略。
 6. list 以稳定键标记身份，替换值必须保留键。anchor 拥有排序语义；
    tree 拥有双向一致、连通、无环、空树或单根的拓扑约束。
-7. ObjectNode 拥有定义身份，runtime 拥有实例身份；共享路径 compiler 和
-   impact-target 拥有寻址、身份、相等、分桶和精确匹配，React 也遵守此边界。
-   通知直接匹配分组变化，不构建 commit impact 索引。
+7. ObjectNode 拥有定义身份；runtime、history 和只读 alias 共享唯一 RuntimeContext
+   实例身份。共享路径 compiler 与 Core impact target 算法拥有寻址、身份、相等、
+   分桶和精确匹配；React 只消费 Readable/select 契约。通知直接匹配分组变化，
+   不构建 commit impact 索引。
 8. apply 要求 expectedRevision，记录本地真实旧状态。本地 reset 可撤销，
    remote commit 使 history 失效；group 在单个 session 中旅行。
 9. projection 显式声明 source，先于监听结算。通知失败不撤销提交；

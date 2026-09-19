@@ -28,7 +28,7 @@ import {
   isMapLike,
   type ProjectionReadableSource,
 } from './readable/selection';
-import type { Readable } from './readable/contract';
+import type { Readable } from '../readable';
 import { createScheduler, type OutputRecord, type ProducerRecord } from './graph/scheduler';
 import { createSourceRegistry } from './source/registry';
 import type { KeyedInputDraft, SourceWrite } from './source/boundary';

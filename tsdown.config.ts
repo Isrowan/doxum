@@ -3,7 +3,6 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
   entry: {
     index: 'core/src/index.ts',
-    integration: 'core/src/integration.ts',
     'local-sync': 'core/src/local-sync/index.ts',
     react: 'react/src/index.ts',
     advanced: 'core/src/projection/advanced.ts',

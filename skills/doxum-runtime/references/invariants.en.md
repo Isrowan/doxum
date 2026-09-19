@@ -24,9 +24,11 @@
    original inputs and must be pure; successful output is ignored.
 6. List identity is a stable key; replacement retains it. Anchor owns ordering.
    Tree owns reciprocal, connected, acyclic, empty-or-single-root topology.
-7. ObjectNode owns schema identity; runtime owns instance identity. Shared path compiler
-   and impact-target own addressing/identity/equality/bucketing and exact matching, including React.
-   Notification matches grouped changes directly without building commit impact indexes.
+7. ObjectNode owns schema identity; one RuntimeContext owns instance identity for the
+   runtime, history and read-only aliases. The shared path compiler and Core impact target
+   algorithms own addressing/identity/equality/bucketing and exact matching. React sees
+   only Readable/select contracts. Notification matches grouped changes directly without
+   building commit impact indexes.
 8. Apply requires expectedRevision and captures actual local old state. Local reset is
    reversible; remote commits invalidate history. Groups travel in one session.
 9. Projections declare sources and settle before listeners. Notification failures leave

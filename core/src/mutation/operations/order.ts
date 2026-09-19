@@ -1,16 +1,16 @@
 import type { DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
-import type { ResolvedContainer } from '../../address';
-import * as ordered from '../../ordered-key';
-import * as anchor from '../anchor';
-import { fail } from '../issue';
+import type { ResolvedContainer } from '../../address/resolve';
+import * as sequence from '../../order/sequence';
+import * as anchor from '../../order/anchor';
+import * as issue from '../issue';
 
 const assertOrdered = (
   container: ResolvedContainer
 ): Extract<ResolvedContainer['node'], { kind: 'table' | 'list' }> => {
   const { at, node } = container;
   if (node.kind !== 'table' && node.kind !== 'list')
-    return fail(at, 'invalid-collection', 'Expected an ordered container.');
+    return issue.fail(at, 'invalid-collection', 'Expected an ordered container.');
   return node;
 };
 
@@ -25,11 +25,11 @@ const plannedOrder = (
     case 'ok':
       return plan.order;
     case 'duplicate':
-      return fail(at, 'invalid-key', 'Moved keys must be unique.');
+      return issue.fail(at, 'invalid-key', 'Moved keys must be unique.');
     case 'missing':
-      return fail(at, 'missing-entity', 'Ordered key does not exist.');
+      return issue.fail(at, 'missing-entity', 'Ordered key does not exist.');
     case 'invalid-anchor':
-      return fail(at, 'invalid-anchor', 'Unknown order anchor.');
+      return issue.fail(at, 'invalid-anchor', 'Unknown order anchor.');
   }
 };
 
@@ -46,16 +46,16 @@ export function move(
   if (node.kind === 'table') {
     const order = (container.value as { ids: string[] }).ids;
     const next = plannedOrder(container.at, order, selection, position);
-    if (ordered.equal(order, next)) return;
+    if (sequence.equal(order, next)) return;
     session.recorder.order(container);
-    ordered.installKeys(order, next);
+    sequence.installKeys(order, next);
   } else {
     const items = container.value as unknown[];
-    const sequence = ordered.listSequence(items, node.keyOf);
-    const next = plannedOrder(container.at, sequence.order, selection, position);
-    if (ordered.equal(sequence.order, next)) return;
+    const current = sequence.listSequence(items, node.keyOf);
+    const next = plannedOrder(container.at, current.order, selection, position);
+    if (sequence.equal(current.order, next)) return;
     session.recorder.order(container);
-    ordered.installList(items, node.keyOf, sequence, next);
+    sequence.installList(items, node.keyOf, current, next);
   }
   session.invalidate();
 }
@@ -68,19 +68,27 @@ export function reorder(
   const node = assertOrdered(container);
   if (node.kind === 'table') {
     const current = (container.value as { ids: string[] }).ids;
-    if (!ordered.matches(next, current))
-      return fail(container.at, 'invalid-collection', 'Order must contain every key exactly once.');
-    if (ordered.equal(current, next)) return;
+    if (!sequence.matches(next, current))
+      return issue.fail(
+        container.at,
+        'invalid-collection',
+        'Order must contain every key exactly once.'
+      );
+    if (sequence.equal(current, next)) return;
     session.recorder.order(container);
-    ordered.installKeys(current, next);
+    sequence.installKeys(current, next);
   } else {
     const items = container.value as unknown[];
-    const sequence = ordered.listSequence(items, node.keyOf);
-    if (!ordered.matches(next, sequence.order))
-      return fail(container.at, 'invalid-collection', 'Order must contain every key exactly once.');
-    if (ordered.equal(sequence.order, next)) return;
+    const current = sequence.listSequence(items, node.keyOf);
+    if (!sequence.matches(next, current.order))
+      return issue.fail(
+        container.at,
+        'invalid-collection',
+        'Order must contain every key exactly once.'
+      );
+    if (sequence.equal(current.order, next)) return;
     session.recorder.order(container);
-    ordered.installList(items, node.keyOf, sequence, next);
+    sequence.installList(items, node.keyOf, current, next);
   }
   session.invalidate();
 }

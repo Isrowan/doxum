@@ -1,9 +1,9 @@
-import type { DocumentAddress, DocumentNode, DocumentTreeNode, FieldNode, Infer } from './schema';
-import { compiledShape } from './address';
-import { isPlainObject, isRecord } from './value/ownership';
-import { validate as validTree } from './mutation/tree';
-import * as ordered from './ordered-key';
-import { profile } from './profile';
+import { profile } from '../profile';
+import * as sequence from '../order/sequence';
+import * as tree from '../tree/topology';
+import { isPlainObject, isRecord } from '../value/record';
+import type { DocumentAddress, DocumentNode, DocumentTreeNode, FieldNode, Infer } from '../schema';
+import { compiledShape } from './layout';
 
 /** Pure synchronous validation. Successful output is ignored; input is never transformed. */
 export type Validator<T> =
@@ -47,7 +47,7 @@ const issue = (
   code: ParseIssue['code'] = 'invalid-value'
 ): ParseIssue => ({ address, message, code });
 
-export const checkScalar = (
+const checkScalar = (
   validator: Validator<unknown> | undefined,
   value: unknown,
   address: DocumentAddress,
@@ -161,7 +161,7 @@ export const checkValue = (
   if (node.kind === 'list') {
     if (!Array.isArray(value)) return issue(address, 'Expected a list.');
     const seen = new Set<string>();
-    const order = ordered.keys(value, node.keyOf);
+    const order = sequence.keys(value, node.keyOf);
     for (let i = 0; i < value.length; i++) {
       const failure = checkValue(node.value, value[i], [...address, String(i)], strict);
       if (failure) return failure;
@@ -177,7 +177,7 @@ export const checkValue = (
     }
     return undefined;
   }
-  if (!validTree(value)) return issue(address, 'Invalid tree structure.', 'invalid-tree');
+  if (!tree.validate(value)) return issue(address, 'Invalid tree structure.', 'invalid-tree');
   for (const id of Object.keys(value.nodes)) {
     const failure = checkTreePayload(node.value, value.nodes[id], [...address, id], strict);
     if (failure) return failure;
@@ -212,7 +212,7 @@ export const equalTreeNode = (
   if (!left || !right) return false;
   return (
     left.parentId === right.parentId &&
-    ordered.equal(left.children, right.children) &&
+    sequence.equal(left.children, right.children) &&
     Object.hasOwn(left, 'value') === Object.hasOwn(right, 'value') &&
     Object.is(left.value, right.value)
   );
@@ -276,7 +276,7 @@ export const equalValue = (node: DocumentNode, left: unknown, right: unknown): b
     );
   if (node.kind === 'table' && isRecord(left) && isRecord(right))
     return (
-      ordered.equal(left.ids as string[], right.ids as string[]) &&
+      sequence.equal(left.ids as string[], right.ids as string[]) &&
       equalValue({ kind: 'map', value: node.value }, left.byId, right.byId)
     );
   if (node.kind === 'tree' && isRecord(left) && isRecord(right)) {

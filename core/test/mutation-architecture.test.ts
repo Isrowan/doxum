@@ -2,9 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDocument, field, list, map, object, table, type ChangeSet } from '../src';
 import { type ImpactTarget } from '../src/schema';
 import { startProfile } from '../src/profile';
-import { createImpact, affectsTarget } from '../src/impact';
-import { SubscriptionIndex } from '../src/impact-target';
-import { subscribeDependencies } from '../src/integration';
+import { SubscriptionIndex } from '../src/impact/target';
 import { MutationSession } from '../src/mutation/session';
 import { jsonChanges } from '../src/local-sync/json';
 
@@ -442,8 +440,6 @@ describe('exact subscription matching', () => {
       const actual = new Set<number>();
       index.collect(changes, i => actual.add(i));
       expect(actual).toEqual(expected);
-      const impact = createImpact(schema, changes);
-      targets.forEach((target, i) => expect(affectsTarget(impact, target)).toBe(expected.has(i)));
     }
   });
 
@@ -464,11 +460,6 @@ describe('exact subscription matching', () => {
     stop = runtime.subscribe(
       p => p.a,
       () => events.push('removed')
-    );
-    subscribeDependencies(
-      runtime,
-      [{ kind: 'value', schema: object({ a: field<number>() }), address: [] }],
-      () => events.push('wrong-schema')
     );
     runtime.update(d => {
       d.a++;

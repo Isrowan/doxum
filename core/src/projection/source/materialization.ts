@@ -1,10 +1,9 @@
-import { compiledShape } from '../../address';
-import * as ordered from '../../ordered-key';
+import * as sequence from '../../order/sequence';
 import { profile } from '../../profile';
 import type { DocumentNode, DocumentTreeNode } from '../../schema';
-import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../../schema-value';
-import { isRecord } from '../../value/ownership';
-import { installOwn } from '../../value/record';
+import { compiledShape } from '../../schema/layout';
+import * as schemaValue from '../../schema/value';
+import { installOwn, isRecord } from '../../value/record';
 
 export type DocumentDirty = {
   replace: boolean;
@@ -30,7 +29,7 @@ export const clearDocumentDirty = (dirty: DocumentDirty): void => {
   dirty.children.clear();
 };
 
-export const hasDocumentDirty = (dirty: DocumentDirty): boolean =>
+const hasDocumentDirty = (dirty: DocumentDirty): boolean =>
   dirty.replace ||
   dirty.order ||
   dirty.treeRoot ||
@@ -79,10 +78,10 @@ export const markDocumentTree = (
 };
 
 const equivalent = (node: DocumentNode, left: unknown, right: unknown): boolean =>
-  node.kind === 'field' ? Object.is(left, right) : equalValue(node, left, right);
+  node.kind === 'field' ? Object.is(left, right) : schemaValue.equalValue(node, left, right);
 
 const replaceValue = (node: DocumentNode, previous: unknown, current: unknown): unknown =>
-  equivalent(node, previous, current) ? previous : copyValue(node, current);
+  equivalent(node, previous, current) ? previous : schemaValue.copyValue(node, current);
 
 const cloneRecord = (value: Record<string, unknown>): Record<string, unknown> => {
   profile.copy.shallowRecord(Object.getOwnPropertyNames(value).length);
@@ -107,7 +106,7 @@ const materializeRecordChild = (
   if (!after) return { changed: true, present: false, value: undefined };
   const next = before
     ? materializeDocumentValue(node, previous[key], current[key], dirty)
-    : copyValue(node, current[key]);
+    : schemaValue.copyValue(node, current[key]);
   if (before && next === previous[key]) return { changed: false };
   return { changed: true, present: true, value: next };
 };
@@ -177,7 +176,7 @@ const materializeTable = (
     const afterIds = current.ids;
     if (!Array.isArray(beforeIds) || !Array.isArray(afterIds))
       return replaceValue(node, previous, current);
-    if (!ordered.equal(beforeIds as string[], afterIds as string[])) {
+    if (!sequence.equal(beforeIds as string[], afterIds as string[])) {
       result ??= cloneRecord(previous);
       installOwn(result, 'ids', true, [...(afterIds as string[])]);
     }
@@ -192,9 +191,9 @@ const materializeList = (
   dirty: DocumentDirty
 ): unknown => {
   if (dirty.order) {
-    const before = ordered.listSequence(previous, node.keyOf);
-    const after = ordered.listSequence(current, node.keyOf);
-    const sameOrder = ordered.equal(before.order, after.order);
+    const before = sequence.listSequence(previous, node.keyOf);
+    const after = sequence.listSequence(current, node.keyOf);
+    const sameOrder = sequence.equal(before.order, after.order);
     let changed = !sameOrder;
     const result = new Array<unknown>(after.order.length);
     for (let index = 0; index < after.order.length; index++) {
@@ -217,8 +216,8 @@ const materializeList = (
   }
 
   let result: unknown[] | undefined;
-  const before = ordered.indexedKeys(previous, node.keyOf);
-  const after = ordered.indexedKeys(current, node.keyOf);
+  const before = sequence.indexedKeys(previous, node.keyOf);
+  const after = sequence.indexedKeys(current, node.keyOf);
   for (const [key, childDirty] of dirty.children) {
     const previousIndex = before.index(key);
     const currentIndex = after.index(key);
@@ -265,9 +264,9 @@ const materializeTree = (
     const after = afterPresent
       ? (current.nodes[id] as DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
       : undefined;
-    if (beforePresent === afterPresent && equalTreeNode(before, after)) continue;
+    if (beforePresent === afterPresent && schemaValue.equalTreeNode(before, after)) continue;
     nodes ??= cloneRecord(previous.nodes);
-    installOwn(nodes, id, afterPresent, after && copyTreeNode(after));
+    installOwn(nodes, id, afterPresent, after && schemaValue.copyTreeNode(after));
   }
   if (nodes) {
     result ??= cloneRecord(previous);

@@ -76,7 +76,9 @@ check. Transform values before entering Doxum. parse(model, unknown) copies vali
 structure and shares readonly payloads; strict parse requires atomic validators.
 Branded map/table keys flow through methods, symbolic paths and impact.
 Path callbacks describe locations, including absent entries, and compile at registration.
-React useDocumentSelector tracks actual reads and changes dependencies when branching.
+Core `select(document, selector, equality?)` tracks actual reads, changes dependencies
+when branching, and returns a standard `Readable`. React `useDocumentSelector`
+only adapts that Core readable to React.
 
 ## Changes And Consumers
 

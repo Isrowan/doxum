@@ -6,7 +6,7 @@ import {
   diffCollection,
 } from '../collection/change';
 import type { CollectionChange } from '../contract';
-import type { Readable } from './contract';
+import type { Readable } from '../../readable';
 
 export type ProjectionReadableSource<T> = {
   readonly kind: 'value' | 'collection';

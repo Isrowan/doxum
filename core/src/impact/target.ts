@@ -1,6 +1,6 @@
-import type { DocumentAddress, ObjectNode, ImpactTarget, TreeTarget } from './schema';
-import type { ChangeSet } from './changes';
-import { AddressIndex } from './address';
+import type { ChangeSet } from '../changes';
+import type { DocumentAddress, ImpactTarget, ObjectNode, TreeTarget } from '../schema';
+import { AddressIndex } from '../address/index';
 
 const treeRootSegment = 'rootId';
 const treeNodesSegment = 'nodes';

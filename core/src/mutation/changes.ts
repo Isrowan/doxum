@@ -1,8 +1,8 @@
 import type { Change, ChangeSet, MemberChange, ValueTransition } from '../changes';
-import { isPlainObject } from '../value/ownership';
-import { AddressIndex } from '../address';
-import { fail } from './issue';
-import { validNode } from './tree';
+import { AddressIndex } from '../address/index';
+import { isPlainObject } from '../value/record';
+import * as issue from './issue';
+import * as tree from '../tree/topology';
 
 const validated = new WeakSet<ChangeSet>();
 
@@ -58,10 +58,10 @@ export const decodeChanges = (input: unknown): ChangeSet => {
   if (typeof input === 'object' && input !== null && validated.has(input as ChangeSet))
     return input as ChangeSet;
   if (!isPlainObject(input) || !keys(input, ['changes']) || !Array.isArray(input.changes))
-    return fail([], 'invalid-changes', 'Expected a ChangeSet.');
+    return issue.fail([], 'invalid-changes', 'Expected a ChangeSet.');
   const result: Change[] = [];
   for (const entry of input.changes) {
-    if (!isPlainObject(entry)) return fail([], 'invalid-changes', 'Expected a change.');
+    if (!isPlainObject(entry)) return issue.fail([], 'invalid-changes', 'Expected a change.');
     if (entry.kind === 'reset') {
       if (
         input.changes.length !== 1 ||
@@ -69,7 +69,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
         !Object.hasOwn(entry, 'before') ||
         !Object.hasOwn(entry, 'after')
       )
-        return fail(
+        return issue.fail(
           [],
           'invalid-changes',
           'A reset must be the only change and contain both values.'
@@ -77,7 +77,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       return sealChanges([{ kind: 'reset', before: entry.before, after: entry.after }]);
     }
     if (!strings(entry.at))
-      return fail([], 'invalid-changes', 'Change addresses must contain strings.');
+      return issue.fail([], 'invalid-changes', 'Change addresses must contain strings.');
     const at = entry.at;
     if (
       entry.kind === 'members' &&
@@ -89,7 +89,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
       const members: MemberChange[] = [];
       for (const member of entry.members) {
         if (!transition(member, 'key') || typeof member.key !== 'string' || seen.has(member.key))
-          return fail(at, 'invalid-changes', 'Malformed or duplicate member transition.');
+          return issue.fail(at, 'invalid-changes', 'Malformed or duplicate member transition.');
         seen.add(member.key);
         members.push({ ...member, key: member.key });
       }
@@ -105,7 +105,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
           !order(entry.order.before) ||
           !order(entry.order.after)
         )
-          return fail(at, 'invalid-changes', 'Malformed container order.');
+          return issue.fail(at, 'invalid-changes', 'Malformed container order.');
         result.push({ ...change, order: { before: entry.order.before, after: entry.order.after } });
       } else result.push(change);
     } else if (
@@ -121,10 +121,10 @@ export const decodeChanges = (input: unknown): ChangeSet => {
           !transition(node, 'id') ||
           typeof node.id !== 'string' ||
           seen.has(node.id) ||
-          (node.kind !== 'added' && !validNode(node.before)) ||
-          (node.kind !== 'removed' && !validNode(node.after))
+          (node.kind !== 'added' && !tree.validNode(node.before)) ||
+          (node.kind !== 'removed' && !tree.validNode(node.after))
         )
-          return fail(at, 'invalid-changes', 'Malformed or duplicate tree transition.');
+          return issue.fail(at, 'invalid-changes', 'Malformed or duplicate tree transition.');
         seen.add(node.id);
       }
       const nodes = entry.nodes as Extract<Change, { kind: 'tree' }>['nodes'];
@@ -135,7 +135,7 @@ export const decodeChanges = (input: unknown): ChangeSet => {
         after: entry.after,
         nodes: [...nodes].sort((a, b) => lexical(a.id, b.id)),
       });
-    } else return fail(at, 'invalid-changes', 'Unknown or malformed change.');
+    } else return issue.fail(at, 'invalid-changes', 'Unknown or malformed change.');
   }
   return publication(normalizeChanges(result));
 };
@@ -149,22 +149,22 @@ const normalizeChanges = (changes: Change[]): Change[] => {
     if (change.kind === 'reset') continue;
     if (change.kind === 'members') {
       if (groups.exact(change.at)?.size)
-        return fail(change.at, 'invalid-changes', 'Duplicate member group.');
+        return issue.fail(change.at, 'invalid-changes', 'Duplicate member group.');
       groups.add(change.at, true);
       if (change.order) {
         if (replacements.hasAncestor(change.at))
-          return fail(change.at, 'invalid-changes', 'Overlapping container order.');
+          return issue.fail(change.at, 'invalid-changes', 'Overlapping container order.');
         orders.add(change.at, true);
       }
       for (const member of change.members) {
         const at = change.at.concat(member.key);
         if (replacements.overlaps(at) || orders.hasDescendant(at))
-          return fail(at, 'invalid-changes', 'Overlapping member transitions.');
+          return issue.fail(at, 'invalid-changes', 'Overlapping member transitions.');
         replacements.add(at, true);
       }
     } else if (change.kind === 'tree') {
       if (replacements.overlaps(change.at) || orders.hasDescendant(change.at))
-        return fail(change.at, 'invalid-changes', 'Overlapping tree transitions.');
+        return issue.fail(change.at, 'invalid-changes', 'Overlapping tree transitions.');
       replacements.add(change.at, true);
     }
   }

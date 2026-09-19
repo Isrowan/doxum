@@ -21,8 +21,8 @@ export type {
   SchemaPath,
   PathValueOf,
 } from './schema';
-export { parse, ParseError } from './schema-value';
-export type { Validator, ParseIssue } from './schema-value';
+export { parse, ParseError } from './schema/value';
+export type { Validator, ParseIssue } from './schema/value';
 export { snapshot, replace } from './access/scope';
 export type { Read, Draft } from './access/scope';
 export type { Change, ChangeSet, MemberChange, ValueTransition } from './changes';
@@ -49,9 +49,9 @@ export type {
   ObserverError,
 } from './runtime/contract';
 export type { MutationIssue, MutationIssueCode } from './mutation/issue';
-export type { Readable } from './projection/readable/contract';
-export { read } from './projection/select';
-export type { DocumentSelector } from './projection/select';
+export type { Readable } from './readable';
+export { read, select } from './runtime/select';
+export type { DocumentSelector } from './runtime/select';
 export { input, observe, derive } from './projection/definition';
 export { createProjectionRuntime } from './projection/runtime';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';

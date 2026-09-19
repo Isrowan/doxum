@@ -1,5 +1,5 @@
-import type { KeyOrder, OrderedKeys } from '../ordered-key';
 import type { DocumentAnchor } from '../schema';
+import type { KeyOrder, OrderedKeys } from './sequence';
 
 type MoveSelection =
   | { readonly kind: 'ok'; readonly order: readonly string[] }

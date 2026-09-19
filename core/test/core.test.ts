@@ -3,12 +3,14 @@ import {
   replace,
   asReadable,
   createDocument,
+  DocumentDisposedError,
   field,
   list,
   map,
   object,
   optional,
   read,
+  select,
   snapshot,
   table,
   TransactionRejected,
@@ -17,7 +19,6 @@ import {
   type Draft,
   type SchemaPath,
 } from '../src';
-import { subscribeDependencies, track } from '../src/integration';
 
 const row = object({ n: field<number>(), title: field<string>() });
 const model = object({
@@ -181,7 +182,6 @@ describe('draft transactions', () => {
       get: 'updated',
       byId: { get: 'updated' },
     });
-    expect(runtime.address.read(['get'])).toBe('updated');
   });
   it('uses only map methods, including for method and prototype-like business keys', () => {
     const schema = object({ values: map(field<number | undefined>()) });
@@ -362,16 +362,96 @@ describe('tree dependency precision', () => {
         },
       },
     });
-    const selection = track(runtime, read => read.outline.get('a'));
-    expect(selection.value).toBe(1);
+    const selection = select(runtime, read => read.outline.get('a'));
+    expect(selection.current()).toBe(1);
     const listener = vi.fn();
-    const stop = subscribeDependencies(runtime, selection.targets, listener);
+    const stop = selection.subscribe(listener);
     runtime.update(draft => draft.outline.replace('b', 20));
     expect(listener).not.toHaveBeenCalled();
     runtime.update(draft => draft.outline.replace('a', 10));
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
     runtime.dispose();
+  });
+});
+
+describe('document selector readable', () => {
+  it('rebinds dynamic dependencies without reacting to the inactive branch', () => {
+    const schema = object({
+      useA: field<boolean>(),
+      a: field<number>(),
+      b: field<number>(),
+    });
+    const runtime = createDocument({
+      schema,
+      initial: { useA: true, a: 1, b: 2 },
+    });
+    const selection = select(runtime, state => (state.useA ? state.a : state.b));
+    const listener = vi.fn();
+    const stop = selection.subscribe(listener);
+
+    expect(selection.current()).toBe(1);
+    runtime.update(draft => {
+      draft.b = 3;
+    });
+    expect(listener).not.toHaveBeenCalled();
+
+    runtime.update(draft => {
+      draft.useA = false;
+    });
+    expect(selection.current()).toBe(3);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    runtime.update(draft => {
+      draft.a = 4;
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    runtime.update(draft => {
+      draft.b = 5;
+    });
+    expect(selection.current()).toBe(5);
+    expect(listener).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('uses equality to retain the selected value and publication revision', () => {
+    const schema = object({ value: field<number>() });
+    const runtime = createDocument({ schema, initial: { value: 1 } });
+    const selection = select(
+      runtime,
+      state => ({ parity: state.value % 2 }),
+      (left, right) => left.parity === right.parity
+    );
+    const first = selection.current();
+    const listener = vi.fn();
+    selection.subscribe(listener);
+
+    runtime.update(draft => {
+      draft.value = 3;
+    });
+    expect(selection.current()).toBe(first);
+    expect(selection.revision()).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+
+    runtime.update(draft => {
+      draft.value = 4;
+    });
+    expect(selection.current()).toEqual({ parity: 0 });
+    expect(selection.current()).not.toBe(first);
+    expect(selection.revision()).toBe(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects reads after the owning document is disposed', () => {
+    const schema = object({ value: field<number>() });
+    const runtime = createDocument({ schema, initial: { value: 1 } });
+    const selection = select(runtime, state => state.value);
+    selection.subscribe(() => undefined);
+    expect(selection.current()).toBe(1);
+    runtime.dispose();
+    expect(() => selection.current()).toThrow(DocumentDisposedError);
+    expect(() => selection.revision()).toThrow(DocumentDisposedError);
   });
 });
 

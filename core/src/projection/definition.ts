@@ -1,4 +1,4 @@
-import { accessOf } from '../runtime/access';
+import { contextOf } from '../runtime/context';
 import type { DocumentReadable, Synchronous } from '../runtime/contract';
 import type {
   CollectionEntry,
@@ -22,7 +22,7 @@ import type {
   ExternalValueSource,
   SourceContext,
 } from './contract';
-import type { Readable } from './readable/contract';
+import type { Readable } from '../readable';
 import { assertSynchronous } from './graph/scheduler';
 
 declare const projectionDefinition: unique symbol;
@@ -293,7 +293,7 @@ export function observe<S extends ObjectNode>(
     );
 
   const document = source as DocumentReadable<ObjectNode>;
-  const state = accessOf(document);
+  const state = contextOf(document).state;
   const selected = selector
     ? compilePath(state.schema, 'auto', selector as never)
     : (Object.freeze({

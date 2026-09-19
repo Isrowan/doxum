@@ -1,5 +1,5 @@
-import { isPlainObject } from '../value/ownership';
-import { changeCount, decodeChanges } from '../mutation/changes';
+import { isPlainObject } from '../value/record';
+import * as changeSet from '../mutation/changes';
 import type { ChangeSet } from '../changes';
 
 export type JsonPrimitive = null | boolean | number | string;
@@ -112,11 +112,11 @@ export const jsonChanges = (value: unknown, label: string, input?: JsonChangeLim
   const limits = input === undefined ? undefined : resolveLimits(input);
   let changes: ChangeSet;
   try {
-    changes = decodeChanges(value);
+    changes = changeSet.decodeChanges(value);
   } catch {
     throw new LocalSyncDataError(`${label} contains an invalid ChangeSet.`);
   }
-  if (limits && changeCount(changes) > limits.maxChanges)
+  if (limits && changeSet.changeCount(changes) > limits.maxChanges)
     throw new LocalSyncDataError(`${label} exceeds the maximum change count.`);
   validate(changes.changes, [label], limits, 0, new WeakSet());
   if (limits) {

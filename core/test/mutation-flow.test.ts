@@ -1,8 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { replace, createDocument, field, list, map, object, table, tree, variant } from '../src';
+import {
+  replace,
+  createDocument,
+  field,
+  list,
+  map,
+  object,
+  select,
+  table,
+  tree,
+  variant,
+} from '../src';
 import { jsonChanges } from '../src/local-sync/json';
 import { startProfile } from '../src/profile';
-import { track, subscribeDependencies } from '../src/integration';
 
 const number = (value: unknown): number => {
   if (typeof value !== 'number') throw new Error('Expected number');
@@ -262,12 +272,12 @@ describe('collection access lifetime', () => {
 
   it('tracks absent table and list gets without subscribing to unrelated members', () => {
     const runtime = createDocument({ schema: branch(), initial: values });
-    const tableRead = track(runtime, d => d.rows.get('missing')?.n);
-    const listRead = track(runtime, d => d.items.get('missing'));
+    const tableRead = select(runtime, d => d.rows.get('missing')?.n);
+    const listRead = select(runtime, d => d.items.get('missing'));
     const tableListener = vi.fn(),
       listListener = vi.fn();
-    subscribeDependencies(runtime, tableRead.targets, tableListener);
-    subscribeDependencies(runtime, listRead.targets, listListener);
+    tableRead.subscribe(tableListener);
+    listRead.subscribe(listListener);
     runtime.update(d => {
       d.rows.get('a')!.n = 2;
       d.items.replace('a', { id: 'a' });

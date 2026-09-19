@@ -1,8 +1,8 @@
 import type { DocumentAnchor } from '../../schema';
 import type { MutationSession } from '../session';
-import type { ResolvedContainer } from '../../address';
-import * as anchor from '../anchor';
-import { fail } from '../issue';
+import type { ResolvedContainer } from '../../address/resolve';
+import * as anchor from '../../order/anchor';
+import * as issue from '../issue';
 export function create(
   session: MutationSession,
   container: ResolvedContainer,
@@ -10,14 +10,14 @@ export function create(
   position?: DocumentAnchor
 ): void {
   const { at, node, value } = container;
-  if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
+  if (node.kind !== 'table') return issue.fail(at, 'invalid-collection', 'Expected a table.');
   const table = value as { ids: string[]; byId: Record<string, unknown> };
   if (!anchor.valid(table.ids, position))
-    return fail(at, 'invalid-anchor', 'Unknown table anchor.');
+    return issue.fail(at, 'invalid-anchor', 'Unknown table anchor.');
   const ids = new Set<string>();
   for (const entry of entries) {
     if (Object.hasOwn(table.byId, entry.id) || ids.has(entry.id))
-      return fail(at, 'duplicate-entity', 'Table key already exists.');
+      return issue.fail(at, 'duplicate-entity', 'Table key already exists.');
     ids.add(entry.id);
   }
   if (!entries.length) return;
@@ -34,11 +34,11 @@ export function remove(
   ids: readonly string[]
 ): void {
   const { at, node, value } = container;
-  if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
+  if (node.kind !== 'table') return issue.fail(at, 'invalid-collection', 'Expected a table.');
   const table = value as { ids: string[]; byId: Record<string, unknown> };
   for (const id of ids)
     if (!Object.hasOwn(table.byId, id))
-      return fail(at, 'missing-entity', 'Table key does not exist.');
+      return issue.fail(at, 'missing-entity', 'Table key does not exist.');
   if (!ids.length) return;
   const removed = new Set(ids);
   for (const id of removed) session.writeMember(container, id, undefined, 'remove');
@@ -52,9 +52,9 @@ export function replace(
   value: unknown
 ): void {
   const { at, node, value: tableValue } = container;
-  if (node.kind !== 'table') return fail(at, 'invalid-collection', 'Expected a table.');
+  if (node.kind !== 'table') return issue.fail(at, 'invalid-collection', 'Expected a table.');
   const table = tableValue as { byId: Record<string, unknown> };
   if (!Object.hasOwn(table.byId, id))
-    return fail(at.concat(id), 'missing-entity', 'Table key does not exist.');
+    return issue.fail(at.concat(id), 'missing-entity', 'Table key does not exist.');
   session.writeMember(container, id, value, 'set');
 }

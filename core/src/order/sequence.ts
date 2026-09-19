@@ -1,4 +1,4 @@
-import { profile } from './profile';
+import { profile } from '../profile';
 
 export type KeyOrder = {
   readonly length: number;

@@ -9,8 +9,9 @@ import type {
 } from './schema';
 import { compilePath } from './schema';
 import type { ChangeSet } from './changes';
-import { AddressIndex, contains } from './address';
-import * as target from './impact-target';
+import { AddressIndex } from './address/index';
+import * as relation from './address/relation';
+import * as target from './impact/target';
 import { profile } from './profile';
 
 export type CollectionImpact<K> =
@@ -29,17 +30,6 @@ export type DocumentImpact<S extends ObjectNode> = {
     pick: (path: SchemaPath<S['shape']>) => P
   ): CollectionImpact<CollectionId<P>>;
 };
-type ImpactQueries = {
-  affects(value: ImpactTarget): boolean;
-  collection(selector: CollectionSelector): CollectionImpact<string>;
-};
-const queries = new WeakMap<object, ImpactQueries>();
-export const affectsTarget = (impact: object, value: ImpactTarget): boolean =>
-  queries.get(impact)!.affects(value);
-export const collectionImpact = <K extends string>(
-  impact: object,
-  selector: CollectionSelector<K>
-): CollectionImpact<K> => queries.get(impact)!.collection(selector) as CollectionImpact<K>;
 export const createImpact = <S extends ObjectNode>(
   schema: S,
   changes: ChangeSet
@@ -61,94 +51,94 @@ export const createImpact = <S extends ObjectNode>(
     return values;
   };
   const cache = new Map<string, CollectionImpact<string>>();
-  const implementation: ImpactQueries = {
-    affects(value) {
-      profile.impact.affects();
-      if (!target.belongs(value, schema)) return false;
-      if (reset) return true;
-      return target.affected(value, index(), orders!);
-    },
-    collection(selector) {
-      if (selector.schema !== schema)
-        throw new TypeError('Collection belongs to another root model.');
-      const key = JSON.stringify(target.indexedAddress(selector)),
-        cached = cache.get(key);
-      if (cached) return cached;
-      if (reset) {
+  const affects = (value: ImpactTarget): boolean => {
+    profile.impact.affects();
+    if (!target.belongs(value, schema)) return false;
+    if (reset) return true;
+    return target.affected(value, index(), orders!);
+  };
+  const collection = (selector: CollectionSelector): CollectionImpact<string> => {
+    if (selector.schema !== schema)
+      throw new TypeError('Collection belongs to another root model.');
+    const key = JSON.stringify(target.indexedAddress(selector)),
+      cached = cache.get(key);
+    if (cached) return cached;
+    if (reset) {
+      const result = { kind: 'reset' } as const;
+      cache.set(key, result);
+      return result;
+    }
+    const at = selector.address;
+    const tree = selector.tree;
+    const added = new Set<string>(),
+      removed = new Set<string>(),
+      updated = new Set<string>();
+    let orderChanged = false;
+    for (const change of changes.changes) {
+      if (change.kind === 'reset') continue;
+      if (change.kind === 'members') {
+        if (change.at.length < at.length && relation.contains(change.at, at)) {
+          if (change.members.some(member => member.key === at[change.at.length])) {
+            const result = { kind: 'reset' } as const;
+            cache.set(key, result);
+            return result;
+          }
+        } else if (relation.contains(at, change.at)) {
+          if (change.at.length === at.length) {
+            if (change.order) {
+              const positions = new Map(change.order.after.map((id, i) => [id, i]));
+              let previous = -1;
+              for (const id of change.order.before) {
+                const position = positions.get(id);
+                if (position === undefined) continue;
+                if (position < previous) orderChanged = true;
+                previous = position;
+              }
+            }
+            for (const member of change.members) {
+              if (member.kind === 'added') added.add(member.key);
+              else if (member.kind === 'removed') removed.add(member.key);
+              else updated.add(member.key);
+            }
+          } else updated.add(change.at[at.length]);
+        }
+        continue;
+      }
+      if (change.kind === 'tree' && relation.contains(change.at, at)) {
+        if (
+          tree?.kind === 'nodes' &&
+          change.at.length === at.length &&
+          relation.contains(at, change.at)
+        ) {
+          for (const node of change.nodes) {
+            if (node.kind === 'added') added.add(node.id);
+            else if (node.kind === 'removed') removed.add(node.id);
+            else updated.add(node.id);
+          }
+          continue;
+        }
         const result = { kind: 'reset' } as const;
         cache.set(key, result);
         return result;
       }
-      const at = selector.address;
-      const tree = selector.tree;
-      const added = new Set<string>(),
-        removed = new Set<string>(),
-        updated = new Set<string>();
-      let orderChanged = false;
-      for (const change of changes.changes) {
-        if (change.kind === 'reset') continue;
-        if (change.kind === 'members') {
-          if (change.at.length < at.length && contains(change.at, at)) {
-            if (change.members.some(member => member.key === at[change.at.length])) {
-              const result = { kind: 'reset' } as const;
-              cache.set(key, result);
-              return result;
-            }
-          } else if (contains(at, change.at)) {
-            if (change.at.length === at.length) {
-              if (change.order) {
-                const positions = new Map(change.order.after.map((id, i) => [id, i]));
-                let previous = -1;
-                for (const id of change.order.before) {
-                  const position = positions.get(id);
-                  if (position === undefined) continue;
-                  if (position < previous) orderChanged = true;
-                  previous = position;
-                }
-              }
-              for (const member of change.members) {
-                if (member.kind === 'added') added.add(member.key);
-                else if (member.kind === 'removed') removed.add(member.key);
-                else updated.add(member.key);
-              }
-            } else updated.add(change.at[at.length]);
-          }
-          continue;
-        }
-        if (change.kind === 'tree' && contains(change.at, at)) {
-          if (tree?.kind === 'nodes' && change.at.length === at.length && contains(at, change.at)) {
-            for (const node of change.nodes) {
-              if (node.kind === 'added') added.add(node.id);
-              else if (node.kind === 'removed') removed.add(node.id);
-              else updated.add(node.id);
-            }
-            continue;
-          }
-          const result = { kind: 'reset' } as const;
-          cache.set(key, result);
-          return result;
-        }
-        if (!contains(at, change.at)) continue;
-        if (change.at.length === at.length) continue;
-        const id = change.at[at.length];
-        updated.add(id);
-      }
-      added.forEach(id => updated.delete(id));
-      removed.forEach(id => updated.delete(id));
-      const result = { kind: 'incremental', added, removed, updated, orderChanged } as const;
-      cache.set(key, result);
-      return result;
-    },
+      if (!relation.contains(at, change.at)) continue;
+      if (change.at.length === at.length) continue;
+      const id = change.at[at.length];
+      updated.add(id);
+    }
+    added.forEach(id => updated.delete(id));
+    removed.forEach(id => updated.delete(id));
+    const result = { kind: 'incremental', added, removed, updated, orderChanged } as const;
+    cache.set(key, result);
+    return result;
   };
   const impact: DocumentImpact<S> = Object.freeze({
     kind: reset ? 'reset' : 'incremental',
-    affects: (pick: PathPick<S>) =>
-      implementation.affects(compilePath<S['shape']>(schema, 'value', pick)),
+    affects: (pick: PathPick<S>) => affects(compilePath<S['shape']>(schema, 'value', pick)),
     collection: <P extends CollectionPath>(pick: (path: SchemaPath<S['shape']>) => P) =>
-      implementation.collection(
+      collection(
         compilePath<S['shape']>(schema, 'collection', pick) as CollectionSelector
       ) as CollectionImpact<CollectionId<P>>,
   });
-  queries.set(impact, implementation);
   return impact;
 };

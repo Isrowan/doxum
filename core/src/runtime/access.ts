@@ -1,31 +1,16 @@
-import type { ObjectNode, Infer } from '../schema';
+import type { ObjectNode } from '../schema';
 import { createAccess, type Read } from '../access/scope';
 import type { DependencyTracker } from '../access/dependency';
 import { DocumentDisposedError } from './contract';
 import type { DocumentReadable } from './contract';
+import { contextOf, type RuntimeState } from './context';
 
-export type RuntimeAccessState<TSchema extends ObjectNode> = {
-  readonly schema: TSchema;
-  document: Infer<TSchema>;
-  disposed: boolean;
-  projectionLocks?: number;
-};
-
-const states = new WeakMap<object, RuntimeAccessState<ObjectNode>>();
-
-export const bindRuntimeAccess = <TSchema extends ObjectNode>(
-  runtime: DocumentReadable<TSchema>,
-  state: RuntimeAccessState<TSchema>
-): void => {
-  states.set(runtime as object, state as RuntimeAccessState<ObjectNode>);
-};
+export type RuntimeAccessState<TSchema extends ObjectNode> = RuntimeState<TSchema>;
 
 export const accessOf = <TSchema extends ObjectNode>(
   runtime: DocumentReadable<TSchema>
 ): RuntimeAccessState<TSchema> => {
-  const state = states.get(runtime as object);
-  if (!state) throw new Error('Unknown Doxum runtime.');
-  return state as RuntimeAccessState<TSchema>;
+  return contextOf<TSchema>(runtime).state;
 };
 
 export const readWith = <TSchema extends ObjectNode, TResult>(

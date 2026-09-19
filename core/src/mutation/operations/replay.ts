@@ -1,10 +1,10 @@
 import type { ChangeDirection, ChangeSet } from '../../changes';
 import type { MutationSession } from '../session';
-import { installOrder, installMember, orderOf } from '../state';
-import * as ordered from '../../ordered-key';
-import { fail, invalidValue } from '../issue';
-import { checkTreePayload, copyTreeNode } from '../../schema-value';
-import { validate as validTree } from '../tree';
+import * as state from '../state';
+import * as sequence from '../../order/sequence';
+import * as issue from '../issue';
+import * as schemaValue from '../../schema/value';
+import * as tree from '../../tree/topology';
 export function apply(
   session: MutationSession,
   changes: ChangeSet,
@@ -19,7 +19,7 @@ export function apply(
       const { node, value: current } = container;
       if (change.order) {
         if (node.kind !== 'table' && node.kind !== 'list')
-          return fail(change.at, 'invalid-changes', 'Order requires an ordered container.');
+          return issue.fail(change.at, 'invalid-changes', 'Order requires an ordered container.');
         session.recorder.order(container);
       }
       let membershipChanged = false;
@@ -38,19 +38,20 @@ export function apply(
           membershipChanged;
       }
       if (change.order) {
-        const keys = node.kind === 'table' ? Object.keys(container.parent) : orderOf(node, current);
-        if (!ordered.matches(change.order[side], keys))
-          return fail(
+        const keys =
+          node.kind === 'table' ? Object.keys(container.parent) : state.orderOf(node, current);
+        if (!sequence.matches(change.order[side], keys))
+          return issue.fail(
             change.at,
             'invalid-changes',
             'Order must contain exactly the resulting keys.'
           );
-        installOrder(node, current, change.order[side]);
+        state.installOrder(node, current, change.order[side]);
         session.invalidate();
       } else if (membershipChanged && node.kind === 'table') {
         const ids = (current as { ids: string[] }).ids;
-        if (!ordered.matches(ids, Object.keys(container.parent)))
-          return fail(
+        if (!sequence.matches(ids, Object.keys(container.parent)))
+          return issue.fail(
             change.at,
             'invalid-changes',
             'Table membership changes require a matching order.'
@@ -74,12 +75,22 @@ export function apply(
               ? item.before
               : undefined;
         if (next !== undefined) {
-          const issue = checkTreePayload(node.value, next, change.at.concat(item.id));
-          if (issue) invalidValue(issue);
+          const diagnostic = schemaValue.checkTreePayload(
+            node.value,
+            next,
+            change.at.concat(item.id)
+          );
+          if (diagnostic) issue.invalidValue(diagnostic);
         }
-        installMember(current.nodes, item.id, next !== undefined, next && copyTreeNode(next));
+        state.installMember(
+          current.nodes,
+          item.id,
+          next !== undefined,
+          next && schemaValue.copyTreeNode(next)
+        );
       }
-      if (!validTree(current)) return fail(change.at, 'invalid-tree', 'Invalid tree structure.');
+      if (!tree.validate(current))
+        return issue.fail(change.at, 'invalid-tree', 'Invalid tree structure.');
       session.invalidate();
     }
   }

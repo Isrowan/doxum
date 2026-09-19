@@ -1,31 +1,27 @@
-import { contains, nodeAt, read as readAddress } from '../../address';
-import type { ChangeSet } from '../../changes';
-import * as impactTarget from '../../impact-target';
-import * as ordered from '../../ordered-key';
-import { accessOf } from '../../runtime/access';
-import { attachProjection } from '../../runtime/notification';
+import * as address from '../../address/resolve';
+import * as impactTarget from '../../impact/target';
+import * as sequence from '../../order/sequence';
+import { contextOf } from '../../runtime/context';
 import type { DocumentCommit, DocumentReadable, Unsubscribe } from '../../runtime/contract';
 import { collectionEntryNode } from '../../schema';
-import type {
-  CollectionSelector,
-  DocumentTreeNode,
-  ImpactTarget,
-  ObjectNode,
-  ValueSelector,
-} from '../../schema';
-import { copyTreeNode, copyValue, equalTreeNode } from '../../schema-value';
-import { isRecord } from '../../value/ownership';
+import type { DocumentTreeNode, ImpactTarget, ObjectNode } from '../../schema';
+import * as schemaValue from '../../schema/value';
+import { isRecord } from '../../value/record';
 import type { CollectionRead } from '../contract';
 import type { SourceDefinition } from '../definition';
 import {
   clearDocumentDirty,
   createDocumentDirty,
-  markDocumentOrder,
   markDocumentReplace,
-  markDocumentTree,
   materializeDocumentValue,
-  type DocumentDirty,
 } from './materialization';
+import {
+  clearCollectionPending,
+  createCollectionPending,
+  mergeCollectionChanges,
+  mergeValueChanges,
+  resetCollectionPending,
+} from './dirty';
 import { assertScope, type Scheduler } from '../graph/scheduler';
 import {
   createCollectionBoundary,
@@ -46,155 +42,17 @@ type DocumentConnection = {
   close(): void;
 };
 
-type DocumentCollectionPending = {
-  reset: boolean;
-  order: boolean;
-  readonly entries: Map<string, DocumentDirty>;
-};
-
 const documentRootTarget: ImpactTarget = Object.freeze({
   kind: 'value' as const,
   at: Object.freeze([]),
 });
 
-const createCollectionPending = (): DocumentCollectionPending => ({
-  reset: false,
-  order: false,
-  entries: new Map(),
-});
-
-const resetCollectionPending = (pending: DocumentCollectionPending): void => {
-  pending.reset = true;
-  pending.order = false;
-  pending.entries.clear();
-};
-
-const clearCollectionPending = (pending: DocumentCollectionPending): void => {
-  pending.reset = false;
-  pending.order = false;
-  pending.entries.clear();
-};
-
-const dirtyEntry = (pending: DocumentCollectionPending, key: string): DocumentDirty => {
-  let dirty = pending.entries.get(key);
-  if (!dirty) {
-    dirty = createDocumentDirty();
-    pending.entries.set(key, dirty);
-  }
-  return dirty;
-};
-
-const mergeValueChanges = (
-  selector: ValueSelector,
-  dirty: DocumentDirty,
-  changes: ChangeSet
-): void => {
-  if (selector.tree) return;
-  const at = selector.address;
-  for (const change of changes.changes) {
-    if (change.kind === 'reset') {
-      markDocumentReplace(dirty, []);
-      return;
-    }
-    if (change.kind === 'members') {
-      for (const member of change.members) {
-        const changed = [...change.at, member.key];
-        if (contains(changed, at)) markDocumentReplace(dirty, []);
-        else if (contains(at, changed)) markDocumentReplace(dirty, changed.slice(at.length));
-      }
-      if (change.order && contains(at, change.at))
-        markDocumentOrder(dirty, change.at.slice(at.length));
-      continue;
-    }
-    if (contains(at, change.at))
-      markDocumentTree(
-        dirty,
-        change.at.slice(at.length),
-        change.before !== change.after,
-        change.nodes.map(node => node.id)
-      );
-  }
-};
-
-const mergeCollectionChanges = (
-  selector: CollectionSelector,
-  pending: DocumentCollectionPending,
-  changes: ChangeSet
-): void => {
-  if (pending.reset) return;
-  const at = selector.address;
-  for (const change of changes.changes) {
-    if (change.kind === 'reset') {
-      resetCollectionPending(pending);
-      return;
-    }
-
-    if (selector.tree?.kind === 'nodes') {
-      if (change.kind === 'members') {
-        for (const member of change.members) {
-          const changed = [...change.at, member.key];
-          if (contains(changed, at)) {
-            resetCollectionPending(pending);
-            return;
-          }
-        }
-      } else if (change.at.length === at.length && contains(change.at, at)) {
-        for (const node of change.nodes) {
-          markDocumentReplace(dirtyEntry(pending, node.id), []);
-          pending.order ||= node.kind !== 'updated';
-        }
-      } else if (contains(change.at, at)) {
-        resetCollectionPending(pending);
-        return;
-      }
-      continue;
-    }
-
-    if (change.kind === 'members') {
-      for (const member of change.members) {
-        const changed = [...change.at, member.key];
-        if (contains(changed, at)) {
-          resetCollectionPending(pending);
-          return;
-        }
-        if (!contains(at, changed)) continue;
-        const relative = changed.slice(at.length);
-        if (!relative.length) {
-          resetCollectionPending(pending);
-          return;
-        }
-        const entry = dirtyEntry(pending, relative[0]);
-        markDocumentReplace(entry, relative.slice(1));
-        if (relative.length === 1 && member.kind !== 'updated') pending.order = true;
-      }
-      if (change.order && contains(at, change.at)) {
-        const relative = change.at.slice(at.length);
-        if (!relative.length) pending.order = true;
-        else markDocumentOrder(dirtyEntry(pending, relative[0]), relative.slice(1));
-      }
-      continue;
-    }
-
-    if (!contains(at, change.at)) continue;
-    const relative = change.at.slice(at.length);
-    if (!relative.length) {
-      resetCollectionPending(pending);
-      return;
-    }
-    markDocumentTree(
-      dirtyEntry(pending, relative[0]),
-      relative.slice(1),
-      change.before !== change.after,
-      change.nodes.map(node => node.id)
-    );
-  }
-};
-
 export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
   const documents = new Map<object, DocumentConnection>();
 
   const connection = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentConnection => {
-    const state = accessOf(runtime);
+    const context = contextOf<S>(runtime);
+    const state = context.state;
     const cached = documents.get(state);
     if (cached) return cached;
     if (state.disposed) throw new Error('Document has been disposed.');
@@ -232,7 +90,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         documents.delete(state);
       },
     };
-    detach = attachProjection(runtime, {
+    detach = context.notifications.attachProjection({
       capture: commit => {
         candidates.clear();
         index.collect(commit.changes, binding => candidates.add(binding));
@@ -252,9 +110,9 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
   const materialize = (definition: SourceDefinition): SourceMaterialization => {
     if (definition.source.kind !== 'document') throw new Error('Invalid document source.');
     const { document, selector } = definition.source;
-    const state = accessOf(document);
-    const schemaNode = () => nodeAt(state.schema, selector.address, state.document);
-    const currentValue = () => readAddress(state.document, selector.address, state.schema);
+    const state = contextOf(document).state;
+    const schemaNode = () => address.nodeAt(state.schema, selector.address, state.document);
+    const currentValue = () => address.read(state.document, selector.address, state.schema);
     const disposed = () => {
       if (state.disposed) throw new Error('Document has been disposed.');
     };
@@ -277,18 +135,18 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
                 DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
             : undefined;
           if (
-            equalTreeNode(
+            schemaValue.equalTreeNode(
               previous as
                 DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true> | undefined,
               entry
             )
           )
             return previous;
-          return entry ? copyTreeNode(entry) : undefined;
+          return entry ? schemaValue.copyTreeNode(entry) : undefined;
         }
         if (!node) return undefined;
         return previous === undefined
-          ? copyValue(node, current)
+          ? schemaValue.copyValue(node, current)
           : materializeDocumentValue(node, previous, current, dirty);
       };
 
@@ -347,7 +205,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         if (node?.kind === 'table' && isRecord(value) && Array.isArray(value.ids))
           return Object.freeze([...(value.ids as string[])]);
         if (node?.kind === 'list' && Array.isArray(value))
-          return Object.freeze(ordered.toArray(ordered.indexedKeys(value, node.keyOf)));
+          return Object.freeze(sequence.toArray(sequence.indexedKeys(value, node.keyOf)));
         return Object.freeze([]);
       };
 
@@ -364,7 +222,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId))
           return Object.hasOwn(value.byId, key);
         if (node?.kind === 'list' && Array.isArray(value))
-          return ordered.indexedKeys(value, node.keyOf).index(key) >= 0;
+          return sequence.indexedKeys(value, node.keyOf).index(key) >= 0;
         return false;
       };
 
@@ -378,7 +236,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId))
           return Object.hasOwn(value.byId, key) ? value.byId[key] : undefined;
         if (node?.kind === 'list' && Array.isArray(value)) {
-          const index = ordered.indexedKeys(value, node.keyOf).index(key);
+          const index = sequence.indexedKeys(value, node.keyOf).index(key);
           return index < 0 ? undefined : value[index];
         }
         return undefined;
@@ -398,9 +256,15 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
                   ? (previous.get(key) as
                       DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
                   : undefined;
-                snapshots.set(key, equalTreeNode(before, entry) ? before : copyTreeNode(entry));
+                snapshots.set(
+                  key,
+                  schemaValue.equalTreeNode(before, entry)
+                    ? before
+                    : schemaValue.copyTreeNode(entry)
+                );
               } else if (!entryNode) snapshots.set(key, current);
-              else if (!previous.has(key)) snapshots.set(key, copyValue(entryNode, current));
+              else if (!previous.has(key))
+                snapshots.set(key, schemaValue.copyValue(entryNode, current));
               else {
                 const dirty = pending.entries.get(key) ?? (pending.reset ? replacement : undefined);
                 snapshots.set(

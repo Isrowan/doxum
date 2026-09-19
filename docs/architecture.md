@@ -5,8 +5,19 @@
 `createDocument` owns canonical state, revision, write exclusion and notification.
 `schema.ts` owns immutable node definitions and the symbolic path compiler.
 The root `ObjectNode` is definition identity; the runtime is instance identity.
-`address.ts` is the schema-driven address resolver and shared address index.
-`impact-target.ts` owns internal target identity and address matching.
+`schema/layout.ts` owns compiled fixed/dynamic member layouts.
+`address/resolve.ts` owns schema-driven traversal and resolved containers,
+`address/relation.ts` owns address relations, and `address/index.ts` owns the
+prefix index. `impact/target.ts` owns internal target identity and matching.
+
+`runtime/context.ts` is the single document-runtime identity boundary. The
+canonical runtime, its history `Readable` and every `asReadable` alias bind to
+one `RuntimeContext`, which contains only canonical state, the owning runtime,
+write-driver lease state and the document's `NotificationCenter`. No access,
+driver or notification subsystem keeps a second identity WeakMap.
+`runtime/notification.ts` owns listener indexes, processor attachments,
+settlement ordering, cleanup and disposal behind that one center. Publication
+settles projection processors before filtered/root external listeners.
 
 `access/scope.ts` implements both `Read` and `Draft`. Each visited structural
 location has one scope-local proxy target containing its schema, canonical value,
@@ -17,7 +28,8 @@ values are returned directly and never receive draft proxies.
 
 Structural writes advance the mutation session generation. Retained proxies then
 resolve through their current parents, sharing the renewed parent resolution.
-`address.ts` owns full-path, container and compiled-member resolution. Draft assignments
+`address/resolve.ts` owns full-path and container resolution while
+`schema/layout.ts` owns compiled-member facts. Draft assignments
 reuse a `ResolvedContainer` for the current session generation and call
 `assignMember`/`removeMember`. They allocate no per-write address or resolved-member
 wrapper. Address replay resolves a group container and uses the same write funnel;
@@ -41,10 +53,11 @@ scope and schema-branch checks. Each read branch creates only its requested meth
 write dispatch creates no unused read closures. A retained method remains valid across replacement
 under the same schema node. If the address now belongs to another schema branch,
 the old method throws; reading the method again obtains the current branch's method.
-Draft, read and track readers are borrowed for their synchronous callback. The internal `readWith` primitive
+Draft, read and selector readers are borrowed for their synchronous callback. The internal `readWith` primitive
 uses a trusted borrowed-reader contract: its reader, child proxies and collection
 methods must not escape the synchronous callback. Escaping them is undefined behavior;
-`read`/`track` return values and dependency snapshots, not the reader itself.
+`read` returns a value and `select` retains only its Core-owned dependency set,
+never the borrowed reader itself.
 Draft follows the same borrowed lifetime contract inside `update`; projection source
 contexts retain their explicit active check because they have a separate scheduler
 lifecycle.
@@ -73,7 +86,7 @@ Recorder member storage explicitly distinguishes fixed slots from dynamic keys;
 lookup, deletion and empty-group checks stay local to recorder. Scope owns its own
 fixed/dynamic child cache and renews the fixed cache when the object schema changes.
 
-Object and variant structure is closed. `schema-value.ts` rejects undeclared own
+Object and variant structure is closed. `schema/value.ts` rejects undeclared own
 properties (including symbols and non-enumerable properties) at construction, parse,
 replacement and apply boundaries. Variants additionally allow their discriminant.
 Dynamic keys belong to maps; arbitrary object interiors belong to atomic fields.
@@ -115,8 +128,8 @@ create/remove/member replacement, `list` owns insert/remove/member replacement,
 complete ChangeSet groups. Generic assignment and whole-container replacement
 remain session primitives. These modules take the existing session, own no state,
 and are not public exports. There are no forwarding methods left on session.
-`ordered-key.ts` owns shared keyed-sequence lookup, list-index caching, equality and
-sequence installation. `mutation/anchor.ts` owns only `DocumentAnchor` validation,
+`order/sequence.ts` owns shared keyed-sequence lookup, list-index caching, equality and
+sequence installation. `order/anchor.ts` owns only `DocumentAnchor` validation,
 position resolution and move planning; `tree.ts` owns topology validation and
 read-only traversal. Tree writes live in operations/tree and capture touched nodes directly, without session or capture callbacks. ResolvedTreeContainer carries a real tree schema and value; it has no member layout. Ordinary members replay cannot address tree topology.
 A bulk operation resolves its container once and reuses its member layout and
@@ -141,7 +154,7 @@ accepts a resolved location and a `set`/`remove` operation, with no replacement
 permission flag. The command-local member entry resolves definitions internally; located list operations pass
 their already resolved index directly. No per-write command object is allocated.
 
-Sequence insert/remove/install operations in `ordered-key.ts` own list-index invalidation
+Sequence insert/remove/install operations in `order/sequence.ts` own list-index invalidation
 or replacement as part of the structural write. Ordered move/reorder planning is pure;
 `operations/order.ts` performs one final sequence install and one session invalidation.
 Session and rollback call the same installation primitives; neither maintains a
@@ -198,15 +211,15 @@ the recorder's `seal` only dispatches facts and handles root reset. Order sealin
 compares the captured baseline against current keys before copying. A sequence
 restored to its original order produces no after array and no commit. Changed
 sequences still detach their final order from mutable canonical arrays.
-`schema-value.ts` owns one structure copier for canonical
+`schema/value.ts` owns one structure copier for canonical
 installation, snapshots, parse, rollback and commit publication. It copies editable
 schema structure and shares immutable payloads, including opaque classes, functions,
 list items and tree values. Snapshots never expose mutable canonical structure.
 There is no generic payload clone, field copier or separate snapshot copying protocol.
 
-Tree topology and tree payload presence are separate schema facts. `mutation/tree.ts`
+Tree topology and tree payload presence are separate schema facts. `tree/topology.ts`
 validates only empty-or-single-root connectivity, acyclicity and reciprocal
-parent/children links. `schema-value.ts` then validates every node payload against the
+parent/children links. `schema/value.ts` then validates every node payload against the
 tree's field schema: `tree(field(...))` requires an own `value`, while
 `tree(optional(field(...)))` permits it to be absent. Whole-tree optionality remains
 owned by `optional(tree(...))`. Initial state, parse, replacement and replay all enter
@@ -284,7 +297,7 @@ revalidated merely because one member or the order changed.
 Impact is derived only from sealed changes. Field/order indexes and collection
 query results are lazy. Collection queries do not construct a field trie.
 Subscriptions use a registration-time index to avoid scanning unrelated listeners.
-`impact-target.ts` classifies ordinary targets, membership-only targets and tree
+`impact/target.ts` classifies ordinary targets, membership-only targets and tree
 structural root/node targets, and
 owns matching in both query directions. Notification traverses shared group
 prefixes and changed member branches to collect exact hits, without expanding
@@ -296,8 +309,12 @@ Tree ChangeSets keep their existing exact `before/after root + nodes[]` facts. A
 tree root target is affected only by a root transition, a tree-node target only by
 that node ID, and the tree `nodes` collection maps node transitions directly to
 added/updated/removed collection impact. Whole-tree targets remain aggregate targets.
-React's tracked selection uses internal dependency capabilities from `integration`;
-application subscription APIs accept symbolic paths directly.
+Document selector dependency tracking is owned by `runtime/select.ts`.
+`select(document, selector, equality?)` returns only the standard `Readable`
+contract, dynamically rebinds its internal targets when selector branches change,
+and filters publications by result equality. React never sees `ImpactTarget`,
+dependency trackers or address internals. Application subscription APIs continue
+to accept symbolic paths directly.
 
 History stores sequences of complete commit ChangeSets. Undo reads before in
 reverse commit order; redo reads after in forward order, within one session.
@@ -339,6 +356,10 @@ document commits inside one Projection Runtime batch collapse to the exact net
 published value. All pending document sources publish before dependent processors are
 run, which makes root/node tree sources causally atomic without a multi-output source
 protocol.
+`projection/source/dirty.ts` owns the pure ChangeSet-to-dirty routing rules,
+`projection/source/materialization.ts` owns previous/current/dirty structural
+sharing, and `projection/source/document.ts` owns only document connection and
+source lifecycle.
 External events carry only boundary cause/revision metadata and, for collections,
 a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
@@ -387,7 +408,7 @@ distinct accessed containers, not assignment count. Scope counters expose proxy,
 address and cache-refresh work; recorder counters distinguish groups, first-touch
 members and published transitions. Impact counters expose explicit index builds.
 The first membership/order change of an ordered container may copy O(N) keys.
-`ordered-key.ts` owns a lazy key-to-index cache for canonical list value access,
+`order/sequence.ts` owns a lazy key-to-index cache for canonical list value access,
 address resolution, writes and sealing. Building it costs O(N); subsequent key
 lookups are O(1) until a membership/order change invalidates it. Cache identity
 includes the array and keyOf function; externally supplied arrays are validated
@@ -420,7 +441,7 @@ timing and sampled allocation runs separate.
 Payload capture, publication and replay preserve references regardless of payload
 size. Only application validation can traverse a payload. `profile.copy.structures`
 counts schema structure nodes copied by the shared copier; `profile.equality` counts
-ordered-key comparisons in `ordered-key.ts`. These replace the old generic clone counters, which did not
+ordered-sequence comparisons in `order/sequence.ts`. These replace the old generic clone counters, which did not
 cover schema copies. Snapshot and whole-structure replacement still visit their
 schema structure, and tree topology snapshots still copy affected child arrays.
 
