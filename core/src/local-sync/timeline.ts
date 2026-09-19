@@ -1,8 +1,4 @@
-import {
-  LocalSyncConsistencyError,
-  LocalSyncSchemaError,
-  LocalSyncUnavailableError,
-} from './contract';
+import { LocalSyncError, normalizeLocalSyncError } from './error';
 import { json, jsonChanges, type JsonValue } from './json';
 import type { ChangeSet } from '../changes';
 import { isRecord } from '../value/record';
@@ -32,51 +28,68 @@ export type StoredCommit = {
 const request = <T>(value: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
     value.onsuccess = () => resolve(value.result);
-    value.onerror = () => reject(value.error ?? new Error('IndexedDB request failed.'));
+    value.onerror = () =>
+      reject(normalizeLocalSyncError(value.error, 'unavailable', 'IndexedDB request failed.'));
   });
 
 const complete = (transaction: IDBTransaction): Promise<void> =>
   new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
     transaction.onabort = () =>
-      reject(transaction.error ?? new Error('IndexedDB transaction was aborted.'));
+      reject(
+        normalizeLocalSyncError(
+          transaction.error,
+          'unavailable',
+          'IndexedDB transaction was aborted.'
+        )
+      );
     transaction.onerror = () =>
-      reject(transaction.error ?? new Error('IndexedDB transaction failed.'));
+      reject(
+        normalizeLocalSyncError(transaction.error, 'unavailable', 'IndexedDB transaction failed.')
+      );
   });
 
 const factory = (): IDBFactory => {
-  if (!globalThis.indexedDB) throw new LocalSyncUnavailableError('IndexedDB');
+  if (!globalThis.indexedDB)
+    throw new LocalSyncError(
+      'unavailable',
+      'IndexedDB is required by doxum/local-sync in this environment.'
+    );
   return globalThis.indexedDB;
 };
 
 const keyRange = (): typeof IDBKeyRange => {
-  if (!globalThis.IDBKeyRange) throw new LocalSyncUnavailableError('IndexedDB');
+  if (!globalThis.IDBKeyRange)
+    throw new LocalSyncError(
+      'unavailable',
+      'IndexedDB is required by doxum/local-sync in this environment.'
+    );
   return globalThis.IDBKeyRange;
 };
 
 const string = (value: unknown, label: string): string => {
   if (typeof value === 'string') return value;
-  throw new LocalSyncConsistencyError(`${label} is malformed in IndexedDB.`);
+  throw new LocalSyncError('consistency', `${label} is malformed in IndexedDB.`);
 };
 
 const nonNegativeInteger = (value: unknown, label: string): number => {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
-  throw new LocalSyncConsistencyError(`${label} is malformed in IndexedDB.`);
+  throw new LocalSyncError('consistency', `${label} is malformed in IndexedDB.`);
 };
 
 const positiveInteger = (value: unknown, label: string): number => {
   const parsed = nonNegativeInteger(value, label);
   if (parsed > 0) return parsed;
-  throw new LocalSyncConsistencyError(`${label} is malformed in IndexedDB.`);
+  throw new LocalSyncError('consistency', `${label} is malformed in IndexedDB.`);
 };
 
 const documentRecord = (value: unknown): StoredDocument => {
   if (!isRecord(value) || value.formatVersion !== FORMAT_VERSION)
-    throw new LocalSyncConsistencyError('Document record is malformed in IndexedDB.');
+    throw new LocalSyncError('consistency', 'Document record is malformed in IndexedDB.');
   const checkpointSeq = nonNegativeInteger(value.checkpointSeq, 'document.checkpointSeq');
   const headSeq = nonNegativeInteger(value.headSeq, 'document.headSeq');
   if (checkpointSeq > headSeq)
-    throw new LocalSyncConsistencyError('Document checkpoint exceeds its head sequence.');
+    throw new LocalSyncError('consistency', 'Document checkpoint exceeds its head sequence.');
   return Object.freeze({
     formatVersion: FORMAT_VERSION,
     documentId: string(value.documentId, 'document.documentId'),
@@ -89,7 +102,7 @@ const documentRecord = (value: unknown): StoredDocument => {
 
 const commitRecord = (value: unknown): StoredCommit => {
   if (!isRecord(value) || value.formatVersion !== FORMAT_VERSION)
-    throw new LocalSyncConsistencyError('Commit record is malformed in IndexedDB.');
+    throw new LocalSyncError('consistency', 'Commit record is malformed in IndexedDB.');
   return Object.freeze({
     formatVersion: FORMAT_VERSION,
     documentId: string(value.documentId, 'commit.documentId'),
@@ -122,7 +135,8 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
     open.onerror = () =>
       reject(
         incompatible
-          ? new LocalSyncConsistencyError(
+          ? new LocalSyncError(
+              'consistency',
               'Unsupported Doxum storage format. Existing data was left unchanged.'
             )
           : (open.error ?? new Error('Unable to open IndexedDB.'))
@@ -149,7 +163,7 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
   ): Promise<StoredDocument> => {
     const value = await request(transaction.objectStore(DOCUMENTS).get(documentId));
     if (value === undefined)
-      throw new LocalSyncConsistencyError(`Local document '${documentId}' does not exist.`);
+      throw new LocalSyncError('consistency', `Local document '${documentId}' does not exist.`);
     return documentRecord(value);
   };
 
@@ -161,7 +175,10 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
       if (existing !== undefined) {
         const record = documentRecord(existing);
         if (record.schemaVersion !== schemaVersion)
-          throw new LocalSyncSchemaError(documentId, schemaVersion, record.schemaVersion);
+          throw new LocalSyncError(
+            'schema-mismatch',
+            `Local document '${documentId}' uses schema version ${record.schemaVersion}, but version ${schemaVersion} was requested.`
+          );
         await complete(transaction);
         return record;
       }
@@ -198,7 +215,8 @@ export const openIndexedDbTimeline = async (databaseName: string): Promise<Index
       const documents = transaction.objectStore(DOCUMENTS);
       const current = await readDocument(transaction, input.documentId);
       if (current.headSeq !== input.expectedHeadSeq)
-        throw new LocalSyncConsistencyError(
+        throw new LocalSyncError(
+          'consistency',
           'Local document advanced before the leader could append its commit.'
         );
       const commit: StoredCommit = {

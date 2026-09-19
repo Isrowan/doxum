@@ -5,5 +5,4 @@ export {
   useProjection,
   useInput,
   ProjectionProvider,
-  type DocumentSelectorOptions,
 } from './hooks';

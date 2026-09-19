@@ -8,8 +8,10 @@ import type {
   DocumentTreeNode,
   FieldNode,
   Infer,
+  Schema,
   Validator,
 } from '../schema';
+import { schemaNodeOf } from '../schema';
 import { compiledShape } from './layout';
 
 export type ParseIssue = {
@@ -54,7 +56,11 @@ const checkScalar = (
       typeof result.then === 'function'
     )
       return issue(address, 'Validators must be synchronous.');
-    if (typeof validator !== 'function') {
+    if (typeof validator === 'function') {
+      if (result === false) return issue(address, 'Value validation failed.');
+      if (result !== undefined && result !== true)
+        return issue(address, 'Function validators must return boolean or undefined.');
+    } else {
       if (!isRecord(result)) return issue(address, 'Malformed validator result.');
       if (Array.isArray(result.issues)) {
         const first = result.issues[0];
@@ -69,6 +75,8 @@ const checkScalar = (
         );
       }
       if (!Object.hasOwn(result, 'value')) return issue(address, 'Malformed validator result.');
+      if (!Object.is((result as { readonly value: unknown }).value, value))
+        return issue(address, 'Validators must not transform values.');
     }
     return undefined;
   } catch (error) {
@@ -288,9 +296,9 @@ export const equalValue = (node: DocumentNode, left: unknown, right: unknown): b
   return false;
 };
 
-export const parse = <N extends DocumentNode>(node: N, input: unknown): Infer<N> => {
-  const valueNode: DocumentNode = node;
+export const parse = <S extends Schema<unknown>>(schema: S, input: unknown): Infer<S> => {
+  const valueNode = schemaNodeOf(schema);
   const failure = checkValue(valueNode, input, [], true);
   if (failure) throw new ParseError(failure);
-  return copyValue(valueNode, input) as Infer<N>;
+  return copyValue(valueNode, input) as Infer<S>;
 };

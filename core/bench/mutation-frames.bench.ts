@@ -17,7 +17,7 @@ describe('entity frames and subscription matching', () => {
     });
     for (let i = 0; i < listeners; i++)
       runtime.subscribe(
-        (path: SchemaPath<(typeof model)['shape']>) => path.rows.item(ids[i]).x,
+        (path: SchemaPath<typeof model>) => path.rows.item(ids[i]).x,
         () => {}
       );
     afterAll(() => runtime.dispose());
@@ -60,9 +60,8 @@ describe('nested entity frames', () => {
         ),
       },
     });
-    const collection = (p: SchemaPath<(typeof definition)['shape']>) => p.entities;
-    const target = (p: SchemaPath<(typeof definition)['shape']>) =>
-      p.entities.item(ids[0]).position.x;
+    const collection = (p: SchemaPath<typeof definition>) => p.entities;
+    const target = (p: SchemaPath<typeof definition>) => p.entities.item(ids[0]).position.x;
     runtime.subscribe(commit => {
       if (mode === 'collection-impact') {
         const change = commit.impact.collection(collection);

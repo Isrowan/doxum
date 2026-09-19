@@ -64,8 +64,9 @@ tree 可以为空。`tree(field(...))` 要求每个已存在节点都拥有自�
 `tree(optional(field(...)))` 才允许节点缺失 payload，而 `optional(tree(...))` 独立控制整棵
 tree 成员是否可以缺失。
 
-校验器是纯同步函数或 Standard Schema v1，直接接收原始引用且不得修改它。
-成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。
+函数 validator 是同步 predicate/assertion：返回 `true` 或 `undefined` 成功，
+返回 `false` 拒绝，assertion 也可以 throw。Standard Schema v1 成功时必须按 identity
+返回原输入；transform output 会被拒绝。validator 不得修改输入。数据转换在进入 Doxum 前完成。
 parse(model, unknown) 复制校验后的结构并共享只读 payload；严格解析要求原子字段具备校验器。品牌键贯穿 map/table 方法、
 符号路径和 impact。路径回调描述地址，包括缺失键，订阅注册时解析。
 Core 的 `select(document, selector, equality?)` 追踪实际读取，在选择分支改变时更新
@@ -86,12 +87,12 @@ apply(changes, { expectedRevision }) 拒绝缺失或不匹配的本地基线；�
 observerErrors 属于已提交结果。
 
 集合边界使用 `observe(document, path => path.tasks)`，纯派生值使用
-`derive([tasks, filter], (tasks, filter) => ...)`。定义是惰性的，由一个
+`derive({ tasks, filter }, ({ tasks, filter }) => ...)`。定义是惰性的，由一个
 `createProjectionRuntime({ onError })` owner 物化和管理。当一个 keyed source 决定
 output key/order 时，用 `derive.keyed(entries, entry => entry.label)` 独立映射每个
 entry；跨 collection 的动态 key lookup 继续在同一个 derivation 中用命名依赖对象声明：
 普通 Projection 成员是全局依赖，`{ source, key }` 成员是逐 output key lookup，selector
-接收 `(entry, dependencies, key)`。Runtime 拥有 binding/reverse index，producer DAG
+接收 `(entry, key, dependencies)`。Runtime 拥有 binding/reverse index，producer DAG
 仍保持显式。只有 `derive.keyed` 无法表达的 retained state、自定义跨 key index 或
 keyed patch 才放到隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
 selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。

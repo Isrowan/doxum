@@ -53,7 +53,7 @@ describe('ChangeSet boundary', () => {
     }
   );
   it('rejects sparse address and order arrays before schema validation or mutation', () => {
-    const validator = vi.fn((value: unknown) => value as number);
+    const validator = vi.fn((value: unknown): value is number => typeof value === 'number');
     const schema = object({
       undefined: field(validator),
       rows: table(object({ n: field<number>() })),
@@ -136,6 +136,10 @@ describe('ChangeSet boundary', () => {
     expect(runtime.apply(changes, { expectedRevision: 0 }).status).toBe('rejected');
     // @ts-expect-error An explicit expected revision is required.
     expect(runtime.apply(changes).status).toBe('rejected');
+    if (false) {
+      // @ts-expect-error remote apply owns history invalidation and accepts no history option
+      runtime.apply(changes, { expectedRevision: 1, source: 'remote', history: false });
+    }
     const result = runtime.apply({ changes: [set(['n'], 99, 2)] }, { expectedRevision: 1 });
     expect(result.status).toBe('committed');
     if (result.status === 'committed')
@@ -186,9 +190,8 @@ describe('ChangeSet boundary', () => {
     expect(listener).not.toHaveBeenCalled();
   });
   it('rolls back partial application when later schema validation fails', () => {
-    const number = (v: unknown): number => {
+    const number = (v: unknown): asserts v is number => {
       if (typeof v !== 'number') throw new Error('number');
-      return v;
     };
     const schema = object({ a: field(number), z: field(number) });
     const runtime = createDocument({ schema, initial: { a: 0, z: 0 } });
@@ -303,7 +306,6 @@ describe('ChangeSet boundary', () => {
     const payload = field<number>(value => {
       validations++;
       if (typeof value !== 'number') throw new TypeError('number');
-      return value;
     });
     const schema = object({ outline: tree(payload) });
     const count = 1_024;

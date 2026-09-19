@@ -95,11 +95,14 @@ when a change touches addressing, mutation, impact, notifications, or views.
   per-capability WeakMaps or bind/share registries. `runtime/notification.ts`
   owns one `NotificationCenter` for processor settlement and external listeners.
   `runtime/select.ts` owns document dependency tracking and dynamic rebinding;
-  React and other adapters consume only `Readable`, `DocumentReadable`,
+  React and other adapters consume only `Readable`, `ReadonlyDocument`,
   `select` and projection readables.
 - Projection definitions are lazy and reusable. `ProjectionRuntime` is the only
   owner of materialized derived state; values are recomputed from runtime state
-  and declared sources, never manually kept in sync by callers.
+  and declared sources, never manually kept in sync by callers. `ProjectionScope`
+  adds lifecycle ownership only through `scope.own(...)`; it does not copy projection
+  factories or create another graph/state owner. Scoped definitions may depend on root
+  definitions; root and sibling scopes may not depend on scoped definitions.
 - Preserve notification ordering: materialized processors settle before
   external listeners; writes remain forbidden while notifying. Observer
   failures are returned on the committed result and must not be rethrown as a

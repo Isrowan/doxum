@@ -45,7 +45,7 @@ for (const [count, changed, subscribers] of [
     },
   });
   const values = observe(runtime, p => p.entities);
-  store.get(values);
+  store.read(values);
   let measuring = false;
   let writesMs = 0;
   const tick = () =>
@@ -67,7 +67,7 @@ for (const [count, changed, subscribers] of [
   if (
     result.status !== 'committed' ||
     result.commit.changes.changes.length !== changed ||
-    store.get(values).get(ids[0])?.position.x !== 11
+    store.read(values).get(ids[0])?.position.x !== 11
   )
     throw new Error('Profile workload failed');
   console.log(JSON.stringify({ count, changed, subscribers, elapsed, counters }));

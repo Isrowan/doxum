@@ -14,9 +14,9 @@ import {
 import { jsonChanges } from '../src/local-sync/json';
 import { startProfile } from '../src/profile';
 
-const number = (value: unknown): number => {
+const number = (value: unknown): value is number => {
   if (typeof value !== 'number') throw new Error('Expected number');
-  return value;
+  return true;
 };
 
 describe('complete container changes', () => {

@@ -17,7 +17,7 @@ import { ProjectionProvider, useDocumentSelector, useInput, useProjection } from
 describe('projection React adapter', () => {
   it('uses the same hook for values, selectors, and inputs', () => {
     const source = input(1);
-    const doubled = derive([source], value => value * 2);
+    const doubled = derive({ source }, ({ source }) => source * 2);
     const runtime = createProjectionRuntime();
     let setValue!: (value: number) => void;
     const Probe = () => {
@@ -35,6 +35,35 @@ describe('projection React adapter', () => {
     act(() => setValue(3));
     expect(renderer.toJSON()).toMatchObject({ children: ['3:6'] });
     renderer.unmount();
+    runtime.dispose();
+  });
+
+  it('reads and updates collection inputs through useInput', () => {
+    const selection = input.collection(new Map([['a', true]]));
+    const runtime = createProjectionRuntime();
+    let updateSelection!: (
+      run: (draft: { set(key: string, value: boolean): void; remove(key: string): void }) => void
+    ) => void;
+    const Probe = () => {
+      const [value, update] = useInput(selection);
+      updateSelection = update;
+      return React.createElement('span', null, [...value.keys()].join(','));
+    };
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(
+        React.createElement(ProjectionProvider, { value: runtime }, React.createElement(Probe))
+      );
+    });
+    expect(renderer.toJSON()).toMatchObject({ children: ['a'] });
+    act(() =>
+      updateSelection(draft => {
+        draft.remove('a');
+        draft.set('b', true);
+      })
+    );
+    expect(renderer.toJSON()).toMatchObject({ children: ['b'] });
+    act(() => renderer.unmount());
     runtime.dispose();
   });
 
@@ -129,8 +158,8 @@ describe('projection React adapter', () => {
   it('reads and writes a scope-owned projection through the same provider', () => {
     const runtime = createProjectionRuntime();
     const scope = runtime.scope();
-    const count = scope.input(1);
-    const doubled = scope.derive([count], value => value * 2);
+    const count = scope.own(input(1));
+    const doubled = scope.own(derive({ count }, ({ count }) => count * 2));
     let setCount!: (value: number) => void;
     const Probe = () => {
       const [value, set] = useInput(count);
@@ -206,6 +235,41 @@ describe('document React adapter', () => {
     expect(renderer.toJSON()).toMatchObject({ children: ['5'] });
     expect(renders).toBe(initialRenders + 2);
 
+    act(() => renderer.unmount());
+    document.dispose();
+  });
+
+  it('accepts positional selector equality', () => {
+    const schema = object({ value: field<number>() });
+    const document = createDocument({ schema, initial: { value: 1 } });
+    let renders = 0;
+    const Probe = () => {
+      renders += 1;
+      const value = useDocumentSelector(
+        document,
+        state => ({ parity: state.value % 2 }),
+        (previous, next) => previous.parity === next.parity
+      );
+      return React.createElement('span', null, String(value.parity));
+    };
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(React.createElement(Probe));
+    });
+    const initialRenders = renders;
+    act(() => {
+      document.update(draft => {
+        draft.value = 3;
+      });
+    });
+    expect(renders).toBe(initialRenders);
+    act(() => {
+      document.update(draft => {
+        draft.value = 4;
+      });
+    });
+    expect(renders).toBe(initialRenders + 1);
+    expect(renderer.toJSON()).toMatchObject({ children: ['0'] });
     act(() => renderer.unmount());
     document.dispose();
   });

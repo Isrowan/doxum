@@ -10,6 +10,8 @@ import type {
   ObjectNode,
   ObjectShape,
   ReadonlyValue,
+  Schema,
+  SchemaNodeOf,
   TableNode,
   TreeNode,
   ValueSchemaNode,
@@ -129,8 +131,10 @@ type NodeAccess<N extends DocumentNode, W extends boolean> =
 type Access<N extends DocumentNode, W extends boolean> = N extends { readonly optional: true }
   ? NodeAccess<N, W> | undefined
   : NodeAccess<N, W>;
-export type Read<N extends DocumentNode> = Access<N, false>;
-export type Draft<N extends DocumentNode> = Access<N, true>;
+type AccessNode<S extends Schema<unknown> | DocumentNode> =
+  S extends Schema<unknown> ? SchemaNodeOf<S> : Extract<S, DocumentNode>;
+export type Read<S extends Schema<unknown> | DocumentNode> = Access<AccessNode<S>, false>;
+export type Draft<S extends Schema<unknown> | DocumentNode> = Access<AccessNode<S>, true>;
 type Snapshot<T> = T extends {
   readonly [scopeValue]?: readonly [DocumentNode, boolean, infer V];
 }

@@ -3,15 +3,18 @@
 ## Ownership
 
 `createDocument` owns canonical state, revision, write exclusion and notification.
-`schema.ts` owns immutable node definitions and the symbolic path compiler.
-The root `ObjectNode` is definition identity; the runtime is instance identity.
+`schema.ts` owns opaque public `Schema` / `ObjectSchema` capabilities, immutable
+internal node definitions and the symbolic path compiler. A public schema handle is
+the definition identity; internal consumers resolve it to its concrete root node.
+The runtime is instance identity.
 `schema/layout.ts` owns compiled fixed/dynamic member layouts.
 `address/resolve.ts` owns schema-driven traversal and resolved containers,
 `address/relation.ts` owns address relations, and `address/index.ts` owns the
 prefix index. `impact/target.ts` owns internal target identity and matching.
 
 `runtime/context.ts` is the single document-runtime identity boundary. The
-canonical runtime, its history `Readable` and every `asReadable` alias bind to
+canonical runtime, its history `Readable` and every `document.readonly()` capability
+alias bind to
 one `RuntimeContext`, which contains only canonical state, the owning runtime,
 write-driver lease state and the document's `NotificationCenter`. No access,
 driver or notification subsystem keeps a second identity WeakMap.
@@ -225,9 +228,10 @@ tree's field schema: `tree(field(...))` requires an own `value`, while
 owned by `optional(tree(...))`. Initial state, parse, replacement and replay all enter
 this same schema validation boundary.
 
-Validators run on original references under a pure, synchronous contract. Successful
-outputs are ignored. There is no protective copy or deep transformation detection;
-input mutation is a contract violation. Shape, key, tree and ChangeSet validation
+Validators run on original references under a pure, synchronous contract. Function
+validators are predicates/assertions. Standard Schema success must preserve input
+identity; transformed output is rejected. Input mutation is a contract violation.
+Shape, key, tree and ChangeSet validation
 remain enforced. An identical already-valid member value is a no-op before validator
 invocation or first-touch capture. `Infer`, Read/Draft and raw snapshots expose readonly payload types.
 
@@ -284,6 +288,9 @@ groups/keys and parent replacements overlapping descendants are rejected; an
 ancestor order can coexist with descendant member changes. Actual rollback facts are captured locally, independent of
 received before values. Public apply requires `expectedRevision`; local sync
 additionally checks durable sequence under exclusive Web Lock leadership.
+Local/system apply owns its optional history policy. Remote apply has no history option
+and always invalidates local history, so the type surface cannot express a conflicting
+remote/history combination.
 
 Membership is determined from actual local presence, not the incoming transition
 label. Ordered membership changes capture an order baseline before writing.
@@ -323,7 +330,7 @@ Local root reset is reversible. Remote commits invalidate local history.
 Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
-`get`, `readable`, scalar `set`, keyed `update`, `scope`, `batch` and `dispose`.
+`read`, `select`, overloaded `update`, `scope`, `batch` and `dispose`.
 `derive.keyed` remains an ordinary processor producer. One keyed driver owns the
 output key domain and order. Driver entry changes reevaluate only those keys and
 the existing collection output equality removes equal selected values before
@@ -335,13 +342,18 @@ while ordinary scalar or whole-value dependencies invalidate the full driver key
 set. Missing source entries keep their binding so later membership adds invalidate
 the correct output keys. Reset, recovery, output sealing and disposal remain owned
 by the existing processor lifecycle; there is no join runtime, dependency event bus
-or processor-side `runtime.get()` tracking protocol.
+or processor-side imperative dependency-discovery protocol.
 `runtime.scope()` creates a local definition and subscription lifetime inside
-that same Runtime, not a child Runtime. Local input, derive and incremental
-producers can depend directly on root document or session projections. Scope
-disposal unsubscribes its readables and releases local producers in reverse
-dependency order; root producers continue to live until Runtime disposal. A
-scoped definition cannot be materialized by another scope or by the root.
+that same Runtime, not a child Runtime. `scope.own(...)` is the only scope-specific
+declaration capability: it assigns lifecycle ownership to one lazy projection definition
+or a static nested projection tree without copying input/derive/incremental factories.
+Owned producers can depend directly on root document or session projections. Scope
+disposal unsubscribes its readables and releases local producers in reverse dependency
+order; root producers continue to live until Runtime disposal. A scoped definition
+cannot be materialized by another scope or by the root, and root definitions cannot
+depend on scoped definitions. Root materialization seals a definition's root ownership;
+`scope.own` cannot reclassify it afterward. The root projection Runtime therefore does not
+depend on advanced factory implementations.
 Collection inputs are source producers: their synchronous `update` draft stages
 keyed set/remove
 commands and publishes a net `CollectionChange` at the Runtime batch boundary.
@@ -376,15 +388,15 @@ External events carry only boundary cause/revision metadata and, for collections
 a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
 the document runtime still owns the canonical ChangeSet and impact protocols.
-React's selector overload is implemented by `runtime.readable(projection, selector,
+React's selector overload is implemented by `runtime.select(projection, selector,
 equality)`, so the same runtime-owned readable can be consumed by React or
 imperative code. Keyed invalidation prevents an unrelated entry update from
 executing the selector; equality filters the result only after a related update.
 This tracking does not construct processor dependencies, which remain explicit in
 `derive` and the advanced incremental entry point. Advanced processors may
 declare one static `incremental.group` with nested named value and keyed collection
-leaves. The declaration compiles to one processor producer and one retained-state
-owner. Value leaves
+leaves. The declaration compiles to one processor producer and one lifecycle owner;
+retained state exists only when the definition declares `state()`. Value leaves
 reuse the ordinary value publication kernel; collection leaves reuse the keyed
 collection publication kernel. Every leaf is still an ordinary projection source
 with its own revision/listeners, and collection leaves additionally publish

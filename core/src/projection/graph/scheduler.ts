@@ -41,7 +41,7 @@ export type ProcessorRecord = ProducerBase & {
   readonly kind: 'processor';
   readonly dependencies: readonly OutputRecord[];
   readonly order: number;
-  evaluate(reset: boolean, cause: unknown): readonly OutputRecord[];
+  evaluate(reset: boolean, cause: unknown, recreate?: boolean): readonly OutputRecord[];
   publish(): void;
 };
 
@@ -108,16 +108,11 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     return first;
   };
 
-  const revisionsOf = (producer: ProducerRecord): readonly number[] =>
-    producer.kind === 'processor'
-      ? producer.dependencies.map(output => output.revision())
-      : producer.outputs.map(output => output.revision());
-
   const errorFor = (
     producer: ProducerRecord,
     cause: unknown,
     kind: ProjectionError['phase'] = producer.kind === 'source' ? 'source' : 'processor'
-  ) => new ProjectionError(kind, producer.name, revisionsOf(producer), cause);
+  ) => new ProjectionError(kind, cause);
 
   const capture = (source: SourceBoundaryRecord) => {
     if (disposed) return;
@@ -193,7 +188,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         } else {
           const reset = wasFaulted || processor.dependencies.some(output => output.reset());
           try {
-            changedOutputs = processor.evaluate(reset, cause);
+            changedOutputs = processor.evaluate(reset, cause, wasFaulted);
             const dependencyFailure = processor.dependencies.find(output => output.owner.fault)
               ?.owner.fault;
             if (dependencyFailure) throw dependencyFailure;
@@ -203,7 +198,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
             processor.fault = error;
             if (!reset) {
               try {
-                changedOutputs = processor.evaluate(true, cause);
+                changedOutputs = processor.evaluate(true, cause, true);
                 const dependencyFailure = processor.dependencies.find(output => output.owner.fault)
                   ?.owner.fault;
                 if (dependencyFailure) throw dependencyFailure;

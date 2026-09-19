@@ -11,13 +11,20 @@ import {
   read,
   table,
 } from '../src';
-import {
-  attachLocalSync,
-  LocalSyncDataError,
-  LocalSyncReadOnlyError,
-  LocalSyncUnsupportedOperationError,
-} from '../src/local-sync';
+import { attachLocalSync, LocalSyncError, type LocalSyncErrorCode } from '../src/local-sync';
 import { openIndexedDbTimeline } from '../src/local-sync/timeline';
+
+const expectLocalSyncCode = (run: () => unknown, code: LocalSyncErrorCode): void => {
+  let thrown: unknown;
+  try {
+    run();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(LocalSyncError);
+  expect(thrown).toMatchObject({ code });
+};
+
 class TestLockManager {
   readonly #tails = new Map<string, Promise<void>>();
   readonly #requests = new Map<string, number>();
@@ -231,6 +238,40 @@ describe('local sync', () => {
     retained.close();
     documentRuntime.dispose();
   });
+  it('normalizes operational attachment failures and preserves their cause', async () => {
+    const cause = new Error('channel construction failed');
+    class FailingBroadcastChannel {
+      constructor() {
+        throw cause;
+      }
+    }
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: FailingBroadcastChannel,
+    });
+    const documentRuntime = runtime();
+    let thrown: unknown;
+    try {
+      try {
+        await attachLocalSync({
+          runtime: documentRuntime,
+          database: database(),
+          documentId: 'operational-failure',
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(LocalSyncError);
+      expect(thrown).toMatchObject({ code: 'unavailable', cause });
+    } finally {
+      Object.defineProperty(globalThis, 'BroadcastChannel', {
+        configurable: true,
+        value: TestBroadcastChannel,
+      });
+      documentRuntime.dispose();
+    }
+  });
+
   it('exposes stable observable state through persistence, leadership transfer and disposal', async () => {
     const name = database();
     const leaderRuntime = runtime();
@@ -253,7 +294,7 @@ describe('local sync', () => {
       },
     });
     const statusSource = observe(follower.state);
-    const status = derive([statusSource], state => state.status);
+    const status = derive({ statusSource }, ({ statusSource }) => statusSource.status);
     const snapshot = leader.state.current();
     const revision = leader.state.revision();
     await leader.flush();
@@ -270,11 +311,11 @@ describe('local sync', () => {
     leaderRuntime.update(tx => (tx.title = 'persisted'));
     await leader.flush();
     expect(heads).toEqual([1]);
-    expect(errors).toHaveLength(1);
+    expect(errors).toHaveLength(0);
     expect(leader.state.current().status).toBe('leader');
-    expect(store.get(status)).toBe('follower');
+    expect(store.read(status)).toBe('follower');
     await leader.dispose();
-    await waitFor(() => store.get(status) === 'leader');
+    await waitFor(() => store.read(status) === 'leader');
     store.dispose();
     const states: string[] = [];
     follower.state.subscribe(() => states.push(follower.state.current().status));
@@ -294,13 +335,15 @@ describe('local sync', () => {
       documentId: 'document',
     });
     expect(first.state.current()).toEqual({ status: 'leader', headSeq: 0, checkpointSeq: 0 });
-    expect(() => firstRuntime.replace(initial)).toThrow(LocalSyncUnsupportedOperationError);
-    expect(() =>
-      firstRuntime.apply(
-        { changes: [] },
-        { expectedRevision: firstRuntime.revision(), source: 'remote' }
-      )
-    ).toThrow(LocalSyncUnsupportedOperationError);
+    expectLocalSyncCode(() => firstRuntime.replace(initial), 'unsupported-operation');
+    expectLocalSyncCode(
+      () =>
+        firstRuntime.apply(
+          { changes: [] },
+          { expectedRevision: firstRuntime.revision(), source: 'remote' }
+        ),
+      'unsupported-operation'
+    );
     const update = firstRuntime.update(tx => {
       tx.title = 'two';
       return tx.title;
@@ -338,13 +381,13 @@ describe('local sync', () => {
     });
     expect(leader.state.current().status).toBe('leader');
     expect(follower.state.current()).toEqual({ status: 'follower', headSeq: 0, checkpointSeq: 0 });
-    expect(() => followerRuntime.update(tx => (tx.title = 'forbidden'))).toThrow(
-      LocalSyncReadOnlyError
+    expectLocalSyncCode(() => followerRuntime.update(tx => (tx.title = 'forbidden')), 'read-only');
+    expectLocalSyncCode(
+      () =>
+        followerRuntime.apply({ changes: [] }, { expectedRevision: followerRuntime.revision() }),
+      'read-only'
     );
-    expect(() =>
-      followerRuntime.apply({ changes: [] }, { expectedRevision: followerRuntime.revision() })
-    ).toThrow(LocalSyncReadOnlyError);
-    expect(() => followerRuntime.replace(initial)).toThrow(LocalSyncReadOnlyError);
+    expectLocalSyncCode(() => followerRuntime.replace(initial), 'read-only');
     leaderRuntime.update(tx => (tx.title = 'two'));
     await leader.flush();
     await waitFor(() => read(followerRuntime, read => read.title) === 'two');
@@ -404,10 +447,12 @@ describe('local sync', () => {
   });
   it('reports non-JSON local commands after their synchronous runtime commit', async () => {
     const documentRuntime = runtime();
+    const errors: LocalSyncError[] = [];
     const localSync = await attachLocalSync({
       runtime: documentRuntime,
       database: database(),
       documentId: 'document',
+      onError: error => errors.push(error),
     });
     expect(documentRuntime.update(tx => (tx.title = new Date() as never)).status).toBe('committed');
     expect(read(documentRuntime, read => read.title)).toBeInstanceOf(Date);
@@ -417,7 +462,14 @@ describe('local sync', () => {
       headSeq: 0,
       checkpointSeq: 0,
     });
-    await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
+    const state = localSync.state.current();
+    expect(state.status).toBe('error');
+    if (state.status === 'error') {
+      expect(state.error).toBeInstanceOf(LocalSyncError);
+      expect(state.error).toBe(errors[0]);
+      expect(state.error.code).toBe('invalid-data');
+    }
+    await expect(localSync.flush()).rejects.toMatchObject({ code: 'invalid-data' });
     await localSync.dispose();
   });
   it('reports command-limit failures after the document has committed synchronously', async () => {
@@ -437,7 +489,7 @@ describe('local sync', () => {
     expect(read(documentRuntime, read => read.title)).toBe('one');
     expect(read(documentRuntime, read => read.tasks.get('a')?.title)).toBe('AA');
     await waitFor(() => localSync.state.current().status === 'error');
-    await expect(localSync.flush()).rejects.toBeInstanceOf(LocalSyncDataError);
+    await expect(localSync.flush()).rejects.toMatchObject({ code: 'invalid-data' });
     await localSync.dispose();
   });
   it('replays previously admitted commits under smaller current write limits', async () => {

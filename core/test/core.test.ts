@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   replace,
-  asReadable,
   createDocument,
   DocumentDisposedError,
   field,
@@ -19,6 +18,7 @@ import {
   type Draft,
   type SchemaPath,
 } from '../src';
+import { schemaNodeOf } from '../src/schema';
 
 const row = object({ n: field<number>(), title: field<string>() });
 const model = object({
@@ -284,7 +284,7 @@ describe('draft transactions', () => {
 describe('tree payload presence', () => {
   const numberField = field<number>(value => {
     if (typeof value !== 'number') throw new TypeError('Expected number.');
-    return value;
+    return true;
   });
 
   it('requires an own value for required tree payloads at every canonical admission boundary', () => {
@@ -724,7 +724,7 @@ describe('subscriptions and ownership', () => {
   });
   it('parses single and multiple paths once and notifies each registration once', () => {
     const runtime = setup(),
-      pick = vi.fn((path: SchemaPath<typeof model.shape>) => path.n);
+      pick = vi.fn((path: SchemaPath<typeof model>) => path.n);
     const listener = vi.fn();
     runtime.subscribe(pick, listener);
     const both = vi.fn();
@@ -745,11 +745,11 @@ describe('subscriptions and ownership', () => {
     b.subscribe(p => p.n, listener);
     expect(a.schema).toBe(model);
     expect(b.schema).toBe(model);
-    expect(Object.isFrozen(model.shape)).toBe(true);
+    expect(Object.isFrozen(schemaNodeOf(model).shape)).toBe(true);
     a.update(d => d.n++);
     expect(b.snapshot().n).toBe(0);
     expect(listener).not.toHaveBeenCalled();
-    const readable = asReadable(a);
+    const readable = a.readonly();
     expect('update' in readable).toBe(false);
     expect(read(readable, s => s.n)).toBe(1);
   });

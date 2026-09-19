@@ -32,21 +32,21 @@ const rows = observe(runtime, path => path.rows);
 const keyedInput = input.collection(new Map(ids.map((id, index) => [id, index] as const)));
 const viewport = input(1);
 const summary = derive(
-  [rows, viewport],
-  (values, factor) => (values.get('42')?.value ?? 0) * factor
+  { rows, viewport },
+  ({ rows, viewport }) => (rows.get('42')?.value ?? 0) * viewport
 );
 // Materialize the graph before timing updates so the benchmark measures
 // incremental publication rather than one-time collection construction.
-store.get(rows);
-store.get(keyedInput);
-store.get(summary);
+store.read(rows);
+store.read(keyedInput);
+store.read(summary);
 let revision = 0;
 describe('explicit projection runtime', () => {
   bench(
     `one mapped row in ${collectionSize} without all`,
     () => {
       runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-      store.get(rows).get('42');
+      store.read(rows).get('42');
     },
     { iterations: 1, time: 1 }
   );
@@ -55,9 +55,9 @@ describe('explicit projection runtime', () => {
     () => {
       store.batch(() => {
         runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-        store.set(viewport, revision);
+        store.update(viewport, revision);
       });
-      store.get(summary);
+      store.read(summary);
     },
     { iterations: 1, time: 1 }
   );
@@ -65,7 +65,7 @@ describe('explicit projection runtime', () => {
     `one keyed input in ${collectionSize} without all`,
     () => {
       store.update(keyedInput, draft => draft.set('42', ++revision));
-      store.get(keyedInput).get('42');
+      store.read(keyedInput).get('42');
     },
     { iterations: 1, time: 1 }
   );
@@ -73,7 +73,7 @@ describe('explicit projection runtime', () => {
     'lazy all after one update',
     () => {
       runtime.update(tx => (tx.rows.get('42')!.value = ++revision));
-      store.get(rows).keys();
+      store.read(rows).keys();
     },
     { iterations: 1, time: 1 }
   );
@@ -116,14 +116,14 @@ const createNativeTreeBench = () => {
   const document = createTreeDocument();
   const store = createTreeStore();
   const projection = observe(document, path => path.boards.item('board').outline.nodes);
-  store.get(projection);
+  store.read(projection);
   return { document, store, projection };
 };
 const createAggregateTreeBench = () => {
   const document = createTreeDocument();
   const store = createTreeStore();
   const projection = observe(document, path => path.boards);
-  store.get(projection);
+  store.read(projection);
   return { document, store, projection };
 };
 const nativeTree = createNativeTreeBench();
@@ -137,7 +137,7 @@ describe('tree projection materialization', () => {
       nativeTree.document.update(tx =>
         tx.boards.get('board')!.outline.replace(treeIds[treeCount - 1], ++nativeTreeRevision)
       );
-      nativeTree.store.get(nativeTree.projection).get(treeIds[treeCount - 1]);
+      nativeTree.store.read(nativeTree.projection).get(treeIds[treeCount - 1]);
     },
     { iterations: 10, time: 100 }
   );
@@ -147,7 +147,7 @@ describe('tree projection materialization', () => {
       aggregateTree.document.update(tx =>
         tx.boards.get('board')!.outline.replace(treeIds[treeCount - 1], ++aggregateTreeRevision)
       );
-      aggregateTree.store.get(aggregateTree.projection).get('board');
+      aggregateTree.store.read(aggregateTree.projection).get('board');
     },
     { iterations: 10, time: 100 }
   );

@@ -1,4 +1,4 @@
-import type { DocumentAddress, ObjectNode, PathPick, Infer } from '../schema';
+import type { DocumentAddress, ObjectSchema, PathPick, Infer } from '../schema';
 import type { ChangeSet } from '../changes';
 import type { DocumentImpact } from '../impact';
 import type { Draft } from '../access/scope';
@@ -46,7 +46,7 @@ export class TransactionRejected extends Error {
     );
   }
 }
-export type DocumentCommit<S extends ObjectNode> = {
+export type DocumentCommit<S extends ObjectSchema<object>> = {
   readonly revision: number;
   readonly source: CommitSource;
   readonly changes: ChangeSet;
@@ -88,8 +88,8 @@ export type LocalHistory<C> = Readable<HistoryState> & {
   clear(): void;
   group(): { end(): void; cancel(): OperationResult<C> };
 };
-export type CommitListener<S extends ObjectNode> = (commit: DocumentCommit<S>) => void;
-export type DocumentReadable<S extends ObjectNode> = {
+export type CommitListener<S extends ObjectSchema<object>> = (commit: DocumentCommit<S>) => void;
+export type ReadonlyDocument<S extends ObjectSchema<object>> = {
   revision(): number;
   subscribe(listener: CommitListener<S>): Unsubscribe;
   subscribe(
@@ -97,8 +97,9 @@ export type DocumentReadable<S extends ObjectNode> = {
     listener: CommitListener<S>
   ): Unsubscribe;
 };
-export type DocumentRuntime<S extends ObjectNode> = DocumentReadable<S> & {
+export type DocumentRuntime<S extends ObjectSchema<object>> = ReadonlyDocument<S> & {
   readonly schema: S;
+  readonly(): ReadonlyDocument<S>;
   update<V>(
     run: (draft: Draft<S>) => Synchronous<V>,
     options?: {
@@ -108,11 +109,17 @@ export type DocumentRuntime<S extends ObjectNode> = DocumentReadable<S> & {
   ): TransactionResult<V, DocumentCommit<S>>;
   apply(
     changes: unknown,
-    options: {
-      readonly expectedRevision: number;
-      readonly source?: Exclude<CommitSource, 'history'>;
-      readonly history?: boolean;
-    }
+    options:
+      | {
+          readonly expectedRevision: number;
+          readonly source?: Extract<CommitSource, 'local' | 'system'>;
+          readonly history?: boolean;
+        }
+      | {
+          readonly expectedRevision: number;
+          readonly source: 'remote';
+          readonly history?: never;
+        }
   ): OperationResult<DocumentCommit<S>>;
   replace(
     value: Infer<S>,

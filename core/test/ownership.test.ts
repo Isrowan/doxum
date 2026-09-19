@@ -8,7 +8,7 @@ describe('projection ownership', () => {
     const document = createDocument({ schema: model, initial: { rows: { a: { title: 'A' } } } });
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
-    const value = runtime.get(rows).get('a');
+    const value = runtime.read(rows).get('a');
     expect(value).toEqual({ title: 'A' });
     document.update(draft => {
       draft.rows.get('a')!.title = 'B';

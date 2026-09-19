@@ -20,7 +20,7 @@ describe('projection schema inference', () => {
     const document = createDocument({ schema: model, initial: { people: { a: { name: 'A' } } } });
     const people = observe(document, path => path.people);
     const runtime = createProjectionRuntime();
-    const value = runtime.get(people);
+    const value = runtime.read(people);
     expectTypeOf(value.get('a')).toEqualTypeOf<Model['people'][string] | undefined>();
     expect(value.get('a')?.name).toBe('A');
     document.dispose();
@@ -41,12 +41,12 @@ describe('projection schema inference', () => {
     const item = observe(document, path => path.items.item('a'));
     const plain = observe(document, path => path.plain);
     const runtime = createProjectionRuntime();
-    const collection = runtime.get(items);
+    const collection = runtime.read(items);
     expectTypeOf(collection.get('a')).toEqualTypeOf<Model['items'][number] | undefined>();
-    expectTypeOf(runtime.get(item)).toEqualTypeOf<Model['items'][number] | undefined>();
+    expectTypeOf(runtime.read(item)).toEqualTypeOf<Model['items'][number] | undefined>();
     expect(collection.get('a')?.n).toBe(1);
-    expect(runtime.get(item)?.n).toBe(1);
-    expect(runtime.get(plain)).toEqual([{ id: 'p', n: 2 }]);
+    expect(runtime.read(item)?.n).toBe(1);
+    expect(runtime.read(plain)).toEqual([{ id: 'p', n: 2 }]);
     document.dispose();
     runtime.dispose();
   });
@@ -74,9 +74,9 @@ describe('projection schema inference', () => {
     const root = observe(document, path => path.required.rootId);
     const runtime = createProjectionRuntime();
     const observedNodes: ReadonlyMap<string, Model['required']['nodes'][string]> =
-      runtime.get(nodes);
-    const observedNode: Model['required']['nodes'][string] | undefined = runtime.get(node);
-    const observedRoot: string | undefined = runtime.get(root);
+      runtime.read(nodes);
+    const observedNode: Model['required']['nodes'][string] | undefined = runtime.read(node);
+    const observedRoot: string | undefined = runtime.read(root);
     expect(observedNodes.get('r')?.value).toBe(1);
     expect(observedNode?.value).toBe(1);
     expect(observedRoot).toBe('r');
@@ -98,12 +98,12 @@ describe('projection schema inference', () => {
     const missing = observe(document, path => path.sparse.nodes.item('missing'));
     const runtime = createProjectionRuntime();
 
-    expectTypeOf(runtime.get(maybe)).toEqualTypeOf<Model['maybe']>();
-    expectTypeOf(runtime.get(missing)).toEqualTypeOf<
+    expectTypeOf(runtime.read(maybe)).toEqualTypeOf<Model['maybe']>();
+    expectTypeOf(runtime.read(missing)).toEqualTypeOf<
       Model['sparse']['nodes'][string] | undefined
     >();
-    expect(runtime.get(maybe)).toBeUndefined();
-    expect(runtime.get(missing)).toBeUndefined();
+    expect(runtime.read(maybe)).toBeUndefined();
+    expect(runtime.read(missing)).toBeUndefined();
 
     document.update(draft => draft.sparse.insert('s', undefined));
     expect(document.snapshot().sparse.nodes.s).toEqual({ children: [], value: undefined });

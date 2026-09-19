@@ -25,17 +25,17 @@ const documentFor = () =>
   });
 
 describe('final projection API', () => {
-  it('keeps input definitions runtime-local and composes tuple dependencies', () => {
+  it('keeps input definitions runtime-local and composes named dependencies', () => {
     const n = input(1);
-    const doubled = derive([n], value => value * 2);
+    const doubled = derive({ n }, ({ n }) => n * 2);
     const first = createProjectionRuntime();
     const second = createProjectionRuntime();
 
-    expect(first.get(doubled)).toBe(2);
-    expect(second.get(doubled)).toBe(2);
-    first.set(n, 3);
-    expect(first.get(doubled)).toBe(6);
-    expect(second.get(doubled)).toBe(2);
+    expect(first.read(doubled)).toBe(2);
+    expect(second.read(doubled)).toBe(2);
+    first.update(n, 3);
+    expect(first.read(doubled)).toBe(6);
+    expect(second.read(doubled)).toBe(2);
 
     first.dispose();
     second.dispose();
@@ -45,7 +45,7 @@ describe('final projection API', () => {
     const document = documentFor();
     const rows = observe(document, path => path.tasks);
     const filter = input('open' as 'open' | 'done');
-    const visible = derive([rows, filter], (tasks, state) => {
+    const visible = derive({ rows, filter }, ({ rows: tasks, filter: state }) => {
       const result = new Map<string, { readonly title: string; readonly done: boolean }>();
       for (const [id, value] of tasks)
         if ((state === 'open' && !value.done) || (state === 'done' && value.done))
@@ -54,15 +54,15 @@ describe('final projection API', () => {
     });
     const runtime = createProjectionRuntime();
 
-    const current = runtime.get(rows);
+    const current = runtime.read(rows);
     expect(current.size).toBe(2);
     expect(current.get('a')?.title).toBe('Write');
     expect([...current.keys()]).toEqual(['a', 'b']);
     expect('set' in current).toBe(false);
-    expect(runtime.get(visible).size).toBe(1);
+    expect(runtime.read(visible).size).toBe(1);
 
-    runtime.set(filter, 'done');
-    expect([...runtime.get(visible).keys()]).toEqual(['b']);
+    runtime.update(filter, 'done');
+    expect([...runtime.read(visible).keys()]).toEqual(['b']);
     document.dispose();
     runtime.dispose();
   });
@@ -70,36 +70,49 @@ describe('final projection API', () => {
   it('supports whole-document snapshots and readable bridges', () => {
     const document = documentFor();
     const snapshot = observe(document);
-    const title = derive([snapshot], value => value.title);
+    const title = derive({ snapshot }, ({ snapshot }) => snapshot.title);
     const directTitle = observe(document, path => path.title);
     const runtime = createProjectionRuntime();
-    expect(runtime.get(title)).toBe('Launch');
-    expect(runtime.get(directTitle)).toBe('Launch');
+    expect(runtime.read(title)).toBe('Launch');
+    expect(runtime.read(directTitle)).toBe('Launch');
     document.update(draft => {
       draft.title = 'Done';
     });
-    expect(runtime.get(title)).toBe('Done');
-    expect(runtime.get(directTitle)).toBe('Done');
+    expect(runtime.read(title)).toBe('Done');
+    expect(runtime.read(directTitle)).toBe('Done');
     runtime.dispose();
     document.dispose();
   });
 
   it('publishes one invalidation for a batch and keeps listener failures outside writes', () => {
     const value = input(1);
-    const doubled = derive([value], n => n * 2);
+    const doubled = derive({ value }, ({ value }) => value * 2);
     const runtime = createProjectionRuntime({ onError: () => undefined });
     const listener = vi.fn(() => {
       throw new Error('observer');
     });
-    runtime.get(doubled);
-    const stop = runtime.readable(doubled).subscribe(listener);
-    runtime.batch({ cause: { action: 'edit' } }, () => {
-      runtime.set(value, 2);
-      runtime.set(value, 3);
-    });
-    expect(runtime.get(doubled)).toBe(6);
+    runtime.read(doubled);
+    const stop = runtime.select(doubled).subscribe(listener);
+    runtime.batch(
+      () => {
+        runtime.update(value, 2);
+        runtime.update(value, 3);
+      },
+      { cause: { action: 'edit' } }
+    );
+    expect(runtime.read(doubled)).toBe(6);
     expect(listener).toHaveBeenCalledTimes(1);
     stop();
+    runtime.dispose();
+  });
+
+  it('accepts the final callback-first batch contract', () => {
+    const runtime = createProjectionRuntime();
+    expect(runtime.batch(() => 42, { cause: 'typed' })).toBe(42);
+    if (false) {
+      // @ts-expect-error options-first batch is not part of the public contract
+      runtime.batch({ cause: 'legacy' }, () => undefined);
+    }
     runtime.dispose();
   });
 });

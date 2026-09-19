@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { equal } from '../src/order/sequence';
 import { copyValue } from '../src/schema/value';
 import { field, object } from '../src';
+import { schemaNodeOf } from '../src/schema';
 import { startProfile } from '../src/profile';
 
 describe('runtime profile', () => {
   it('collects counters only inside an explicit session', () => {
     const session = startProfile();
-    copyValue(object({ nested: field<number[]>() }), { nested: [1, 2, 3] });
+    copyValue(schemaNodeOf(object({ nested: field<number[]>() })), { nested: [1, 2, 3] });
     expect(equal(['a', 'b'], ['a', 'b'])).toBe(true);
     const snapshot = session.stop();
     expect(snapshot.copy.structures).toBe(1);
@@ -24,7 +25,7 @@ describe('runtime profile', () => {
   });
 
   it('keeps the inactive path free of recorded work and freezes nested snapshots', () => {
-    copyValue(object({ outside: field<boolean>() }), { outside: true });
+    copyValue(schemaNodeOf(object({ outside: field<boolean>() })), { outside: true });
     const session = startProfile();
     const snapshot = session.snapshot();
     expect(snapshot.copy.structures).toBe(0);

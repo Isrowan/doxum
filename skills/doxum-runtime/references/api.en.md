@@ -1,49 +1,54 @@
 # Public API Reference
 
-Use this as the compact lookup for supported public APIs. The guide and patterns explain
-design choices; the projection reference explains incremental behavior.
+Use this as the compact public-contract lookup. For projection lifecycle and examples,
+read [projections](projections.en.md); for modeling choices, read the [guide](guide.en.md).
 
 ## Package entry points
 
-| Package            | Purpose                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| `doxum`            | schema, document runtime, reads, history, impact, projections |
-| `doxum/advanced`   | retained-state and multi-output projection processors         |
-| `doxum/react`      | React adapters                                                |
-| `doxum/local-sync` | browser-local persistence and leader/follower coordination    |
+| Package            | Purpose                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `doxum`            | schema, canonical document runtime, reads, history, impact, projections |
+| `doxum/advanced`   | retained-state and multi-output projection processors                   |
+| `doxum/react`      | React adapters over Core capabilities                                   |
+| `doxum/local-sync` | IndexedDB persistence and browser leader/follower coordination          |
 
 ## `doxum`
 
 ### Schema
 
-| API                       | Contract                                                   |
-| ------------------------- | ---------------------------------------------------------- |
-| `field<T>(validator?)`    | Atomic payload; replace as one value.                      |
-| `optional(node)`          | Optional field/variant/map/list/tree member.               |
-| `object(shape)`           | Fixed declared members; extra own properties are rejected. |
-| `variant(tag, variants)`  | Tagged union; replace the variant to switch branch.        |
-| `map(value, { key }?)`    | Dynamic keyed record.                                      |
-| `table(entity, { key }?)` | Ordered keyed entities stored as `{ ids, byId }`.          |
-| `list(field, { keyOf })`  | Ordered array with stable string identity.                 |
-| `tree(field)`             | Empty-or-single-root tree with reciprocal topology.        |
+| API                       | Contract                                                               |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `field<T>(validator?)`    | Atomic payload. Replace whole; payload interior is readonly.           |
+| `optional(schema)`        | Optional field/variant/map/list/tree member.                           |
+| `object(shape)`           | Fixed declared members; returns opaque `ObjectSchema<T>`.              |
+| `variant(tag, variants)`  | Tagged union of object branches.                                       |
+| `map(value, { key }?)`    | Dynamic keyed record.                                                  |
+| `table(entity, { key }?)` | Ordered keyed object/variant entities stored as `{ ids, byId }`.       |
+| `list(field, { keyOf })`  | Ordered array with stable string identity.                             |
+| `tree(field)`             | Empty-or-single-root tree; optional field means optional node payload. |
+| `parse(schema, input)`    | Validate unknown input and copy schema structure.                      |
 
-Common schema types: `Infer`, `ReadonlyValue`, `Validator`, `SchemaPath`,
-`PathValueOf`, `DocumentAnchor`, `DocumentTreeNode`, `DocumentTreeValue`, and the
-exported `*Node` types. `parse(schema, input)` validates and returns plain `Infer`
-data while atomic payload references remain shared and readonly by contract.
+Public schema types are `Schema<T>`, `ObjectSchema<T>`, `Infer<S>`, `ReadonlyValue<T>`,
+`Validator<T>`, `SchemaPath<S>`, `PathValueOf<P>`, `DocumentAnchor`,
+`DocumentListConfig<T>`, `DocumentTreeNode<T>` and `DocumentTreeValue<T>`.
+Concrete node representation types are internal.
 
-Collection Draft methods:
+`Validator<T>` is validation-only. A function validator is a predicate/assertion:
+`true` or `undefined` succeeds, `false` rejects, and an assertion may throw.
+A Standard Schema validator must return the original value by identity on success;
+transformed output is rejected. Validators are synchronous and must not mutate input.
 
-| Container | Read                                         | Write                                                                         |
-| --------- | -------------------------------------------- | ----------------------------------------------------------------------------- |
-| map       | `get`, `has`, `ids`                          | `put`, `remove`, `replace(next)`                                              |
-| table     | `get`, `has`, `ids`                          | `create`, `remove`, `move`, `reorder`, `replace(id, value)`, `replace(next)`  |
-| list      | `get`, `has`, `ids`                          | `insert`, `remove`, `move`, `reorder`, `replace(key, value)`, `replace(next)` |
-| tree      | `rootId`, `get`, `has`, `parent`, `children` | `insert`, `move`, `remove`, `replace(id, value)`, `replace(next)`             |
+Draft collection methods:
 
-`replace(parent, key, value)` replaces one object/variant member with its plain `Infer`
-value, especially when its Draft contains collection methods. `document.replace(...)`
-is different: it resets the whole document.
+| Container | Read                                         | Write                                                                        |
+| --------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| map       | `get`, `has`, `ids`                          | `put`, `remove`, `replace(next)`                                             |
+| table     | `get`, `has`, `ids`                          | `create`, `remove`, `move`, `reorder`, `replace(id,value)`, `replace(next)`  |
+| list      | `get`, `has`, `ids`                          | `insert`, `remove`, `move`, `reorder`, `replace(key,value)`, `replace(next)` |
+| tree      | `rootId`, `get`, `has`, `parent`, `children` | `insert`, `move`, `remove`, `replace(id,value)`, `replace(next)`             |
+
+`replace(parent, key, value)` replaces one object/variant member with plain `Infer` data.
+`document.replace(value)` is a whole-document reset and remains a separate operation.
 
 ### Document runtime
 
@@ -51,169 +56,159 @@ is different: it resets the whole document.
 const document = createDocument({ schema, initial, history: { capacity: 100 } });
 ```
 
-`DocumentRuntime` exposes:
+`DocumentRuntime<S>` exposes:
 
-- `revision()` and `snapshot()`;
+- `schema`, `revision()`, `snapshot()` and `readonly()`;
 - `update(run, { source?, history? }?)` for synchronous atomic Draft work;
-- `apply(changes, { expectedRevision, source?, history? })`;
+- `apply(changes, { expectedRevision, source?: 'local' | 'system', history? })`, or
+  `apply(changes, { expectedRevision, source: 'remote' })` for remote replay;
 - `replace(value, { source? }?)` for a whole-document reset;
-- `subscribe(listener)` or `subscribe(path | paths, listener)`;
+- `subscribe(listener)` and `subscribe(path | paths, listener)`;
 - `history.undo()`, `redo()`, `clear()`, `group()`;
 - `dispose()`.
 
-`update` returns `TransactionResult`; `apply`, whole-document `replace`, history travel,
-and group cancellation return `OperationResult`. Handle `committed | unchanged |
-rejected`. Throw `TransactionRejected` for expected business rejection inside `update`;
-ordinary exceptions roll back and rethrow.
+`document.readonly()` returns `ReadonlyDocument<S>`, which has only `revision()` and
+document commit/path subscriptions. It is the capability-stripped document boundary.
 
-Document/runtime errors are `TransactionRejected`, `DocumentReentrancyError`, and
-`DocumentDisposedError`. Parsing failures use `ParseError` with `ParseIssue[]`.
+`update` returns `TransactionResult`; `apply`, whole-document `replace`, history travel
+and group cancellation return `OperationResult`. Result status is `committed`,
+`unchanged`, or `rejected`. Throw `TransactionRejected` for expected application
+rejection. Ordinary thrown values roll back and rethrow unchanged.
 
-History grouping:
+Document errors are `TransactionRejected`, `DocumentReentrancyError` and
+`DocumentDisposedError`. Parsing failures use `ParseError` with `ParseIssue` data.
 
-```ts
-const group = document.history.group();
-// local commits
-group.end(); // one undo unit
-// or group.cancel();
-```
+### Reads and subscriptions
 
-### Read boundaries
+| API                                     | Contract                                                  |
+| --------------------------------------- | --------------------------------------------------------- |
+| `read(document, selector)`              | One synchronous borrowed `Read`.                          |
+| `select(document, selector, equality?)` | Dynamic read-tracked `Readable<TResult>`.                 |
+| `snapshot(value)`                       | Export borrowed schema structure as stable readonly data. |
 
-| API                                     | Contract                                                    |
-| --------------------------------------- | ----------------------------------------------------------- |
-| `read(document, selector)`              | One synchronous borrowed `Read`.                            |
-| `select(document, selector, equality?)` | Dynamic read-tracked `Readable<TResult>`.                   |
-| `snapshot(scopedValue)`                 | Convert a borrowed Read/Draft value to plain readonly data. |
-| `asReadable(document)`                  | Narrow `DocumentRuntime` to `DocumentReadable`.             |
+`Readable<T>` has `current()`, `revision()` and `subscribe(listener)`.
+`select` rebinds dependencies when selector control flow changes and suppresses
+publication when `equality` reports the selected result unchanged.
 
-`Readable<T>` has `current()`, `revision()`, `subscribe(listener)`.
-
-Commits expose `revision`, `source`, `changes`, `impact`. `DocumentImpact` has
-`affects(path => ...)` and `collection(path => collectionPath)`; collection impact is
-either `reset` or exact `added`, `removed`, `updated`, `orderChanged` facts. Public
-boundary types include `ChangeSet`, `Change`, `MemberChange`, `DocumentCommit`,
-`DocumentImpact`, `CollectionImpact`, `MutationIssue`, and the result types.
+A commit has `revision`, `source`, `changes`, `impact`. Public change/impact types include
+`ChangeSet`, `Change`, `MemberChange`, `ValueTransition`, `DocumentCommit`,
+`DocumentImpact`, `CollectionImpact`, `MutationIssue` and result/diagnostic types.
 
 ### Projections
 
 ```ts
-const mode = input('compact');
-const overrides = input.collection<string, Override>();
+const mode = input<'all' | 'open'>('all');
+const selection = input.collection<RowId, Selection>();
 const rows = observe(document, path => path.rows);
-const count = derive([rows], rows => rows.size);
+const count = derive({ rows }, ({ rows }) => rows.size);
 ```
 
-| API                                             | Contract                                                   |
-| ----------------------------------------------- | ---------------------------------------------------------- |
-| `input(initial, equality?)`                     | Runtime-local writable scalar.                             |
-| `input.collection<K,V>(initial?)`               | Runtime-local writable keyed collection.                   |
-| `observe(document)`                             | Whole-document projection.                                 |
-| `observe(document, path => ...)`                | Schema-path scalar or keyed collection projection.         |
-| `observe(readable)`                             | Adapt a Doxum `Readable`.                                  |
-| `observe(externalSource)`                       | Adapt exported external value/collection source contracts. |
-| `derive(dependencies, compute, equality?)`      | Pure scalar/aggregate projection.                          |
-| `derive.keyed(driver, select, equality?)`       | Preserve driver membership/order and map each entry.       |
-| `derive.keyed(driver, deps, select, equality?)` | Named dependencies; selector is `(entry, deps, key)`.      |
+| API                                             | Contract                                                            |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| `input(initial, equality?)`                     | Runtime-local writable scalar `Input<T>`.                           |
+| `input.collection<K,V>(initial?, equality?)`    | Runtime-local keyed `CollectionInput<K,V>` with per-entry equality. |
+| `observe(document)`                             | Whole-document Projection source.                                   |
+| `observe(document, path => ...)`                | Schema-path scalar or keyed Projection source.                      |
+| `observe(readable)`                             | Adapt a Doxum `Readable`.                                           |
+| `observe(externalSource)`                       | Adapt exported external value/collection source contracts.          |
+| `derive(dependencies, compute, equality?)`      | Pure value Projection with named dependencies.                      |
+| `derive.keyed(driver, select, equality?)`       | Preserve driver keys/order and project each entry.                  |
+| `derive.keyed(driver, deps, select, equality?)` | Keyed projection with named global/dynamic keyed dependencies.      |
 
-A dynamic keyed dependency is a named member
-`{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey }`. Missing source
-entries resolve to `undefined` but stay bound so a later add invalidates dependents.
+Dynamic keyed dependency syntax is
+`{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }`.
+The Runtime owns output-key to source-key bindings and reverse invalidation. This helper
+shape is inferred at the call site; no dedicated public helper type is required.
+Keyed selectors keep stable leading arguments: `(value, key)` without extra dependencies
+and `(value, key, dependencies)` when the named dependency object is present.
 
-`ProjectionRuntime` / `ProjectionScope` expose `get`, `readable`, scalar `set`, keyed
-`update`, `batch`, and `dispose`; Runtime also has `scope()`. Keyed `update` drafts expose
-`get`, `has`, `set`, `remove`. Scope also owns scoped `input`, `derive`, `incremental`.
-`createProjectionRuntime({ onError })` reports `ProjectionError`; disposed scoped
-projections raise `ProjectionDisposedError`.
+`ProjectionRuntime` exposes:
 
-External contracts are exported as `ExternalValueSource/Event` and
-`ExternalCollectionSource/Event/Read`. The Runtime converts collection events into the
-canonical `CollectionChange` protocol.
+- `read(projection)`;
+- `select(projection)` and `select(projection, selector, equality?)`;
+- `update(input, nextValue)` for scalar `Input<T>`;
+- `update(collectionInput, draft => ...)` for `CollectionInput<K,V>`;
+- `batch(run, { cause? }?)`;
+- `scope()`;
+- `dispose()`.
 
-An external value source has `kind: 'value'`, `current()`, `revision()`, and
-`subscribe(listener)` where events carry `value`, `revision`, optional `reset`/`cause`.
-An external collection source has `kind: 'collection'`; `current()` and event `previous`
-reads expose `get`, `has`, `ids`, while events carry `revision`, optional `impact` and
-`cause`. `KeyedDependency` names the dynamic `{ source, key }` member when an explicit
-annotation is useful.
+`CollectionInputDraft` exposes `get`, `has`, `set`, `remove`. A throwing edit callback
+applies none of that edit. `ProjectionScope` mirrors `read`, `select`, `update`, `batch`,
+`dispose` and adds `own(projectionOrTree)` for lifecycle ownership of scalar/keyed inputs,
+derives and advanced output trees. One definition can belong to only one scope; call
+`own` before that definition is first materialized as a root.
 
-### Public type groups
+Public projection types are `Projection<T>`, `Input<T>`, `CollectionInput<K,V>`,
+`CollectionInputDraft<K,V>`, `ProjectionRuntime`, `ProjectionScope`, plus the external
+source/event contracts. `ProjectionError` exposes only `phase` and `cause`;
+`ProjectionDisposedError` represents disposed access.
 
-- Schema: `DocumentAddress`, `DocumentAnchor`, `DocumentListConfig`, `DocumentNode`,
-  all `*Node` types, `Infer`, `ReadonlyValue`, `SchemaPath`, `PathValueOf`, `Validator`.
-- Access/runtime: `Read`, `Draft`, `Readable`, `DocumentReadable`, `DocumentRuntime`,
-  `DocumentSelector`, `CommitSource`, `DocumentCommit`, `HistoryState`, `LocalHistory`,
-  `TransactionResult`, `OperationResult`, `ObserverError`, `Unsubscribe`.
-- Changes/diagnostics: `ChangeSet`, `Change`, `MemberChange`, `ValueTransition`,
-  `DocumentImpact`, `CollectionImpact`, `DocumentDiagnostic`, `DocumentProblem`,
-  `MutationIssue`, `MutationIssueCode`, `ParseIssue`.
-- Projections: `Projection`, `Input`, `CollectionChange`, `ProjectionRuntime`,
-  `ProjectionScope`, `KeyedDependency`, and the external source/event types.
+External value sources expose `kind: 'value'`, `current()`, `revision()`, `subscribe()`.
+External collection sources expose `kind: 'collection'` plus `get/has/ids` reads and
+optional `CollectionImpact` invalidation hints; the adapter derives exact
+`CollectionChange` transitions.
 
 ## `doxum/advanced`
 
-Use `incremental` only when `derive` / `derive.keyed` cannot express retained state,
-cross-key indexes, or direct keyed patches.
+Use advanced processors only when `derive` / `derive.keyed` cannot express retained
+state, cross-key indexes, or direct incremental output patching.
 
-### `incremental(dependencies, processor)`
-
-Produces one value projection. Context fields: `sources`, dependency-aligned `changes`,
-`previous`, `reset`, `cause`, `state`. Return the next value.
-
-### `incremental.collection(dependencies, processor)`
-
-Adds `previous`, `next`, `output` for one keyed output. `previous`/`next` expose
-`get`, `has`, `ids`; `output` exposes `set`, `remove`, `order`.
-
-### `incremental.group(dependencies, defineOutputs, processor)`
+All advanced functions use named dependencies and a closed definition object.
 
 ```ts
-const render = incremental.group(
-  [scene],
-  define => ({
-    node: {
-      shell: define.collection<NodeId, Shell>(),
-      content: define.collection<NodeId, Content>(),
-    },
-    count: define.value<number>(),
-  }),
-  ({ sources, previous, next, outputs, state, reset, cause, changes }) => {
-    // outputs.node.shell/content: set/remove/order
-    // outputs.count: set(value)
+const total = incremental(
+  { rows },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ values, changes, previous, reset, cause, state }) => nextValue,
   }
 );
 ```
 
-`define` is the `incremental.group` declaration callback parameter, not a separate
-import. It provides exactly:
+`incremental.collection(dependencies, { process, state? })` adds keyed `previous`,
+`next`, and borrowed `output` with `set`, `remove`, `order`. `state()` is declared only
+when retained state is needed; stateless process contexts do not contain `state`.
 
-- `define.value<T>(equality?)` — scalar output leaf;
-- `define.collection<K extends string, V>(equality?)` — keyed collection output leaf.
+`incremental.group(dependencies, { output, process, state? })` declares several leaves:
 
-The declaration synchronously returns a non-empty static plain-object tree. Every
-declared leaf must be returned exactly once; descriptors cannot be reused. The result
-has the same shape with each leaf replaced by a `Projection`.
+```ts
+const view = incremental.group(
+  { rows },
+  {
+    output: define => ({
+      cards: define.collection<RowId, Card>(),
+      count: define.value<number>(),
+    }),
+    state: () => ({ runs: 0 }),
+    process: ({ values, changes, previous, next, output, reset, cause, state }) => {},
+  }
+);
+```
 
-The group processor receives the common context fields plus shape-matched `previous`,
-`next`, `outputs`. Value output drafts expose `set(value)`; collection output drafts
-expose `set`, `remove`, `order`. Initial build/recovery must establish every value leaf;
-ordinary incremental runs may leave a value leaf untouched.
+`define.collection<K,V>(equality?)` and `define.value<T>(equality?)` exist only inside
+`output`. The returned static object tree is mirrored with ordinary `Projection` leaves.
+Every declared descriptor must be returned exactly once.
 
-Public types include `Incremental*Context`, `Incremental*Processor`,
-`IncrementalGroupDefine`, `IncrementalGroupOutputTree`, `GroupProjections`, and
-`CollectionChange`.
+Normal source resets preserve retained state when declared. If a processor faults, the
+Runtime owns recovery: it recreates declared state and runs a reset evaluation. Stateless
+processors use the same recovery path without a state object. There is no public rebuild
+token or manual recovery protocol.
+
+Exported advanced helper types are the value/collection/group context and definition
+types plus `CollectionChange`; internal scheduler/output declaration plumbing is not
+part of the public contract.
 
 ## `doxum/react`
 
-| API                                                     | Contract                                             |
-| ------------------------------------------------------- | ---------------------------------------------------- |
-| `ProjectionProvider`                                    | Provides a `ProjectionRuntime` or `ProjectionScope`. |
-| `useProjection(projection)`                             | Read a projection value.                             |
-| `useProjection(projection, selector, equality?)`        | Selected projection read.                            |
-| `useInput(input)`                                       | `[value, setValue]` for a scalar input.              |
-| `useDocumentSelector(document, selector, { isEqual? })` | React adapter over Core `select`.                    |
-| `useReadable(readable)`                                 | Subscribe to any Doxum `Readable`.                   |
-| `useHistory(history)`                                   | History state plus `undo` / `redo`.                  |
+| API                                                  | Contract                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| `ProjectionProvider`                                 | Provide `ProjectionRuntime` or `ProjectionScope`.              |
+| `useProjection(projection)`                          | Read a Projection.                                             |
+| `useProjection(projection, selector, equality?)`     | Selected Projection read.                                      |
+| `useInput(input)`                                    | Scalar `[value, setValue]` or collection `[map, updateDraft]`. |
+| `useDocumentSelector(document, selector, equality?)` | React adapter over Core document `select`.                     |
+| `useReadable(readable)`                              | Subscribe to any Doxum `Readable`.                             |
+| `useHistory(history)`                                | History state plus `undo` / `redo`.                            |
 
 ## `doxum/local-sync`
 
@@ -228,17 +223,17 @@ const sync = await attachLocalSync({
 });
 ```
 
-`LocalSync` exposes `state: Readable<LocalSyncState>`, `flush()`, async `dispose()`.
-State is `leader`, `follower`, `error`, or `disposed`; active states include `headSeq`
-and `checkpointSeq`. Only the leader writes while attached. Whole-document replace and
-externally supplied remote apply are unsupported while attached.
+`LocalSync` exposes `state: Readable<LocalSyncState>`, `flush()` and async `dispose()`.
+Only the leader may write while attached. Whole-document replace and externally supplied
+remote apply are unsupported while attached.
 
-`JsonChangeLimits` has `maxChanges`, `maxBytes`, `maxDepth`, `maxStringLength`;
-`defaultJsonChangeLimits` is `{ maxChanges: 1000, maxBytes: 1_000_000, maxDepth: 64,
-maxStringLength: 256_000 }`. `schemaVersion` defaults to `1`. Limits admit new local
-commits only; durable replay does not reapply them. The environment must provide
-IndexedDB, Web Locks and BroadcastChannel; persisted values must be JSON-compatible.
+`LocalSyncError` is the single public operational error class. Its `code` is one of
+`unavailable`, `schema-mismatch`, `consistency`, `read-only`, `unsupported-operation`,
+`disposed`, `invalid-data`.
+`LocalSyncState` error states carry `LocalSyncError`, and `onError` receives the same
+operational error contract. Consumer state-listener exceptions are isolated from sync
+fault state and `onError`.
 
-Operational errors: `LocalSyncUnavailableError`, `LocalSyncSchemaError`,
-`LocalSyncConsistencyError`, `LocalSyncReadOnlyError`,
-`LocalSyncUnsupportedOperationError`, `LocalSyncDisposedError`, `LocalSyncDataError`.
+`JsonChangeLimits` contains `maxChanges`, `maxBytes`, `maxDepth`, `maxStringLength`.
+`defaultJsonChangeLimits` supplies defaults. Limits admit new local commits only;
+durable replay remains readable under smaller current limits.

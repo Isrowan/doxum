@@ -5,19 +5,13 @@ import type { CollectionChange, CollectionRead } from '../contract';
 import { ProjectionDisposedError, ProjectionError } from '../contract';
 import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '../graph/scheduler';
 import { createValueOutput, type ValueOutputState } from '../output/value';
-
-export type KeyedInputDraft<K extends string, V> = {
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  set(key: K, value: V): void;
-  remove(key: K): void;
-};
+import type { CollectionInputDraft } from '../definition';
 
 export type SourceWrite =
   | { readonly kind: 'value'; set(value: unknown): void }
   | {
       readonly kind: 'collection';
-      update(run: (draft: KeyedInputDraft<string, unknown>) => void): void;
+      update(run: (draft: CollectionInputDraft<string, unknown>) => void): void;
     };
 
 export type SourceMaterialization = {
@@ -45,8 +39,7 @@ export type CollectionBoundary = SourceMaterialization & {
   readonly detach: (cleanup: Unsubscribe) => void;
 };
 
-const sourceError = (source: SourceBoundaryRecord, cause: unknown): ProjectionError =>
-  new ProjectionError('source', source.name, [source.outputs[0].revision()], cause);
+const sourceError = (cause: unknown): ProjectionError => new ProjectionError('source', cause);
 
 export const createValueBoundary = (
   scheduler: Scheduler,
@@ -151,7 +144,7 @@ export const createValueBoundary = (
     scheduler.capture(boundary);
   };
   const fail = (cause: unknown) => {
-    boundary.fault = sourceError(boundary, cause);
+    boundary.fault = sourceError(cause);
     recovering = false;
     scheduler.capture(boundary);
   };
@@ -341,7 +334,7 @@ export const createCollectionBoundary = (
     scheduler.capture(boundary);
   };
   const fail = (cause: unknown) => {
-    boundary.fault = sourceError(boundary, cause);
+    boundary.fault = sourceError(cause);
     recovering = false;
     scheduler.capture(boundary);
   };

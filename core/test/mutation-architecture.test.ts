@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDocument, field, list, map, object, table, type ChangeSet } from '../src';
-import { type ImpactTarget } from '../src/schema';
+import { schemaNodeOf, type ImpactTarget } from '../src/schema';
 import { startProfile } from '../src/profile';
 import { SubscriptionIndex } from '../src/impact/target';
 import { MutationSession } from '../src/mutation/session';
@@ -9,13 +9,14 @@ import { jsonChanges } from '../src/local-sync/json';
 describe('grouped mutation architecture', () => {
   it('refreshes retained member handles across commands and rejects foreign sessions', () => {
     const schema = object({ rows: map(object({ n: field<number>() })) });
-    const state = { schema, document: { rows: { a: { n: 0 } } } };
+    const node = schemaNodeOf(schema);
+    const state = { schema: node, document: { rows: { a: { n: 0 } } } };
     const session = new MutationSession(state);
     const retained = session.resolveContainer(['rows', 'a']);
     session.replace(['rows', 'a'], { n: 1 });
     session.assignMember(retained, 'n', 2);
     expect(state.document.rows.a.n).toBe(2);
-    const foreign = new MutationSession({ schema, document: { rows: { a: { n: 9 } } } });
+    const foreign = new MutationSession({ schema: node, document: { rows: { a: { n: 9 } } } });
     expect(() => foreign.assignMember(retained, 'n', 3)).toThrow();
     session.rollback();
     expect(state.document.rows.a.n).toBe(0);
@@ -74,6 +75,7 @@ describe('grouped mutation architecture', () => {
   });
   it('keeps atomic collection updates in the same resolved generation and rejects foreign handles', () => {
     const schema = object({ values: map(field<number>()) });
+    const node = schemaNodeOf(schema);
     const runtime = createDocument({ schema, initial: { values: { a: 0 } }, history: false });
     runtime.update(d => {
       d.values.put('a', 0);
@@ -85,8 +87,8 @@ describe('grouped mutation architecture', () => {
     const counters = profile.stop();
     expect(counters.access).toMatchObject({ addresses: 1, resolutions: 1 });
     expect(counters.recorder).toMatchObject({ facts: 1, groups: 1, transitions: 1 });
-    const a = new MutationSession({ schema, document: { values: { a: 0 } } });
-    const b = new MutationSession({ schema, document: { values: { a: 0 } } });
+    const a = new MutationSession({ schema: node, document: { values: { a: 0 } } });
+    const b = new MutationSession({ schema: node, document: { values: { a: 0 } } });
     expect(() => b.assignMember(a.resolveContainer(['values']), 'a', 1)).toThrow(
       'another mutation session'
     );
@@ -143,7 +145,7 @@ describe('grouped mutation architecture', () => {
   it.each([false, true])(
     'bounds repeated nested writes independently of write count (changed=%s)',
     changed => {
-      const validate = vi.fn((n: unknown) => n as number);
+      const validate = vi.fn((n: unknown): n is number => typeof n === 'number');
       const runtime = createDocument({
         schema: object({ nested: object({ n: field(validate) }) }),
         initial: { nested: { n: 0 } },
@@ -247,9 +249,8 @@ describe('grouped mutation architecture', () => {
   it('restores all initial members when a child group is absorbed and a later member fails', () => {
     const schema = object({
       rows: map(object({ x: field<number>(), y: field<number>() })),
-      z: field((v: unknown) => {
+      z: field<number>((v: unknown) => {
         if (typeof v !== 'number') throw new Error('number');
-        return v;
       }),
     });
     const initial = { rows: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } }, z: 0 };
@@ -266,7 +267,7 @@ describe('grouped mutation architecture', () => {
       }).status
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual(initial);
-    const state = { schema, document: structuredClone(initial) };
+    const state = { schema: schemaNodeOf(schema), document: structuredClone(initial) };
     const session = new MutationSession(state);
     session.replace(['rows', 'a', 'x'], 9);
     session.replace([], { ...initial, z: 10 });
@@ -387,8 +388,8 @@ describe('exact subscription matching', () => {
       { kind: 'collection' as const, at },
       { kind: 'collection' as const, at, id: 'x' },
     ]);
-    targets.push({ kind: 'value', schema: otherSchema, address: [] });
-    const index = new SubscriptionIndex<number>(schema);
+    targets.push({ kind: 'value', schema: schemaNodeOf(otherSchema), address: [] });
+    const index = new SubscriptionIndex<number>(schemaNodeOf(schema));
     targets.forEach((target, i) => index.add(target, i));
     const prefix = (a: readonly string[], b: readonly string[]) =>
       a.length <= b.length && a.every((v, i) => v === b[i]);

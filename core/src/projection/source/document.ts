@@ -2,9 +2,10 @@ import * as address from '../../address/resolve';
 import * as impactTarget from '../../impact/target';
 import * as sequence from '../../order/sequence';
 import { contextOf } from '../../runtime/context';
-import type { DocumentCommit, DocumentReadable, Unsubscribe } from '../../runtime/contract';
+import type { ReadonlyDocument, Unsubscribe } from '../../runtime/contract';
 import { collectionEntryNode } from '../../schema';
-import type { DocumentTreeNode, ImpactTarget, ObjectNode } from '../../schema';
+import type { DocumentTreeNode, ImpactTarget, ObjectSchema } from '../../schema';
+import type { ChangeSet } from '../../changes';
 import * as schemaValue from '../../schema/value';
 import { isRecord } from '../../value/record';
 import type { CollectionRead } from '../contract';
@@ -33,7 +34,7 @@ import {
 
 type DocumentBinding = {
   readonly target: ImpactTarget;
-  capture(commit: DocumentCommit<ObjectNode>): void;
+  capture(commit: { readonly changes: ChangeSet }): void;
   dispose(): void;
 };
 
@@ -50,7 +51,9 @@ const documentRootTarget: ImpactTarget = Object.freeze({
 export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
   const documents = new Map<object, DocumentConnection>();
 
-  const connection = <S extends ObjectNode>(runtime: DocumentReadable<S>): DocumentConnection => {
+  const connection = <S extends ObjectSchema<object>>(
+    runtime: ReadonlyDocument<S>
+  ): DocumentConnection => {
     const context = contextOf<S>(runtime);
     const state = context.state;
     const cached = documents.get(state);
@@ -94,7 +97,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       capture: commit => {
         candidates.clear();
         index.collect(commit.changes, binding => candidates.add(binding));
-        candidates.forEach(binding => binding.capture(commit as DocumentCommit<ObjectNode>));
+        candidates.forEach(binding => binding.capture(commit));
       },
       settle: scheduler.settle,
       flush: scheduler.flush,
@@ -316,8 +319,8 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
 
   return {
     materialize,
-    attachRoot<S extends ObjectNode>(
-      runtime: DocumentReadable<S>,
+    attachRoot<S extends ObjectSchema<object>>(
+      runtime: ReadonlyDocument<S>,
       handlers: { readonly capture: () => void; readonly dispose: () => void }
     ): Unsubscribe {
       return connection(runtime).add({

@@ -2,14 +2,13 @@ import { contextOf } from '../../runtime/context';
 import type { Unsubscribe } from '../../runtime/contract';
 import type { ExternalCollectionSource } from '../contract';
 import { mapRead } from '../collection/view';
-import type { SourceDefinition } from '../definition';
+import type { CollectionInputDraft, SourceDefinition } from '../definition';
 import { createDocumentSourceRegistry } from './document';
 import { assertScope, assertSynchronous, type Scheduler } from '../graph/scheduler';
 import {
   createCollectionBoundary,
   createValueBoundary,
   type CollectionBoundary,
-  type KeyedInputDraft,
   type SourceMark,
   type SourceMaterialization,
   type ValueBoundary,
@@ -58,7 +57,8 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
   const collectionInput = (definition: SourceDefinition): SourceMaterialization => {
     if (definition.source.kind !== 'collection-input')
       throw new Error('Invalid collection input source.');
-    const values = new Map(definition.source.initial);
+    const source = definition.source;
+    const values = new Map(source.initial);
     const boundary = createCollectionBoundary(
       scheduler,
       'projection collection input',
@@ -81,7 +81,7 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
             | { readonly kind: 'remove'; readonly key: string }
           )[] = [];
           let active = true;
-          const draft: KeyedInputDraft<string, unknown> = Object.freeze({
+          const draft: CollectionInputDraft<string, unknown> = Object.freeze({
             get: key => {
               assertScope(() => active);
               const entry = staged.get(key);
@@ -117,7 +117,7 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
           for (const operation of operations) {
             const present = values.has(operation.key);
             if (operation.kind === 'set') {
-              if (present && Object.is(values.get(operation.key), operation.value)) continue;
+              if (present && source.equality(values.get(operation.key), operation.value)) continue;
               structural ||= !present;
               values.set(operation.key, operation.value);
             } else {

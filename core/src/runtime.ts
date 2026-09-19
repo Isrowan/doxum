@@ -1,5 +1,5 @@
-import type { ObjectNode, Infer, PathPick } from './schema';
-import { compilePath } from './schema';
+import type { Infer, ObjectSchema, PathPick, RootNodeOf } from './schema';
+import { compilePath, schemaNodeOf } from './schema';
 import { createImpact } from './impact';
 import { createHistory } from './history';
 import { createAccess, type Draft } from './access/scope';
@@ -20,32 +20,34 @@ import type {
   CommitSource,
   DocumentCommit,
   DocumentRuntime,
+  ReadonlyDocument,
   OperationResult,
   TransactionResult,
 } from './runtime/contract';
+import { readonlyDocument } from './runtime/readable';
 import { assertRuntimeWritable } from './runtime/driver';
 import { bindContext, type RuntimeContext, type RuntimeState } from './runtime/context';
 import { createNotificationCenter } from './runtime/notification';
 
-export const createDocument = <S extends ObjectNode>(input: {
+export const createDocument = <S extends ObjectSchema<object>>(input: {
   readonly schema: S;
   readonly initial: Infer<S>;
   readonly history?: { readonly capacity?: number } | false;
 }): DocumentRuntime<S> => {
-  if (input.schema.kind !== 'object')
-    throw new TypeError('Document schema must be a root object node.');
-  const invalid = schemaValue.checkValue(input.schema, input.initial);
+  const schema = schemaNodeOf(input.schema) as RootNodeOf<S>;
+  const invalid = schemaValue.checkValue(schema, input.initial);
   if (invalid) throw new schemaValue.ParseError(invalid);
   const state: RuntimeState<S> = {
-    schema: input.schema,
-    document: schemaValue.copyValue(input.schema, input.initial) as Infer<S>,
+    schema,
+    document: schemaValue.copyValue(schema, input.initial) as Infer<S>,
     disposed: false,
     projectionLocks: 0,
   };
   let revision = 0,
     busy = false;
-  const notifications = createNotificationCenter(input.schema);
+  const notifications = createNotificationCenter<S>(schema);
   let runtime!: DocumentRuntime<S>, context!: RuntimeContext<S>;
+  let readonlyAlias: ReadonlyDocument<S> | undefined;
   const idle = () => {
     if (state.disposed) throw new DocumentDisposedError();
     if (busy || state.projectionLocks) throw new DocumentReentrancyError();
@@ -80,7 +82,7 @@ export const createDocument = <S extends ObjectNode>(input: {
       revision: ++revision,
       source,
       changes,
-      impact: createImpact(input.schema, changes),
+      impact: createImpact<S>(schema, changes),
     };
     if (source === 'remote') history.invalidate();
     else if (recordHistory && (source === 'local' || source === 'system')) history.record(changes);
@@ -137,6 +139,7 @@ export const createDocument = <S extends ObjectNode>(input: {
   runtime = {
     schema: input.schema,
     revision: () => revision,
+    readonly: () => (readonlyAlias ??= readonlyDocument(runtime)),
     update: <V>(
       run: (draft: Draft<S>) => V,
       options?: { source?: Extract<CommitSource, 'local' | 'system'>; history?: boolean }
@@ -159,16 +162,18 @@ export const createDocument = <S extends ObjectNode>(input: {
       });
       return result.status === 'rejected' ? result : { ...result, value };
     },
-    apply: (inputChanges, options) =>
-      mutate(
-        { kind: 'apply', source: options?.source ?? 'local' },
-        options?.history ?? true,
+    apply: (inputChanges, options) => {
+      const source = options?.source ?? 'local';
+      return mutate(
+        { kind: 'apply', source },
+        source === 'remote' ? false : (options?.history ?? true),
         session => {
           if (!options || options.expectedRevision !== revision)
             issue.fail([], 'baseline-mismatch', 'apply requires the current expectedRevision.');
           replay.apply(session, changeSet.decodeChanges(inputChanges), 'forward');
         }
-      ),
+      );
+    },
     replace: (value, options) => {
       const source = options?.source ?? 'system';
       return mutate({ kind: 'replace', source }, source !== 'remote', session =>
@@ -177,7 +182,7 @@ export const createDocument = <S extends ObjectNode>(input: {
     },
     snapshot: () => {
       if (state.disposed) throw new DocumentDisposedError();
-      return schemaValue.copyValue(input.schema, state.document) as Infer<S>;
+      return schemaValue.copyValue(schema, state.document) as Infer<S>;
     },
     subscribe: ((
       pick: PathPick<S> | readonly PathPick<S>[] | CommitListener<S>,
@@ -188,7 +193,7 @@ export const createDocument = <S extends ObjectNode>(input: {
       const picks: readonly PathPick<S>[] = Array.isArray(pick) ? pick : [pick as PathPick<S>];
       if (!picks.length) throw new TypeError('Expected at least one subscription path.');
       return notifications.subscribeTargets(
-        picks.map(p => compilePath<S['shape']>(input.schema, 'value', p)),
+        picks.map(p => compilePath<S>(schema, 'value', p)),
         listener
       );
     }) as DocumentRuntime<S>['subscribe'],

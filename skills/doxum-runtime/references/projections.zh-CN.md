@@ -1,190 +1,231 @@
 # Projection 参考
 
-`input.collection`、Runtime/Scope 方法、external source 契约、全部 `incremental.*`
-形态以及 `define.value/collection` 的精确可调用 surface 见 [API 参考](api.zh-CN.md)。
-本文只解释 projection 的行为、所有权与增量语义。
+准确签名见 [API 参考](api.zh-CN.md)。这里说明 ownership、invalidation 与 recovery。
 
-根 Projection 定义惰性且可跨 Runtime 复用；scope 定义惰性但只属于其局部生命周期。默认入口包含 `Projection<T>`、
-`ProjectionRuntime`、`input`、`observe`、tuple 形式的 `derive` 和保持 key 的
-`derive.keyed`。
+## Ownership 与基础声明
+
+Projection definition 是惰性的。root definition 可跨多个 runtime 复用；scope definition
+属于一个 `ProjectionScope`。公开 `Projection<T>` 本身不保存 materialized value、
+retained state、subscription 或 disposal state。
 
 ```ts
 const tasks = observe(document, path => path.tasks);
 const filter = input<'all' | 'open'>('all');
-const visible = derive([tasks, filter], (tasks, filter) =>
-  filter === 'all' ? tasks : new Map([...tasks].filter(([, task]) => !task.done))
+const visible = derive({ tasks, filter }, ({ tasks, filter }) =>
+  filter === 'all' ? tasks : filterOpen(tasks)
 );
+
 const runtime = createProjectionRuntime({ onError: report });
-runtime.get(visible);
+runtime.read(visible);
 ```
 
-`input(initial, equality?)` 属于每个 Runtime，只能通过
-`runtime.set(input, value)` 写入。`observe(document, selector)` 延迟编译文档
-边界；集合路径发布只读 map-like 快照，省略 selector 时发布整个文档快照。
-现有 Doxum `Readable` 和带事件的 external source 也在这个边界接入。External
-source 通过 `kind: 'value'` 或 `kind: 'collection'` 区分语义，但调用方统一使用
-`observe(source)`。
+`ProjectionRuntime` 是 materialization、retained state、source attachment、settlement、
+publication 与 recovery 的唯一 owner。稳定 verb 为 `read`、`select`、overloaded
+`update`、`batch`、`scope`、`dispose`。
 
-schema map、table 和 `list(field, { keyOf })` 都是 keyed collection path。list
-直接使用 schema 的 `keyOf` 作为稳定 identity，并按文档顺序迭代；数组类型的普通
-`field(...)` 仍然是 scalar value observation。
-tree 结构复用相同的 source 类型：`path.tree.rootId` 是 scalar，
-`path.tree.nodes` 是 keyed collection，`path.tree.nodes.item(id)` 是单节点 value。
-tree 的 committed node group 直接路由到受影响的 keyed entry，由现有
-`CollectionOutput` 生成普通 `CollectionChange`；未变化节点的 snapshot identity
-保持稳定。
+`input(initial, equality?)` 是 scalar Runtime-local state；
+`input.collection(initial?, equality?)` 是 keyed Runtime-local application/UI state。
+两者都不进入 canonical document 的 history/persistence。
 
-External event 不再复用 Runtime context：value event 提供新 `value` 和
-`revision`；collection event 提供稳定的 `previous` read、`revision` 和可选的
-`impact` hint。Runtime 自己计算精确的 `CollectionChange`，processor 不会直接收到
-impact。
+## Source boundary
 
-`derive(dependencies, compute, equality?)` 使用 tuple，依赖在定义创建时固定。
-Processor 不能通过读取另一个 Projection 隐式建立图依赖。
+`observe` 是唯一 source declaration 入口，可接入：
 
-当一个 keyed collection 决定 output 的 membership 与 order 时使用
-`derive.keyed`：
+- whole `ReadonlyDocument` 或 schema-path selection；
+- Doxum `Readable<T>`；
+- 公开 external value/collection source contract。
+
+Document 的 `map`、`table`、`list(field, { keyOf })` selection 会成为 keyed projection。
+list identity 来自 schema `keyOf`；原子 array-valued field 仍是 scalar。
+
+Tree 复用同一套 source model：
 
 ```ts
-const labels = derive.keyed(entries, entry => entry.label);
+const rootId = observe(document, path => path.outline.rootId);
+const nodes = observe(document, path => path.outline.nodes);
+const node = observe(document, path => path.outline.nodes.item(nodeId));
 ```
 
-只有 added / updated 的 driver entry 执行 selector；removed 删除同 key output，
-纯 order 变化直接保持 driver 顺序，不重新计算未变化 entry。Collection output
-继续按每个 entry 的 equality 比较，因此 source entry 虽然 updated，但 selected
-value 相等时不会产生 output `updated`。首次物化、source reset 和故障恢复继续走
-ProjectionRuntime 原有 processor rebuild 生命周期。
+`rootId` 是 scalar，`nodes` 是 keyed，`item(id)` 是单 node value。同一次 document
+commit 影响的 source projection 会在同一个 Runtime causal batch 中 settle。
 
-跨 keyed collection 的动态 lookup 也使用同一个 derivation，不由应用层再维护 join
-协议：
+External collection impact 只是边界 invalidation hint。processor 看到之前，Runtime 会把
+它归一化为精确 `CollectionChange`。
+
+## Pure derive 与 keyed projection
+
+`derive(dependencies, compute, equality?)` 始终使用 named dependency object。
+definition 创建后依赖固定且显式。
+
+一个 keyed driver 拥有 output membership/order 时使用 `derive.keyed`：
 
 ```ts
-const resolved = derive.keyed(
-  links,
+const fieldValues = derive.keyed(records, record => record.values[fieldId]);
+```
+
+只有受影响 driver entry 会执行 selector。per-entry equality 判定 selected value 相等时，
+该 key 不发布 `updated`；added、removed、order 语义保持不变。
+
+Dynamic keyed lookup 仍使用同一个 API：
+
+```ts
+const cardContent = derive.keyed(
+  items,
   {
-    entity: { source: entities, key: link => link.entityId },
-    mode,
+    record: { source: records, key: item => item.recordId },
+    view: activeView,
+    fields: visibleFields,
   },
-  (link, { entity, mode }) => projectLink(link, entity, mode)
+  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
 );
 ```
 
-依赖形式使用命名对象，selector 形态为 `(entry, dependencies, key)`。普通 Projection
-成员使整个 driver key set 失效，`{ source, key }` 成员把每个 output key 绑定到动态
-source key。无额外依赖时仍使用
-`derive.keyed(source, (entry, key) => value, equality?)`。
+普通 Projection dependency 变化时使 driver key set 失效。`{ source, key }` 声明
+output-key → dynamic source-key dependency；Runtime 拥有 forward binding 和 reverse
+invalidation。selected source entry 缺失时仍保留 binding，因此以后新增该 source key
+会正确触发 dependent output key。
 
-source Projection 仍是静态 producer dependency，只有每个 output key 对应的
-source key 动态变化。物化后的 processor 拥有正向 binding 与 reverse index；一个
-source entry 更新只重算当前绑定它的 output keys。source entry 暂时不存在时仍保留
-binding，因此以后添加该 key 会正确唤醒依赖者。`mode` 这类普通 Projection
-依赖变化则使整个 driver key set 失效。不要为此增加 processor 内 `runtime.get()`
-追踪、wildcard document path grammar 或独立 join Runtime。
+这就是 keyed join 协议。不要再添加第二套 join abstraction、wildcard document path
+grammar 或 processor 内 imperative dependency discovery。
 
-Runtime 的公开脊柱只有：
+## Runtime 读取、更新与 scope
 
 ```ts
-runtime.get(projection);
-const selected = runtime.readable(projection, value => value.get(id));
-selected.subscribe(listener);
-runtime.set(input, value);
-runtime.update(collectionInput, draft => draft.set(id, value));
-runtime.batch({ cause }, run);
+const value = runtime.read(visible);
+const selected = runtime.select(visible, rows => rows.get(rowId), equality);
+const stop = selected.subscribe(listener);
+
+runtime.update(filter, 'open');
+runtime.update(selection, draft => {
+  draft.set(rowId, true);
+  draft.remove(previousRowId);
+});
+
+runtime.batch(run, { cause });
+```
+
+`select` 返回标准 `Readable`。keyed selector 追踪相关 key/structure 读取；只有发生
+相关 invalidation 后才执行 selector，随后 equality 决定是否发布结果。
+
+`CollectionInputDraft` 提供 `get`、`has`、`set`、`remove`，同步 edit callback 返回后
+失效。callback throw 时该次 edit 不应用。collection input equality 按 entry 比较，
+默认 `Object.is`；equal set 不替换存储值，也不发布。
+
+```ts
 const scope = runtime.scope();
+const localFilter = scope.own(input<'all' | 'open'>('all'));
+const local = scope.own(
+  derive({ tasks, filter: localFilter }, ({ tasks, filter }) =>
+    filter === 'all' ? tasks : filterOpen(tasks)
+  )
+);
+scope.read(local);
+scope.update(localFilter, 'open');
 scope.dispose();
-runtime.dispose();
 ```
 
-`input.collection<K, V>(initial?)` 声明 Runtime 本地 keyed 状态。`update` 的借用 draft
-提供 `get`、`has`、`set`、`remove`；单次 callback 同步且原子，Runtime batch 发布一次
-精确的净 `CollectionChange`。scope 用 `scope.input`、`scope.derive`、
-`scope.derive.keyed` 和 `scope.incremental` 声明局部投影，直接依赖同一 Runtime 中的根投影；dispose 只释放
-局部 producer、状态和订阅。
+scope 与 parent Runtime 共享 scheduler/materialization owner。`scope.own` 为 projection
+definition 或静态 nested projection tree 赋予 lifecycle。scoped definition 可以依赖
+root definition；root 或 sibling scope 不能依赖 scoped definition，同一个 definition
+也不能属于两个 scope。必须在 definition 首次作为 root materialize 之前确定 scope
+ownership。
 
-Runtime 的 scheduler/output internals、item handle、rebuild、release 都是内部事实，不是应用层操作；
-只有 `Readable` 自己的 publication revision 为 store 集成保留为公开事实。
-Materialization、keyed storage、故障恢复和释放只有一个 owner。
+## 唯一的 collection change 协议
 
-## 增量 Processor
-
-保持 key 的 selector 和声明式 dynamic keyed dependency 优先使用 `derive.keyed`。
-只有算法需要该模型无法表达的应用级 retained state、跨 key index 或 output patch 时，
-才从 `doxum/advanced` 引入增量 processor：
+所有 keyed projection source/output 都使用：
 
 ```ts
-const totalWeight = incremental([tasks], ({ sources, changes, previous, reset }) => {
-  const change = changes[0];
-  if (reset || change?.kind === 'reset')
-    return [...sources[0].values()].reduce((sum, task) => sum + task.weight, 0);
-  if (!change) return previous ?? 0;
-  let next = previous ?? 0;
-  for (const entry of change.added) next += entry.after.weight;
-  for (const entry of change.updated) next += entry.after.weight - entry.before.weight;
-  for (const entry of change.removed) next -= entry.before.weight;
-  return next;
-});
+type CollectionChange<K extends string, V> =
+  | { kind: 'reset' }
+  | {
+      kind: 'incremental';
+      added: readonly { key: K; after: V }[];
+      updated: readonly { key: K; before: V; after: V }[];
+      removed: readonly { key: K; before: V }[];
+      order?: { before: readonly K[]; after: readonly K[] };
+    };
+```
 
-const weights = incremental.collection([tasks], ({ sources, changes, output, reset }) => {
-  const change = changes[0];
-  if (reset || change?.kind === 'reset') {
-    for (const [id, task] of sources[0]) output.set(id, task.weight);
-    output.order([...sources[0].keys()]);
-    return;
-  }
-  if (!change) return;
-  for (const entry of change.added) output.set(entry.key, entry.after.weight);
-  for (const entry of change.updated) output.set(entry.key, entry.after.weight);
-  for (const entry of change.removed) output.remove(entry.key);
-  if (change.order) output.order([...sources[0].keys()]);
-});
+advanced processor 需要显式标注该 transport type 时，从 `doxum/advanced` 导入
+`CollectionChange`；root projection consumer 不需要从 package root 导入它。
 
-const render = incremental.group(
-  [selection],
-  define => ({
-    geometry: define.value<Geometry>(),
-    label: define.value<Label>(),
-  }),
-  ({ sources, outputs }) => {
-    const layout = computeLayout(sources[0]);
-    outputs.geometry.set(layout.geometry);
-    outputs.label.set(layout.label);
+initial materialization 和 source reset 对 advanced processor 报告 `reset`。
+incremental transition 是 settle 后 batch 边界上的 exact net change。
+
+## Advanced processor
+
+只有 retained state、cross-key index 或直接 incremental output patch 无法用
+`derive` / `derive.keyed` 清晰表达时，才从 `doxum/advanced` 引入 `incremental`。
+
+所有 advanced processor 都使用 named dependencies，并且 `process` 必需。只有确实需要
+retained state 时才声明 `state()`：
+
+```ts
+const weights = incremental.collection(
+  { tasks },
+  {
+    state: () => ({ initialized: false }),
+    process: ({ values, changes, output, state, reset }) => {
+      if (reset) {
+        for (const [id, task] of values.tasks) output.set(id, task.weight);
+        output.order([...values.tasks.keys()]);
+        state.initialized = true;
+        return;
+      }
+
+      const change = changes.tasks;
+      if (!change || change.kind === 'reset') return;
+      for (const entry of change.added) output.set(entry.key, entry.after.weight);
+      for (const entry of change.updated) output.set(entry.key, entry.after.weight);
+      for (const entry of change.removed) output.remove(entry.key);
+      if (change.order) output.order([...values.tasks.keys()]);
+    },
   }
 );
 ```
 
-两种 processor context 都包含 `sources`、按依赖位置对齐的 `changes` tuple、
-`previous`、`reset`、`cause` 和持久 `state`。`changes[i]` 只对应第 `i` 个依赖：
-标量依赖为 `undefined`，集合依赖则是 `reset`，或带完整 `before`/`after` 值的
-`added`/`updated`/`removed` 分组，并可选提供 `order.before`/`order.after`。初次
-build 对集合依赖报告 `reset`；一次已提交的 batch 已经合并成一个净 transition。
-`sources` 内的集合值是 callback-local 的惰性 `ReadonlyMap` 视图，不能保存或直接
-返回。`get`/`has` 保持按 key 读取，迭代才显式扫描整个集合。
+`values`、`changes` 按 dependency 名称读取。scalar dependency 没有 collection change
+metadata。collection processor 额外提供 keyed `previous`、`next` 和 borrowed
+`output` draft。
 
-`incremental.collection(...)` 使用独立的 collection processor 协议，另外提供借用的
-`previous`/`next` keyed read，以及
-只在同步 callback 内有效的 `output` draft。Draft 只有 `set`、`remove`、`order`；
-Runtime 在 callback 返回后校验并 seal，计算 keyed transitions，发布
-一个不可变 map-like 值。reset 或故障恢复由 Runtime 内部完成。
-`incremental.group(...)` 是多个命名 value / keyed collection output 的组合边界。
-`define.value<T>(equality?)` 声明 scalar leaf，`define.collection<K, V>(equality?)`
-声明 keyed leaf。嵌套 namespace 只是静态 API 组织，不是新的 producer、Runtime、scheduler 或事件协议。
-每个叶子都是指向同一个 processor producer 某个 output 的普通 `Projection`；一次 processor 执行先 seal 所有 leaf，再原子发布真正
-变化的 leaf，下游直接依赖这些叶子。initial build / rebuild 必须 set 每个 value leaf；
-普通增量轮次可以不触碰 value leaf，此时保留其现值和 revision。首次读取任一叶子只会
-物化该 producer 一次；scope dispose 也只会释放该 producer 和其保留状态一次。
+多输出 processor 使用一个 closed group definition：
 
-## React selector 追踪
-
-```tsx
-const task = useProjection(visible, tasks => tasks.get(taskId));
-const [mode, setMode] = useInput(filter);
+```ts
+const render = incremental.group(
+  { tasks },
+  {
+    output: define => ({
+      shell: define.collection<RowId, Shell>(),
+      count: define.value<number>(),
+    }),
+    state: () => ({ runs: 0 }),
+    process: ({ values, output, state }) => {
+      state.runs++;
+      for (const [id, task] of values.tasks) output.shell.set(id, makeShell(task));
+      output.count.set(values.tasks.size);
+    },
+  }
+);
 ```
 
-`get`/`has` 记录单 key，`keys` 记录 key/order 结构，`values` 或迭代记录整个
-集合。无关 key 的更新不会执行 selector；相关更新后才执行 selector，并由
-`equality`（默认 `Object.is`）决定 readable 是否发布。这是消费端优化，不会反向
-构建 Projection processor 依赖。
+`define.collection<K,V>(equality?)`、`define.value<T>(equality?)` 只存在于 `output`
+callback 内。返回的静态 object tree 会映射为同一 producer 的普通 Projection leaves。
+initial build 和 Runtime recovery 必须建立每个 value leaf；普通 incremental run 中未触碰
+value leaf 会保留已发布值。
 
-Processor 先于 listener settle。通知期间禁止写入。listener 错误不会回滚已经
-接受的文档 commit；processor 错误交给 Runtime error callback，并由 Runtime
-内部恢复。
+普通 source reset 保留已声明的 retained state。processor fault 的恢复由 Runtime 完成：
+重新创建已声明的 state 并执行 reset evaluation；stateless processor 走同一恢复路径但没有
+state object。没有公开 rebuild token 或手工 recovery hook。
+
+## React
+
+`ProjectionProvider` 提供 Runtime 或 scope。`useProjection(projection, selector,
+equality?)` 使用同一套 Core selector 语义；`useInput` 同时支持 scalar/collection input。
+Document 读取独立使用：
+
+```ts
+const value = useDocumentSelector(document, selector, equality);
+```
+
+processor 先于 projection listener settle；processing/notifying 时禁止写。
+listener failure 不会 rollback 已接受的 document commit。

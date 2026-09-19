@@ -21,12 +21,12 @@ describe('projection optimization boundaries', () => {
     });
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
-    const before = runtime.get(rows);
+    const before = runtime.read(rows);
     const stable = before.get('a');
     document.update(draft => {
       draft.rows.get('b')!.value = 3;
     });
-    const after = runtime.get(rows);
+    const after = runtime.read(rows);
     expect(after.get('a')).toBe(stable);
     expect(after.get('b')?.value).toBe(3);
     document.dispose();
@@ -45,7 +45,7 @@ describe('projection optimization boundaries', () => {
     });
     const rows = observe(document, path => path.rows);
     const runtime = createProjectionRuntime();
-    runtime.get(rows);
+    runtime.read(rows);
 
     const update = measureProfile(() =>
       document.update(draft => draft.rows.replace('row-500', { id: 'row-500', value: 2_000 }))
@@ -98,16 +98,16 @@ describe('projection optimization boundaries', () => {
     const boards = observe(document, path => path.boards);
     const treeNodes = observe(document, path => path.boards.item('board').outline.nodes);
     const runtime = createProjectionRuntime();
-    const beforeBoard = runtime.get(boards).get('board')!;
-    const beforeNodes = runtime.get(treeNodes);
+    const beforeBoard = runtime.read(boards).get('board')!;
+    const beforeNodes = runtime.read(treeNodes);
     const stableBoardNode = beforeBoard.outline.nodes['node-1'];
     const stableCollectionNode = beforeNodes.get('node-1');
 
     const measured = measureProfile(() =>
       document.update(draft => draft.boards.get('board')!.outline.replace('node-512', 9_999))
     ).profile;
-    const afterBoard = runtime.get(boards).get('board')!;
-    const afterNodes = runtime.get(treeNodes);
+    const afterBoard = runtime.read(boards).get('board')!;
+    const afterNodes = runtime.read(treeNodes);
     expect(afterBoard.outline.nodes['node-1']).toBe(stableBoardNode);
     expect(afterBoard.outline.nodes['node-512']).not.toBe(beforeBoard.outline.nodes['node-512']);
     expect(afterNodes.get('node-1')).toBe(stableCollectionNode);
@@ -126,14 +126,14 @@ describe('projection optimization boundaries', () => {
     const outline = observe(document, path => path.outline);
     const nodes = observe(document, path => path.outline.nodes);
     const runtime = createProjectionRuntime();
-    runtime.get(outline);
-    runtime.get(nodes);
+    runtime.read(outline);
+    runtime.read(nodes);
 
     document.update(draft => draft.outline.insert('__proto__', 42));
 
     const canonical = document.snapshot().outline.nodes;
-    const aggregate = runtime.get(outline).nodes;
-    const keyed = runtime.get(nodes);
+    const aggregate = runtime.read(outline).nodes;
+    const keyed = runtime.read(nodes);
     expect(Object.hasOwn(canonical, '__proto__')).toBe(true);
     expect(Object.hasOwn(aggregate, '__proto__')).toBe(true);
     expect(aggregate.__proto__).toEqual({ children: [], value: 42 });
@@ -155,20 +155,20 @@ describe('projection optimization boundaries', () => {
     const outline = observe(document, path => path.outline);
     const nodes = observe(document, path => path.outline.nodes);
     const runtime = createProjectionRuntime();
-    const beforeOutline = runtime.get(outline);
-    const beforeNode = runtime.get(nodes).get('r');
+    const beforeOutline = runtime.read(outline);
+    const beforeNode = runtime.read(nodes).get('r');
     let notifications = 0;
-    const stop = runtime.readable(outline).subscribe(() => notifications++);
+    const stop = runtime.select(outline).subscribe(() => notifications++);
 
     runtime.batch(() => {
       document.update(draft => draft.outline.replace('r', 2));
-      expect(runtime.get(outline)).toBe(beforeOutline);
+      expect(runtime.read(outline)).toBe(beforeOutline);
       document.update(draft => draft.outline.replace('r', 1));
-      expect(runtime.get(outline)).toBe(beforeOutline);
+      expect(runtime.read(outline)).toBe(beforeOutline);
     });
 
-    expect(runtime.get(outline)).toBe(beforeOutline);
-    expect(runtime.get(nodes).get('r')).toBe(beforeNode);
+    expect(runtime.read(outline)).toBe(beforeOutline);
+    expect(runtime.read(nodes).get('r')).toBe(beforeNode);
     expect(notifications).toBe(0);
     stop();
     document.dispose();
@@ -198,7 +198,7 @@ describe('projection optimization boundaries', () => {
     const nativeDocument = createDocument({ schema, initial: initial() });
     const nativeRuntime = createProjectionRuntime();
     const native = observe(nativeDocument, path => path.outline.nodes);
-    nativeRuntime.get(native);
+    nativeRuntime.read(native);
     const nativeProfile = measureProfile(() =>
       nativeDocument.update(draft => draft.outline.replace('node-512', 9_999))
     ).profile;
@@ -208,7 +208,7 @@ describe('projection optimization boundaries', () => {
     const aggregateDocument = createDocument({ schema, initial: initial() });
     const aggregateRuntime = createProjectionRuntime();
     const aggregate = observe(aggregateDocument, path => path.outline);
-    aggregateRuntime.get(aggregate);
+    aggregateRuntime.read(aggregate);
     const aggregateProfile = measureProfile(() =>
       aggregateDocument.update(draft => draft.outline.replace('node-512', 9_999))
     ).profile;

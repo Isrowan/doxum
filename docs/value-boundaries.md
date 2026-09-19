@@ -78,11 +78,11 @@ as a whole, or a variant discriminant.
 
 ## Validation
 
-Validators are pure synchronous functions or Standard Schema v1 objects. They
-receive the original input reference. They must not mutate input or perform side
-effects. A successful output is ignored; Doxum retains the original input and does
-not detect transformations or compare input/output deeply. Perform conversions
-before entering Doxum. Mutation by a validator violates the ownership contract and
+Validators are pure and synchronous. Function validators are predicates/assertions:
+`true` or `undefined` succeeds, `false` rejects, and assertions may throw. Standard
+Schema v1 validators must return the original input by identity on success; transformed
+outputs are rejected. Validators must not mutate input or perform side effects.
+Perform conversions before entering Doxum. Mutation by a validator violates the ownership contract and
 cannot be repaired by transaction rollback. Async validation is rejected.
 Strict `parse` requires validators for atomic values; typed runtime fields may
 omit them. Incremental writes validate only their affected values.

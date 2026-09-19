@@ -11,7 +11,7 @@ import {
 } from '../src';
 
 describe('projection scenes', () => {
-  it('composes document observation, input state, and tuple derivation', () => {
+  it('composes document observation, input state, and named derivation', () => {
     const item = object({ done: field<boolean>() });
     const model = object({ items: map(item) });
     const document = createDocument({
@@ -20,15 +20,15 @@ describe('projection scenes', () => {
     });
     const filter = input(false);
     const items = observe(document, path => path.items);
-    const visible = derive([items, filter], (all, done) => {
+    const visible = derive({ items, filter }, ({ items: all, filter: done }) => {
       const result = new Map<string, { readonly done: boolean }>();
       for (const [id, itemValue] of all) if (itemValue.done === done) result.set(id, itemValue);
       return result;
     });
     const runtime = createProjectionRuntime();
-    expect([...runtime.get(visible).keys()]).toEqual(['a']);
-    runtime.set(filter, true);
-    expect([...runtime.get(visible).keys()]).toEqual(['b']);
+    expect([...runtime.read(visible).keys()]).toEqual(['a']);
+    runtime.update(filter, true);
+    expect([...runtime.read(visible).keys()]).toEqual(['b']);
     document.dispose();
     runtime.dispose();
   });

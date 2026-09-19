@@ -73,9 +73,10 @@ Trees may be empty. `tree(field(...))` requires an own `value` on every existing
 node; `tree(optional(field(...)))` explicitly permits missing node payloads, while
 `optional(tree(...))` independently permits the whole tree member to be absent.
 
-Pure synchronous functions and Standard Schema v1 validators receive original input.
-They must not mutate it; successful output is ignored, with no copy or deep conversion
-check. Transform values before entering Doxum. parse(model, unknown) copies validated
+Function validators are synchronous predicates/assertions: `true` or `undefined`
+succeeds, `false` rejects, and assertions may throw. Standard Schema v1 validators
+must return the original input by identity; transformed output is rejected. Validators
+must not mutate input. Transform values before entering Doxum. parse(model, unknown) copies validated
 structure and shares readonly payloads; strict parse requires atomic validators.
 Branded map/table keys flow through methods, symbolic paths and impact.
 Path callbacks describe locations, including absent entries, and compile at registration.
@@ -99,13 +100,13 @@ reversible root reset; remote commits invalidate local history. Observer errors 
 after acceptance.
 
 Use `observe(document, path => path.tasks)` for a collection boundary and
-`derive([tasks, filter], (tasks, filter) => ...)` for pure values. Definitions are
+`derive({ tasks, filter }, ({ tasks, filter }) => ...)` for pure values. Definitions are
 lazy and materialized by one `createProjectionRuntime({ onError })` owner. When a
 keyed source determines output keys/order, map entries independently with
 `derive.keyed(entries, entry => entry.label)`. Dynamic keyed lookup stays in that
 same derivation through a named dependency object; plain Projection members are
 global dependencies and `{ source, key }` members are per-output-key lookups. The
-selector receives `(entry, dependencies, key)`, while the Runtime owns the
+selector receives `(entry, key, dependencies)`, while the Runtime owns the
 binding/reverse index and the producer DAG remains explicit. Use isolated
 `doxum/advanced` incremental entry points only for retained state, custom cross-key
 indexes or keyed patches that `derive.keyed` cannot express. See the [projection

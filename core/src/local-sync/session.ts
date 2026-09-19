@@ -4,17 +4,9 @@ import {
   type RuntimeWriteIntent,
 } from '../runtime/driver';
 import type { DocumentCommit } from '../runtime/contract';
-import type { ObjectNode, Infer } from '../schema';
-import {
-  LocalSyncConsistencyError,
-  LocalSyncDisposedError,
-  LocalSyncReadOnlyError,
-  LocalSyncUnsupportedOperationError,
-  LocalSyncUnavailableError,
-  type AttachLocalSyncOptions,
-  type LocalSync,
-  type LocalSyncState,
-} from './contract';
+import type { Infer, ObjectSchema } from '../schema';
+import { type AttachLocalSyncOptions, type LocalSync, type LocalSyncState } from './contract';
+import { LocalSyncError, normalizeLocalSyncError } from './error';
 import { json, jsonChanges } from './json';
 import type { ChangeSet } from '../changes';
 import { openIndexedDbTimeline, type StoredCommit } from './timeline';
@@ -54,13 +46,20 @@ const locks = (): LockManager => {
     !('request' in value) ||
     typeof value.request !== 'function'
   )
-    throw new LocalSyncUnavailableError('Web Locks');
+    throw new LocalSyncError(
+      'unavailable',
+      'Web Locks is required by doxum/local-sync in this environment.'
+    );
   return value as LockManager;
 };
 
 const channelConstructor = (): ChannelConstructor => {
   const value: unknown = globalThis.BroadcastChannel;
-  if (typeof value !== 'function') throw new LocalSyncUnavailableError('BroadcastChannel');
+  if (typeof value !== 'function')
+    throw new LocalSyncError(
+      'unavailable',
+      'BroadcastChannel is required by doxum/local-sync in this environment.'
+    );
   return value as ChannelConstructor;
 };
 
@@ -88,7 +87,7 @@ const notification = (value: unknown): CommitNotification | undefined => {
   return record as CommitNotification;
 };
 
-export const attachLocalSync = async <TSchema extends ObjectNode>(
+export const attachLocalSync = async <TSchema extends ObjectSchema<object>>(
   input: AttachLocalSyncOptions<TSchema>
 ): Promise<LocalSync> => {
   const runtime = input.runtime;
@@ -97,7 +96,9 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
   const schemaVersion = positiveInteger(input.schemaVersion ?? 1, 'schemaVersion');
   const lockManager = locks();
   const BroadcastChannel = channelConstructor();
-  const timeline = await openIndexedDbTimeline(databaseName);
+  const timeline = await openIndexedDbTimeline(databaseName).catch(error => {
+    throw normalizeLocalSyncError(error, 'unavailable', 'Unable to open local sync storage.');
+  });
 
   let channel: Channel | undefined;
   let unsubscribe: (() => void) | undefined;
@@ -111,7 +112,7 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
     let headSeq = stored.checkpointSeq;
     let checkpointSeq = stored.checkpointSeq;
     let role: 'leader' | 'follower' = 'follower';
-    let fault: unknown;
+    let fault: LocalSyncError | undefined;
     let closing = false;
     let disposed = false;
     let releaseLeadership: (() => void) | undefined;
@@ -142,76 +143,97 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
         if (!stateListeners.has(listener)) continue;
         try {
           listener();
-        } catch (error) {
-          try {
-            input.onError?.(error);
-          } catch {
-            /* A listener cannot fail persistence. */
-          }
+        } catch {
+          // Consumer state listeners are isolated from synchronization state.
         }
       }
     };
 
-    const fail = (error: unknown): void => {
-      if (fault || disposed) return;
-      fault = error;
+    const fail = (error: unknown): LocalSyncError => {
+      const failure = normalizeLocalSyncError(
+        error,
+        'unavailable',
+        'Local synchronization failed.'
+      );
+      if (fault || disposed) return fault ?? failure;
+      fault = failure;
       publishState();
       try {
-        input.onError?.(error);
+        input.onError?.(failure);
       } catch {
         // Error reporting cannot repair or replace the original synchronization failure.
       }
+      return failure;
     };
 
     const assertOpen = (): void => {
-      if (closing || disposed) throw new LocalSyncDisposedError();
+      if (closing || disposed)
+        throw new LocalSyncError('disposed', 'Local sync has been disposed.');
       if (fault) throw fault;
     };
 
     const assertLeader = (intent: RuntimeWriteIntent): void => {
       assertOpen();
-      if (role !== 'leader') throw new LocalSyncReadOnlyError();
+      if (role !== 'leader')
+        throw new LocalSyncError(
+          'read-only',
+          'This tab is following the local document and cannot write until it becomes the leader.'
+        );
       if (intent.kind === 'replace' || (intent.kind === 'apply' && intent.source === 'remote'))
-        throw new LocalSyncUnsupportedOperationError();
+        throw new LocalSyncError(
+          'unsupported-operation',
+          'Local sync appends committed changes. runtime.replace() and externally supplied remote changes are unavailable while it is attached.'
+        );
     };
 
     const runRuntime = <TResult>(run: () => TResult): TResult => driver?.run(run) ?? run();
+    const replayRuntime = <TResult>(run: () => TResult, message: string): TResult => {
+      try {
+        return runRuntime(run);
+      } catch (error) {
+        throw normalizeLocalSyncError(error, 'consistency', message);
+      }
+    };
 
     const applyStored = (commit: StoredCommit): void => {
       if (commit.seq !== headSeq + 1)
-        throw new LocalSyncConsistencyError('Local commit log contains a sequence gap.');
-      const result = runRuntime(() =>
-        runtime.apply(commit.changes, {
-          expectedRevision: runtime.revision(),
-          source: 'remote',
-          history: false,
-        })
+        throw new LocalSyncError('consistency', 'Local commit log contains a sequence gap.');
+      const result = replayRuntime(
+        () =>
+          runtime.apply(commit.changes, {
+            expectedRevision: runtime.revision(),
+            source: 'remote',
+          }),
+        'A stored local ChangeSet could not be replayed.'
       );
       if (result.status !== 'committed')
-        throw new LocalSyncConsistencyError('A stored local ChangeSet could not be applied.');
+        throw new LocalSyncError('consistency', 'A stored local ChangeSet could not be applied.');
       headSeq = commit.seq;
     };
 
     const restore = async (reset = false): Promise<void> => {
       const current = await timeline.read(documentId);
       if (current.schemaVersion !== schemaVersion)
-        throw new LocalSyncConsistencyError(
+        throw new LocalSyncError(
+          'consistency',
           'Local document schema changed while this attachment was open.'
         );
       if (headSeq > current.headSeq)
-        throw new LocalSyncConsistencyError('The local timeline moved behind this attachment.');
+        throw new LocalSyncError('consistency', 'The local timeline moved behind this attachment.');
       if (reset || headSeq < current.checkpointSeq) {
-        const result = runRuntime(() =>
-          runtime.replace(current.checkpoint as Infer<TSchema>, { source: 'remote' })
+        const result = replayRuntime(
+          () => runtime.replace(current.checkpoint as Infer<TSchema>, { source: 'remote' }),
+          'The local checkpoint could not be restored.'
         );
         if (result.status === 'rejected')
-          throw new LocalSyncConsistencyError('The local checkpoint could not be restored.');
+          throw new LocalSyncError('consistency', 'The local checkpoint could not be restored.');
         headSeq = current.checkpointSeq;
       }
       const tail = await timeline.tail(documentId, headSeq);
       for (const commit of tail) applyStored(commit);
       if (headSeq !== current.headSeq)
-        throw new LocalSyncConsistencyError(
+        throw new LocalSyncError(
+          'consistency',
           'Local commit log does not reach its recorded head sequence.'
         );
       checkpointSeq = current.checkpointSeq;
@@ -236,7 +258,10 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
         changes,
       });
       if (storedCommit.seq !== headSeq + 1)
-        throw new LocalSyncConsistencyError('A local commit was assigned an unexpected sequence.');
+        throw new LocalSyncError(
+          'consistency',
+          'A local commit was assigned an unexpected sequence.'
+        );
       headSeq = storedCommit.seq;
       publishState();
       channel?.postMessage({
@@ -356,7 +381,7 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
         current: () => snapshot,
         revision: () => stateRevision,
         subscribe: (listener: () => void) => {
-          if (disposed) throw new LocalSyncDisposedError();
+          if (disposed) throw new LocalSyncError('disposed', 'Local sync has been disposed.');
           stateListeners.add(listener);
           return () => {
             stateListeners.delete(listener);
@@ -368,8 +393,7 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
         try {
           await enqueue(restore);
         } catch (error) {
-          fail(error);
-          throw error;
+          throw fail(error);
         }
         assertOpen();
       },
@@ -398,6 +422,6 @@ export const attachLocalSync = async <TSchema extends ObjectNode>(
     driver?.dispose();
     channel?.close();
     timeline.close();
-    throw error;
+    throw normalizeLocalSyncError(error, 'unavailable', 'Unable to attach local sync.');
   }
 };

@@ -24,11 +24,13 @@ implementation invariants that affect design and review decisions.
 5. Atomic equality is Object.is; canonical structure retains atomic references under
    ownership contract. Snapshots copy structure and share readonly payloads, as do
    commits and history. No payload cloning or publication freezing. Validators receive
-   original inputs and must be pure; successful output is ignored.
+   original inputs and must be pure; function validators are predicates/assertions and
+   Standard Schema success may not transform the canonical value.
 6. List identity is a stable key; replacement retains it. Anchor owns ordering.
    Tree owns reciprocal, connected, acyclic, empty-or-single-root topology.
-7. ObjectNode owns schema identity; one RuntimeContext owns instance identity for the
-   runtime, history and read-only aliases. The shared path compiler and Core impact target
+7. Public `Schema` / `ObjectSchema` handles own schema identity while concrete nodes stay
+   internal; one RuntimeContext owns instance identity for the runtime, history and
+   `document.readonly()` aliases. The shared path compiler and Core impact target
    algorithms own addressing/identity/equality/bucketing and exact matching. React sees
    only Readable/select contracts. Notification matches grouped changes directly without
    building commit impact indexes.
@@ -39,8 +41,10 @@ implementation invariants that affect design and review decisions.
    `{ source, key }` members may bind each output key to a key in an explicitly declared
    keyed source. The materialized Runtime owns those bindings and reverse indexes,
    including bindings to currently missing source entries. Processors do not create graph
-   dependencies with `runtime.get()`. Notification failures leave commits accepted. Batch
-   defers projection publication, not document commits/listeners.
+   dependencies through imperative Runtime reads. A scope adds lifecycle ownership only
+   through `scope.own`; scoped definitions may depend on root definitions, while root and
+   sibling scopes cannot depend on scoped definitions. Notification failures leave commits
+   accepted. Batch defers projection publication, not document commits/listeners.
 10. Local sync uses Web Lock leadership and contiguous durable sequence. Writes precede
     asynchronous persistence. Version 5 / format 3 rejects old databases without editing
     them. External replace and remote apply are prohibited while attached.

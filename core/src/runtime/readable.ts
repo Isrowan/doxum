@@ -1,14 +1,14 @@
-import type { ObjectNode } from '../schema';
-import type { DocumentReadable, DocumentRuntime } from './contract';
+import type { ObjectSchema } from '../schema';
+import type { ReadonlyDocument, DocumentRuntime } from './contract';
 import { bindContext, contextOf } from './context';
 
 // A readable capability keeps the canonical runtime behind an explicit
 // mutation funnel while remaining fully compatible with selectors, views, and
 // framework subscriptions.
-export const asReadable = <TSchema extends ObjectNode>(
+export const readonlyDocument = <TSchema extends ObjectSchema<object>>(
   runtime: DocumentRuntime<TSchema>
-): DocumentReadable<TSchema> => {
-  const readable: DocumentReadable<TSchema> = {
+): ReadonlyDocument<TSchema> => {
+  const readable: ReadonlyDocument<TSchema> = {
     revision: runtime.revision,
     subscribe: runtime.subscribe,
   };

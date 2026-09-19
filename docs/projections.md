@@ -1,44 +1,50 @@
 # Projection API
 
-Projection 的最终内部分层、算法 owner 和删除清单见根目录的
-[Projection Layering Refactor Plan](../PROJECTION_LAYERING_REFACTOR_PLAN.md)。
+Projection definitions are lazy. Root definitions are reusable across
+`ProjectionRuntime` Instances; scope-owned definitions belong to one
+`ProjectionScope`. A `Projection<T>` is only a definition. Materialized values,
+retained state, subscriptions, errors and disposal state belong to the Runtime.
 
-Projection definitions are lazy. Root declarations are reusable across Runtimes;
-scope declarations belong to one local lifetime. A `Projection` contains no
-materialized value, retained processor state, subscription or disposal state.
-Each `ProjectionRuntime` owns those facts for its own materialization.
-
-## Basic declarations
+## Declaration model
 
 ```ts
 import { createProjectionRuntime, derive, input, observe } from 'doxum';
 
-const filter = input<'all' | 'open'>('all');
+const mode = input<'all' | 'open'>('all');
 const tasks = observe(document, path => path.tasks);
-const visibleTasks = derive([tasks, filter], (tasks, filter) => filterTasks(tasks, filter));
+
+const visible = derive({ tasks, mode }, ({ tasks, mode }) =>
+  mode === 'all' ? tasks : filterOpen(tasks)
+);
 ```
 
-There are three declaration functions:
+Public declaration primitives are:
 
-- `input(initial, equality?)` declares a Runtime-local writable value.
-- `observe(...)` establishes a document, Doxum `Readable`, or external source boundary.
-- `derive(dependencies, compute, equality?)` declares a pure projection with explicit dependencies.
+- `input(initial, equality?)` — Runtime-local scalar state.
+- `input.collection(initial?, equality?)` — Runtime-local keyed state.
+- `observe(...)` — document, `Readable`, or exported external source boundary.
+- `derive(dependencies, compute, equality?)` — pure value derivation.
+- `derive.keyed(...)` — key-preserving per-entry derivation and keyed joins.
 
-`derive.keyed` is the key-preserving form of `derive`. Its driver is a keyed
-collection projection; the driver owns output membership and order, while each
-driver entry is selected independently:
+Dependencies are named objects. They are part of the static processor graph; a
+processor never performs imperative Runtime reads to discover new dependencies.
+
+## Keyed derivation
+
+The simple form maps each driver entry independently and preserves driver
+membership and order:
 
 ```ts
 const fieldValues = derive.keyed(records, record => record.values[fieldId]);
 ```
 
-An updated driver entry is selected again, but the output key publishes only when
-the selected value fails the output equality check. Added, removed and order-only
-driver transitions remain ordinary `CollectionChange` transitions. Initial build,
-source reset and fault recovery rebuild through the normal Projection Runtime
-lifecycle.
+Only affected driver keys run the selector. The optional equality function
+compares the previous and next selected value for one key. Equal results do not
+publish an `updated` transition. Added, removed and order transitions keep their
+normal `CollectionChange` meaning.
 
-Keyed derivations may also declare dynamic lookups into another keyed projection:
+Dynamic keyed dependencies declare how one output key selects a key from another
+keyed projection:
 
 ```ts
 const cardContent = derive.keyed(
@@ -48,218 +54,155 @@ const cardContent = derive.keyed(
     view: activeView,
     fields: visibleFields,
   },
-  (item, { record, view, fields }) => renderCard(item, record, view, fields)
+  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
 );
 ```
 
-This form calls the selector as `(entry, dependencies, key)`: dependency values are
-read by name, and the output key is the third argument so selectors that do not need
-it can simply omit it. The no-dependency shorthand remains `(entry, key)`.
+The Runtime owns the output-key → source-key binding and reverse index. Updating a
+source key invalidates only output keys currently bound to it. Missing selected
+entries resolve to `undefined` but remain bound so a later add invalidates the
+dependent output. A plain projection dependency such as `view` invalidates the
+driver key set when it changes.
 
-The source projection is still a static processor dependency. Only its source key
-is dynamic per output key. The materialized processor owns the forward and reverse
-key bindings, so a record update recomputes only the output keys currently bound to
-that record. A binding is retained when the source entry is absent, allowing a later
-add of that key to recompute its dependents. Plain projection dependencies such as
-`activeView` invalidate all driver keys. Processor code never calls `runtime.get()`
-to discover dependencies.
+This is the dynamic join protocol. Do not add a second join abstraction or a
+document-specific wildcard path grammar to processors.
 
-The same root definition can be materialized by multiple runtimes without
-sharing its current value, retained state, subscriptions or errors. A scoped
-definition cannot be materialized by another Runtime or scope.
+## Document sources
 
-`observe` is the only source declaration entry point. A document selector that
-resolves to a collection produces an immutable `ReadonlyMap` projection;
-ordinary document selectors produce snapshots. External sources are selected by
-their required `kind: 'value' | 'collection'` discriminant.
-
-Schema `map`, `table`, and `list(field, { keyOf })` nodes are collection paths.
-A list projection uses the schema `keyOf` result as its stable string key and
-preserves document list order in `ReadonlyMap` iteration. It never uses the array
-index as identity. An ordinary array-valued `field(...)` remains a scalar value.
-
-Trees expose their structural facts through the same value/collection protocols:
+`observe(document)` creates a whole-document source. A schema path selects a finer
+source:
 
 ```ts
-const root = observe(document, path => path.outline.rootId);
+const title = observe(document, path => path.title);
+const rows = observe(document, path => path.rows);
+```
+
+`map`, `table` and `list(field, { keyOf })` paths produce keyed collection
+projections. List identity comes from `keyOf`, never the array index. Atomic
+array-valued fields remain scalar values.
+
+Tree structure uses the same source model:
+
+```ts
+const rootId = observe(document, path => path.outline.rootId);
 const nodes = observe(document, path => path.outline.nodes);
 const node = observe(document, path => path.outline.nodes.item(nodeId));
 ```
 
-`rootId` publishes only when the root changes. `nodes` is a keyed
-`ReadonlyMap<string, DocumentTreeNode<T>>`; committed tree-node groups route directly
-to the affected keyed entries and the existing `CollectionOutput` publishes the
-ordinary `CollectionChange`. A payload or topology edit of one node does not
-resnapshot unrelated nodes. Root and node sources captured from the same document
-commit settle in the same Runtime causal batch, so downstream processors never
-observe a new root with old nodes or vice versa.
+`rootId` is scalar, `nodes` is keyed, and `item(id)` is a single-node value
+source. One document commit settles all affected projection sources in one causal
+batch.
 
-```ts
-const order = observe(document, path => path.order);
-const item = runtime.readable(order, items => items.get(itemId));
-```
-
-List insert/remove/replace/move operations therefore publish the same
-`CollectionChange` used by map and table sources. `order.before/order.after` is
-present only when keys that exist on both sides change relative order; membership
-changes are already represented by `added` and `removed`.
-
-## External source contracts
-
-External source types are boundary contracts. They do not become Runtime
-contexts and their events are translated by the source adapter.
-
-```ts
-type ExternalValueEvent<T> = {
-  value: T;
-  revision: number;
-  reset?: boolean;
-  cause?: unknown;
-};
-
-type ExternalCollectionRead<K, V> = {
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  ids(): readonly K[];
-};
-
-type ExternalCollectionEvent<K, V> = {
-  /** Stable read before this event or external batch. */
-  previous: ExternalCollectionRead<K, V>;
-  revision: number;
-  /** Optional invalidation hint; the Runtime derives the exact transition. */
-  impact?: CollectionImpact<K>;
-  cause?: unknown;
-};
-```
-
-The collection adapter uses the stable previous read and current read to
-produce the processor-facing `CollectionChange`. A boundary `impact` is only a
-candidate optimization and never leaks into an incremental processor.
+`observe(readable)` adapts a Doxum `Readable<T>`. Exported
+`ExternalValueSource<T>` and `ExternalCollectionSource<K,V>` provide adapter
+boundaries for eventful external systems. External collection invalidation hints
+are normalized into the same exact projection `CollectionChange`.
 
 ## Runtime lifecycle
 
 ```ts
 const runtime = createProjectionRuntime({ onError: reportProjectionError });
 
-const value = runtime.get(visibleTasks);
-const selected = runtime.readable(visibleTasks, tasks => tasks.get(taskId));
+const value = runtime.read(visible);
+const selected = runtime.select(visible, rows => rows.get(taskId), equality);
+
 const stop = selected.subscribe(() => {
-  // Re-read from the published snapshot inside the listener.
   selected.current();
 });
 
-runtime.set(filter, 'open');
-runtime.batch({ cause: { action: 'refresh' } }, () => {
-  runtime.set(filter, 'all');
-  document.update(draft => {
-    draft.title = 'Updated';
-  });
-});
+runtime.update(mode, 'open');
+
+runtime.batch(
+  () => {
+    runtime.update(mode, 'all');
+    document.update(draft => {
+      draft.title = 'Updated';
+    });
+  },
+  { cause: { action: 'refresh' } }
+);
 
 stop();
 runtime.dispose();
 ```
 
-The Runtime is the single owner of materialized producers, source boundaries,
-scheduling and consumer readables. Its application-facing operations are:
+Stable verbs:
 
-| Operation                                    | Meaning                                                |
-| -------------------------------------------- | ------------------------------------------------------ |
-| `get(projection)`                            | Read the last published value.                         |
-| `readable(projection, selector?, equality?)` | Create a live Runtime-owned readable boundary.         |
-| `set(input, value)`                          | Write a Runtime-local input.                           |
-| `update(collectionInput, edit)`              | Atomically edit keyed input entries.                   |
-| `batch(options?, run)`                       | Settle one complete application action once.           |
-| `scope()`                                    | Create a local producer lifetime in this Runtime.      |
-| `dispose()`                                  | Release materialized producers and source attachments. |
+| API                                        | Meaning                                                         |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| `read(projection)`                         | Read the current published value synchronously.                 |
+| `select(projection, selector?, equality?)` | Create a standard `Readable`.                                   |
+| `update(input, value)`                     | Write an `Input<T>`.                                            |
+| `update(collectionInput, draft => ...)`    | Atomically edit keyed Runtime-local state.                      |
+| `batch(run, options?)`                     | Defer graph settlement/listeners across one application action. |
+| `scope()`                                  | Create a local projection lifetime.                             |
+| `dispose()`                                | Release Runtime-owned materialization and attachments.          |
 
-Output revisions, rebuild controls, per-item handles, manual flush and release
-operations are internal publication facts. A `Readable` exposes only its own
-publication revision for external-store integrations.
+A Runtime batch does not delay document commits or document listeners. Projection
+readers inside the batch see the last published projection state until settlement.
+Processors settle before external projection listeners. Writes are forbidden during
+processing/notification.
 
-### Local scope
+`ProjectionError` exposes stable `phase` and `cause` fields. Producer names, revision
+arrays and scheduler topology remain Runtime diagnostics rather than public API.
+
+## Runtime-local keyed state
 
 ```ts
-const scope = runtime.scope();
-const filter = scope.input<'all' | 'open'>('all');
-const visible = scope.derive([tasks, filter], (tasks, mode) =>
-  mode === 'all' ? tasks : filterTasks(tasks)
+const selection = input.collection<RowId, SelectionState>(
+  new Map(),
+  (previous, next) => previous.selected === next.selected
 );
-const titles = scope.derive.keyed(tasks, task => task.title);
-const index = scope.incremental.collection([tasks, filter], processor);
-const row = scope.readable(visible, tasks => tasks.get(taskId));
-scope.set(filter, 'open');
-scope.dispose();
-```
 
-The scope provides the same `get`, `readable`, `set`, `update` and `batch`
-operations, but uses its parent Runtime's scheduler and materialization cache.
-Only definitions made through `scope.input`, `scope.derive`, and
-`scope.incremental` belong to that scope. They may depend directly on root
-definitions; sibling and root projections cannot depend on scoped definitions.
-Disposal invalidates scoped handles, unsubscribes scope readables, and releases
-only local materialized producers and processor state. It does not dispose their
-root-owned dependencies. `ProjectionProvider` also accepts a scope as its value.
-
-### Keyed input
-
-```ts
-const overrides = input.collection<string, Task>();
-runtime.update(overrides, draft => {
-  if (draft.has(taskId)) draft.remove(taskId);
-  else draft.set(taskId, task);
+runtime.update(selection, draft => {
+  draft.set(rowId, { selected: true });
+  draft.remove(previousRowId);
 });
 ```
 
-The input owns an initially empty keyed collection (or a copied initial
-`ReadonlyMap`). Its borrowed edit draft exposes `get`, `has`, `set`, and
-`remove`; it expires when the synchronous callback returns. `set` preserves an
-existing key's position and appends a new key. Runtime batches publish the net
-added/updated/removed values and any observable reorder once. Unchanged keys
-keep their references, and unrelated keyed selectors are not evaluated.
-Outside a batch, each `update` publishes synchronously. A throwing edit callback
-leaves that edit unapplied; a Runtime batch is not a rollback transaction for
-earlier accepted edits. Readers inside a batch still see the last published
-snapshot, while each edit draft reads the latest staged input state.
+The borrowed draft exposes `get`, `has`, `set` and `remove`, and expires when the
+synchronous callback returns. A throwing callback applies none of that edit.
+`set` preserves an existing key position and appends a new key.
 
-Inside a Runtime batch, projection readers see the last published value until
-the batch settles. Document commits and document listeners are not delayed by a
-Runtime batch. Processors settle before external listeners; writes are forbidden
-while processing or notifying. Listener failures do not roll back an accepted
-document commit.
+The optional equality is per entry and defaults to `Object.is`. Setting an existing
+key to an equal value is a no-op: no stored replacement, revision, change or
+listener publication occurs. Accepted edits publish exact net keyed transitions and
+order.
 
-## Collection values
+`input.collection` is application/UI state owned by the projection Runtime. It is
+outside canonical document state, history and persistence.
 
-Collection projections expose immutable map-like snapshots:
+## Scope
 
 ```ts
-const rows = runtime.get(tasks);
-rows.get(taskId);
-rows.has(taskId);
-rows.size;
+const scope = runtime.scope();
 
-for (const [id, task] of rows) {
-  // task is an immutable snapshot
-}
+const localMode = scope.own(input<'all' | 'open'>('all'));
+const localVisible = scope.own(
+  derive({ tasks, mode: localMode }, ({ tasks, mode }) =>
+    mode === 'all' ? tasks : filterOpen(tasks)
+  )
+);
+
+scope.read(localVisible);
+scope.update(localMode, 'open');
+scope.dispose();
 ```
 
-Unchanged entry values keep their references. That stable-reference rule is what
-makes keyed selectors and memoized derived values useful without requiring deep
-equality everywhere.
+A scope shares its parent Runtime's scheduler and root materialization. `scope.own`
+assigns lifecycle ownership to a projection definition or a static nested tree of
+projection leaves such as an `incremental.group` result. Scalar/keyed inputs, derives and
+advanced definitions use that same ownership protocol. Scoped definitions may depend on
+root definitions; root or sibling scopes cannot depend on a scoped definition. One
+definition can belong to only one scope, and ownership must be assigned before the
+definition is first materialized as a root.
 
-内部实现按职责分层：`output/collection.ts` 只维护 staged/published 生命周期；
-持久 keyed lookup、`CollectionChange` 代数和 `CollectionRead`/`ReadonlyMap` view
-分别由 `collection/index.ts`、`collection/change.ts`、`collection/view.ts` 拥有。
-通用 source prepare/publish/fault 生命周期在 `source/boundary.ts`，document 的
-订阅路由、dirty location 归并和读取在 `source/document.ts`；aggregate snapshot
-的结构共享仍由纯 `source/materialization.ts` 算法完成。公开 API 不暴露这些
-内部组件。
+## Collection values and changes
 
-## The one collection transition protocol
+Keyed projections expose immutable `ReadonlyMap` values. Unchanged entries preserve
+their references.
 
-Every collection source and collection output publishes the same exact net
-transition shape:
+Every keyed projection source/output uses one change algebra:
 
 ```ts
 type CollectionChange<K extends string, V> =
@@ -273,145 +216,158 @@ type CollectionChange<K extends string, V> =
     };
 ```
 
-The initial build reports `reset` for collection dependencies. A committed
-document batch is coalesced before publication, so `before` and `after` are the
-values at the batch boundaries. Entry arrays do not repeat a `kind` field; the
-array name already identifies the transition category.
+`CollectionChange` is exported by `doxum/advanced` for processor typing; root projection
+consumers work with `Projection`, `CollectionInput` and immutable `ReadonlyMap` values.
 
-`CollectionImpact` remains a document-domain invalidation hint. It is not a
-projection change and is never passed to an application processor.
+Initial materialization and source reset report `reset` to advanced processors.
+Incremental transitions are net changes across the settled batch.
 
-## Advanced incremental processors
+`CollectionImpact` belongs to the document domain and is only an invalidation hint.
+It is not the projection change protocol.
 
-Use `derive.keyed` for key-preserving entry selection and declared dynamic keyed
-dependencies. Use the isolated advanced entry point when application-specific
-retained state, cross-key indexes or keyed patches cannot be expressed through that
-dependency model and are materially cheaper than ordinary `derive` recomputation.
+## Advanced processors
+
+Import advanced processors from `doxum/advanced`. Use them only when retained state,
+cross-key indexes, or direct incremental patching cannot be expressed cleanly by
+`derive` / `derive.keyed`.
+
+All advanced processors take named dependencies plus a closed definition object.
+`process()` is required and synchronous. `state()` is optional and creates Runtime-owned
+retained state only when the processor needs it.
+
+### Value processor
 
 ```ts
-import { incremental } from 'doxum/advanced';
-
-const total = incremental([tasks], ({ sources, previous, state }) => {
-  state.calls = Number(state.calls ?? 0) + 1;
-  return sources[0].size + Number(state.calls) + (previous ?? 0);
-});
-
-const doubled = incremental.collection([tasks], ({ sources, changes, output }) => {
-  const change = changes[0];
-  if (change?.kind === 'reset') {
-    for (const [id, task] of sources[0]) output.set(id, task.value * 2);
-    output.order([...sources[0].keys()]);
-    return;
+const total = incremental(
+  { tasks },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ values, previous, state, reset }) => {
+      state.runs++;
+      return values.tasks.size + state.runs + (reset ? 0 : (previous ?? 0));
+    },
   }
-  if (change?.kind !== 'incremental') return;
-  for (const entry of change.added) output.set(entry.key, entry.after.value * 2);
-  for (const entry of change.updated) output.set(entry.key, entry.after.value * 2);
-  for (const entry of change.removed) output.remove(entry.key);
-  if (change.order) output.order([...sources[0].keys()]);
-});
+);
 ```
 
-When several outputs share one processor, declare them as one static group. The
-processor executes once per causal batch; value and keyed collection leaves publish
-atomically, while every leaf remains an ordinary `Projection`:
+Context fields are values, changes, previous, reset and cause. When `state()` is
+declared, the context additionally contains its precisely inferred `state`.
+
+### Collection processor
+
+```ts
+const doubled = incremental.collection(
+  { tasks },
+  {
+    process: ({ values, changes, output, reset }) => {
+      if (reset) {
+        for (const [id, task] of values.tasks) {
+          output.set(id, task.value * 2);
+        }
+        output.order([...values.tasks.keys()]);
+        return;
+      }
+
+      const change = changes.tasks;
+      if (!change || change.kind === 'reset') return;
+
+      for (const entry of change.added) {
+        output.set(entry.key, entry.after.value * 2);
+      }
+      for (const entry of change.updated) {
+        output.set(entry.key, entry.after.value * 2);
+      }
+      for (const entry of change.removed) {
+        output.remove(entry.key);
+      }
+      if (change.order) output.order([...values.tasks.keys()]);
+    },
+  }
+);
+```
+
+Collection context additionally exposes previous, next and a borrowed output draft.
+The draft has set, remove and order.
+
+### Multi-output group
 
 ```ts
 const render = incremental.group(
-  [tasks],
-  define => ({
-    node: {
-      shell: define.collection<string, Shell>(),
-      content: define.collection<string, Content>(),
+  { tasks },
+  {
+    output: define => ({
+      node: {
+        shell: define.collection<NodeId, Shell>(),
+        content: define.collection<NodeId, Content>(),
+      },
+      count: define.value<number>(),
+    }),
+    state: () => ({ runs: 0 }),
+    process: ({ values, output, state }) => {
+      state.runs++;
+      for (const [id, task] of values.tasks) {
+        output.node.shell.set(id, makeShell(task));
+        output.node.content.set(id, makeContent(task));
+      }
+      output.count.set(values.tasks.size);
     },
-    labels: define.collection<string, Label>(),
-    chrome: define.value<Chrome>(),
-    revision: define.value<number>(),
-  }),
-  ({ sources, outputs }) => {
-    for (const [id, task] of sources[0]) {
-      outputs.node.shell.set(id, makeShell(task));
-      outputs.node.content.set(id, makeContent(task));
-      outputs.labels.set(id, makeLabel(task));
-    }
-    outputs.chrome.set(makeChrome(sources[0]));
-    outputs.revision.set(sources[0].size);
   }
 );
-
-const shell = incremental.collection([render.node.shell], ({ sources, output }) => {
-  for (const [id, value] of sources[0]) output.set(id, value);
-});
 ```
 
-The namespace is a frozen static object tree, not a projection, producer,
-runtime, scheduler, transaction, or event bus. Only output leaves can be read,
-composed, or subscribed. Every leaf points to one shared processor producer, so
-reading any leaf materializes that producer once and every output observes the
-same generation. Split groups when outputs do not share computation or atomicity
-requirements. Group outputs can also be declared through
-`scope.incremental.group`; scope disposal releases that producer and its retained
-state once.
+define.collection<K,V>(equality?) and define.value<T>(equality?) are only available
+inside output. The declaration returns a non-empty static object tree and each
+descriptor must appear exactly once. The result has the same shape with normal
+Projection leaves backed by one producer.
 
-`define.value<T>(equality?)` has one borrowed draft operation: `set(value)`.
-During the initial build and every rebuild each value leaf must be set exactly as
-part of that processor run; on an ordinary incremental update an untouched value
-leaf retains its published value and revision. Calling `set` with an equal value
-also leaves the leaf unpublished. `T | undefined` is the explicit way to model an
-optional value; `set(undefined)` is distinct from not touching the leaf. Group
-`previous` and `next` expose scalar values alongside collection reads, and `next`
-reflects a staged `set` immediately inside the processor callback.
+On initial materialization or Runtime recovery every value leaf must be set. During
+ordinary incremental evaluation, untouched value leaves retain their published
+value. Equal set results do not publish.
 
-Both processors receive `sources`, dependency-aligned `changes`, `previous`,
-`reset`, `cause` and a Runtime-local retained `state` object. Collection
-processors additionally receive `next` and a borrowed `output` draft. Collection
-values inside `sources` are callback-local lazy `ReadonlyMap` views: `get` and
-`has` stay keyed, while iteration intentionally reads the full collection. Do not
-retain or return those borrowed source views.
+values and changes are keyed by dependency name. Collection dependencies receive
+exact CollectionChange metadata; scalar dependencies have undefined change
+metadata.
 
-```ts
-type CollectionDraft<K, V> = {
-  set(key: K, value: V): void;
-  remove(key: K): void;
-  order(keys: readonly K[]): void;
-};
-```
-
-The draft is valid only during the synchronous processor callback. It cannot be
-retained or used asynchronously. A value processor returns `T` or
-`{ kind: 'rebuild' }`; a collection processor returns nothing or the same
-`rebuild` marker. Rebuild is an internal reinitialization request, not a public
-Runtime operation. There is no draft-wide replacement method or tagged value
-result protocol.
+A normal source reset requests reconciliation and preserves retained processor state
+when one is declared. Processor faults are owned by the Runtime: recovery recreates
+declared state and runs a reset evaluation. Stateless processors follow the same reset
+path without a state object. There is no public rebuild token or manual recovery protocol.
 
 ## React
 
-```tsx
-import { ProjectionProvider, useInput, useProjection } from 'doxum/react';
+doxum/react consumes only public Core capabilities:
 
+```tsx
 <ProjectionProvider value={runtime}>
   <TaskList />
 </ProjectionProvider>;
 
 function TaskList() {
-  const tasks = useProjection(visibleTasks);
-  const task = useProjection(visibleTasks, tasks => tasks.get(taskId));
+  const task = useProjection(tasks, rows => rows.get(taskId), equality);
   const [mode, setMode] = useInput(filter);
-  // ...
+  const [selection, updateSelection] = useInput(selectionInput);
 }
 ```
 
-React obtains the Runtime only from `ProjectionProvider`. Hooks do not accept a
-positional Runtime argument; multiple runtimes use nested providers.
+ProjectionProvider accepts ProjectionRuntime or ProjectionScope.
+useProjection(projection, selector, equality?) uses Core keyed selector tracking.
+useInput overloads scalar and collection inputs. Collection updates receive a
+CollectionInputDraft.
 
-Selector reads are tracked at the consumer boundary:
+Document selection remains independent of ProjectionProvider:
 
-| Selector read                   | Dependency recorded | Unrelated update                   |
-| ------------------------------- | ------------------- | ---------------------------------- |
-| `rows.get(id)` / `rows.has(id)` | one key             | selector does not execute          |
-| `rows.keys()`                   | key/order structure | value-only update does not execute |
-| `rows.values()` / iteration     | whole collection    | any changed member executes        |
-| scalar projection               | scalar projection   | no keyed dependency set            |
+```ts
+const result = useDocumentSelector(document, selector, equality);
+```
 
-Only a related invalidation runs the selector. `equality` then decides whether
-the selected result publishes a new snapshot; it is not a fallback for unrelated
-selector execution. Selectors must be pure and synchronous.
+This is a React adapter over Core select(document, selector, equality).
+
+## Ownership rules
+
+- ProjectionRuntime is the only owner of materialized projection state.
+- Processor dependencies are explicit declarations.
+- ProjectionScope owns only its local lifetime.
+- Document path grammar stays at document/source boundaries.
+- One keyed CollectionChange protocol is used by all projection collections.
+- Recovery is a Runtime lifecycle concern.
+- React consumes Readable, document select, and projection Runtime APIs only.

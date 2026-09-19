@@ -1,27 +1,27 @@
-import type { ObjectNode, ImpactTarget } from '../schema';
+import type { ImpactTarget, ObjectSchema, RootNodeOf } from '../schema';
 import type { CommitListener, DocumentCommit, Unsubscribe, ObserverError } from './contract';
 import * as target from '../impact/target';
 
-type ProjectionAttachment<TSchema extends ObjectNode> = {
+type ProjectionAttachment<TSchema extends ObjectSchema<object>> = {
   capture(commit: DocumentCommit<TSchema>): void;
   settle(): void;
   flush(): readonly ObserverError[];
   dispose(): void;
 };
-type ProcessorEntry<TSchema extends ObjectNode> = {
+type ProcessorEntry<TSchema extends ObjectSchema<object>> = {
   readonly processor: ProjectionAttachment<TSchema>;
   active: boolean;
 };
-type RootEntry<TSchema extends ObjectNode> = {
+type RootEntry<TSchema extends ObjectSchema<object>> = {
   readonly listener: CommitListener<TSchema>;
   active: boolean;
 };
-type FilteredEntry<TSchema extends ObjectNode> = {
+type FilteredEntry<TSchema extends ObjectSchema<object>> = {
   readonly targets: readonly ImpactTarget<unknown>[];
   readonly listener: CommitListener<TSchema>;
   active: boolean;
 };
-type NotificationState<TSchema extends ObjectNode> = {
+type NotificationState<TSchema extends ObjectSchema<object>> = {
   readonly root: Set<RootEntry<TSchema>>;
   readonly filtered: Set<FilteredEntry<TSchema>>;
   readonly index: target.SubscriptionIndex<FilteredEntry<TSchema>>;
@@ -31,7 +31,7 @@ type NotificationState<TSchema extends ObjectNode> = {
   readonly rootSnapshot: RootEntry<TSchema>[];
   notifying: boolean;
 };
-export type NotificationCenter<TSchema extends ObjectNode> = {
+export type NotificationCenter<TSchema extends ObjectSchema<object>> = {
   subscribe(listener: CommitListener<TSchema>): Unsubscribe;
   subscribeTargets(
     targets: readonly ImpactTarget<unknown>[],
@@ -45,7 +45,7 @@ export type NotificationCenter<TSchema extends ObjectNode> = {
   dispose(): void;
 };
 
-const attachProjection = <TSchema extends ObjectNode>(
+const attachProjection = <TSchema extends ObjectSchema<object>>(
   notification: NotificationState<TSchema>,
   processor: ProjectionAttachment<TSchema>
 ): Unsubscribe => {
@@ -61,7 +61,7 @@ const attachProjection = <TSchema extends ObjectNode>(
   };
 };
 
-const addRoot = <TSchema extends ObjectNode>(
+const addRoot = <TSchema extends ObjectSchema<object>>(
   notification: NotificationState<TSchema>,
   listener: CommitListener<TSchema>
 ): Unsubscribe => {
@@ -77,7 +77,7 @@ const addRoot = <TSchema extends ObjectNode>(
   };
 };
 
-const addFiltered = <TSchema extends ObjectNode>(
+const addFiltered = <TSchema extends ObjectSchema<object>>(
   notification: NotificationState<TSchema>,
   targets: readonly ImpactTarget<unknown>[],
   listener: CommitListener<TSchema>
@@ -101,7 +101,7 @@ const addFiltered = <TSchema extends ObjectNode>(
   };
 };
 
-const publishState = <TSchema extends ObjectNode>(
+const publishState = <TSchema extends ObjectSchema<object>>(
   notification: NotificationState<TSchema>,
   commit: DocumentCommit<TSchema>,
   afterSettle?: () => readonly ObserverError[]
@@ -169,7 +169,7 @@ const publishState = <TSchema extends ObjectNode>(
   return Object.freeze(errors);
 };
 
-const disposeState = <TSchema extends ObjectNode>(
+const disposeState = <TSchema extends ObjectSchema<object>>(
   notification: NotificationState<TSchema>
 ): void => {
   const attachments = notification.processors.slice();
@@ -192,8 +192,8 @@ const disposeState = <TSchema extends ObjectNode>(
   if (errors.length) throw new AggregateError(errors, 'Projection disposal notification failed.');
 };
 
-export const createNotificationCenter = <TSchema extends ObjectNode>(
-  schema: TSchema
+export const createNotificationCenter = <TSchema extends ObjectSchema<object>>(
+  schema: RootNodeOf<TSchema>
 ): NotificationCenter<TSchema> => {
   const state: NotificationState<TSchema> = {
     root: new Set(),

@@ -108,39 +108,52 @@ const decorated = derive.keyed(
     meta: { source: metadata, key: row => row.metadataId },
     density,
   },
-  (row, { meta, density }) => formatRow(row, meta, density)
+  (row, _rowId, { meta, density }) => formatRow(row, meta, density)
 );
-const count = derive([labels], labels => labels.size);
+const count = derive({ labels }, ({ labels }) => labels.size);
+const selection = input.collection<RowId, boolean>();
 const runtime = createProjectionRuntime({ onError: console.error });
-runtime.get(decorated);
-runtime.get(count);
+runtime.read(decorated);
+runtime.read(count);
+runtime.update(density, 'compact');
+runtime.update(selection, draft => draft.set(rowId, true));
 ```
 
-React 使用 `ProjectionProvider` 提供 Runtime，再用 `useProjection` 读取 Projection，单键读取写成
-`useProjection(projection, selector)`；`useInput` 返回值和 setter。`derive.keyed`
-负责保持 key 的 selector 与声明式 dynamic keyed lookup，reverse dependency index
-由 Runtime 拥有；结果是聚合值或不存在可保留的逐 key identity 时使用 tuple
-`derive`。需要自定义 retained/cross-key 算法时再从 `doxum/advanced` 引入高级
-collection processor，在同步 callback 中使用 `output.set/remove/order` 与
-previous/next。Processor 依赖仍显式声明，React selector 追踪只属于消费端。
+聚合值使用 named-object `derive`。一个 keyed driver 拥有 output key/order 时使用
+`derive.keyed`；named dependency form 负责 dynamic keyed lookup，binding/reverse
+index 由 Runtime 拥有。`input.collection` 用于 Runtime-local 的 keyed UI/application
+state，不进入 canonical document state。
+
+React 用 `ProjectionProvider` 提供 Runtime 或 scope；`useProjection` 支持
+`useProjection(projection, selector, equality?)`，`useInput` 同时支持 scalar 与
+collection input。Document selector 独立使用
+`useDocumentSelector(document, selector, equality?)`。
 
 ## 多输出 incremental processor
 
+只有 pure `derive` / `derive.keyed` 无法表达共享 retained state 或 cross-key work 时使用：
+
 ```ts
 const render = incremental.group(
-  [scene],
-  define => ({
-    cards: define.collection<string, Card>(),
-    count: define.value<number>(),
-  }),
-  ({ sources, outputs }) => {
-    const cards = buildCards(sources[0]);
-    for (const [id, card] of cards) outputs.cards.set(id, card);
-    outputs.cards.order([...cards.keys()]);
-    outputs.count.set(cards.size);
+  { scene },
+  {
+    output: define => ({
+      cards: define.collection<string, Card>(),
+      count: define.value<number>(),
+    }),
+    state: () => ({ runs: 0 }),
+    process: ({ values, output, state }) => {
+      state.runs++;
+      const cards = buildCards(values.scene);
+      for (const [id, card] of cards) output.cards.set(id, card);
+      output.cards.order([...cards.keys()]);
+      output.count.set(cards.size);
+    },
   }
 );
 ```
 
-`define.value` / `define.collection` 只存在于 `incremental.group` 的声明 callback 内。
-同一 processor 有多组相关输出时，直接返回嵌套 plain object 组织 namespace。
+`define.value` / `define.collection` 只存在于 `output` 声明 callback 内，返回的嵌套
+object 会映射为同一 processor 的普通 Projection leaves。依赖按名称读取；只有需要
+retained state 时才声明 `state()`。processor fault 后由 Runtime 重新创建已声明的 state
+并恢复。

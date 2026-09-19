@@ -23,7 +23,6 @@ describe('mutation scaling and ownership', () => {
           n: field((value: unknown) => {
             validations++;
             if (typeof value !== 'number') throw new Error('number');
-            return value;
           }),
         })
       ),
@@ -152,7 +151,6 @@ describe('mutation scaling and ownership', () => {
       rows: list(field<{ id: string; n: number }>(), { keyOf: value => value.id }),
       valid: field((v: unknown) => {
         if (typeof v !== 'number') throw new Error('number');
-        return v;
       }),
     });
     const initial = {

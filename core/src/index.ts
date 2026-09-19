@@ -5,17 +5,8 @@ export type {
   DocumentListConfig,
   DocumentTreeNode,
   DocumentTreeValue,
-  FieldNode,
-  OptionalNode,
-  ObjectShape,
-  ObjectNode,
-  VariantShape,
-  VariantNode,
-  TableNode,
-  MapNode,
-  ListNode,
-  TreeNode,
-  DocumentNode,
+  Schema,
+  ObjectSchema,
   Infer,
   ReadonlyValue,
   SchemaPath,
@@ -29,7 +20,6 @@ export type { Read, Draft } from './access/scope';
 export type { Change, ChangeSet, MemberChange, ValueTransition } from './changes';
 export type { CollectionImpact, DocumentImpact } from './impact';
 export { createDocument } from './runtime';
-export { asReadable } from './runtime/readable';
 export {
   DocumentReentrancyError,
   DocumentDisposedError,
@@ -39,7 +29,7 @@ export type {
   Unsubscribe,
   CommitSource,
   DocumentCommit,
-  DocumentReadable,
+  ReadonlyDocument,
   TransactionResult,
   OperationResult,
   DocumentRuntime,
@@ -55,12 +45,15 @@ export { read, select } from './runtime/select';
 export type { DocumentSelector } from './runtime/select';
 export { input, observe } from './projection/definition';
 export { derive } from './projection/derive';
-export type { KeyedDependency } from './projection/derive';
 export { createProjectionRuntime } from './projection/runtime';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
-export type { Projection, Input } from './projection/definition';
 export type {
-  CollectionChange,
+  Projection,
+  Input,
+  CollectionInput,
+  CollectionInputDraft,
+} from './projection/definition';
+export type {
   ExternalCollectionEvent,
   ExternalCollectionRead,
   ExternalCollectionSource,

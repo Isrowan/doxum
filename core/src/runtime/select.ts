@@ -2,17 +2,17 @@ import { createDependencyTracker } from '../access/dependency';
 import type { Read } from '../access/scope';
 import * as target from '../impact/target';
 import type { Readable, Unsubscribe } from '../readable';
-import type { ImpactTarget, ObjectNode } from '../schema';
+import type { ImpactTarget, ObjectSchema } from '../schema';
 import { readWith } from './access';
-import { DocumentDisposedError, type DocumentReadable } from './contract';
+import { DocumentDisposedError, type ReadonlyDocument } from './contract';
 import { contextOf } from './context';
 
-export type DocumentSelector<TSchema extends ObjectNode, TResult> = (
+export type DocumentSelector<TSchema extends ObjectSchema<object>, TResult> = (
   read: Read<TSchema>
 ) => TResult;
 
-export const read = <TSchema extends ObjectNode, TResult>(
-  document: DocumentReadable<TSchema>,
+export const read = <TSchema extends ObjectSchema<object>, TResult>(
+  document: ReadonlyDocument<TSchema>,
   selector: DocumentSelector<TSchema, TResult>
 ): TResult => readWith(document, selector);
 
@@ -26,8 +26,8 @@ const sameDependencySet = (
   return true;
 };
 
-export const select = <TSchema extends ObjectNode, TResult>(
-  document: DocumentReadable<TSchema>,
+export const select = <TSchema extends ObjectSchema<object>, TResult>(
+  document: ReadonlyDocument<TSchema>,
   selector: DocumentSelector<TSchema, TResult>,
   equality: (previous: TResult, next: TResult) => boolean = Object.is
 ): Readable<TResult> => {

@@ -2,9 +2,10 @@ import type {
   CollectionId,
   CollectionPath,
   CollectionSelector,
-  ObjectNode,
   ImpactTarget,
+  ObjectSchema,
   PathPick,
+  RootNodeOf,
   SchemaPath,
 } from './schema';
 import { compilePath } from './schema';
@@ -23,15 +24,15 @@ export type CollectionImpact<K> =
       readonly updated: ReadonlySet<K>;
       readonly orderChanged: boolean;
     };
-export type DocumentImpact<S extends ObjectNode> = {
+export type DocumentImpact<S extends ObjectSchema<object>> = {
   readonly kind: 'incremental' | 'reset';
   affects(pick: PathPick<S>): boolean;
   collection<P extends CollectionPath>(
-    pick: (path: SchemaPath<S['shape']>) => P
+    pick: (path: SchemaPath<S>) => P
   ): CollectionImpact<CollectionId<P>>;
 };
-export const createImpact = <S extends ObjectNode>(
-  schema: S,
+export const createImpact = <S extends ObjectSchema<object>>(
+  schema: RootNodeOf<S>,
   changes: ChangeSet
 ): DocumentImpact<S> => {
   const reset = changes.changes.some(change => change.kind === 'reset');
@@ -134,10 +135,10 @@ export const createImpact = <S extends ObjectNode>(
   };
   const impact: DocumentImpact<S> = Object.freeze({
     kind: reset ? 'reset' : 'incremental',
-    affects: (pick: PathPick<S>) => affects(compilePath<S['shape']>(schema, 'value', pick)),
-    collection: <P extends CollectionPath>(pick: (path: SchemaPath<S['shape']>) => P) =>
+    affects: (pick: PathPick<S>) => affects(compilePath<S>(schema, 'value', pick)),
+    collection: <P extends CollectionPath>(pick: (path: SchemaPath<S>) => P) =>
       collection(
-        compilePath<S['shape']>(schema, 'collection', pick) as CollectionSelector
+        compilePath<S>(schema, 'collection', pick) as CollectionSelector
       ) as CollectionImpact<CollectionId<P>>,
   });
   return impact;

@@ -1,5 +1,5 @@
 import type { CommitSource, DocumentRuntime } from './contract';
-import type { ObjectNode } from '../schema';
+import type { ObjectSchema } from '../schema';
 import { contextOf } from './context';
 
 export type RuntimeWriteIntent =
@@ -21,7 +21,7 @@ export const assertRuntimeWritable = (runtime: object, intent: RuntimeWriteInten
   if (context.bypassDepth === 0) context.driver?.assertWritable(intent);
 };
 
-export const installRuntimeWriteDriver = <TSchema extends ObjectNode>(
+export const installRuntimeWriteDriver = <TSchema extends ObjectSchema<object>>(
   runtime: DocumentRuntime<TSchema>,
   driver: RuntimeWriteDriver
 ): RuntimeWriteDriverLease => {

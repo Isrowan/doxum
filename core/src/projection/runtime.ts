@@ -1,26 +1,19 @@
 import type { Unsubscribe } from '../runtime/contract';
-import { derive } from './derive';
-import {
-  incremental,
-  type IncrementalCollectionProcessor,
-  type IncrementalGroupDefine,
-  type IncrementalGroupOutputTree,
-  type IncrementalGroupProcessor,
-  type IncrementalValueProcessor,
-} from './advanced';
 import { collectionView, mapRead, snapshotCollectionView } from './collection/view';
-import type { CollectionChange, CollectionRead } from './contract';
+import type { CollectionRead } from './contract';
 import { ProjectionDisposedError } from './contract';
 import {
-  input,
   isProjection,
-  ownProjection,
+  ownProjections,
   producerOf,
   projectionRef,
+  type CollectionInput,
+  type CollectionInputDraft,
   type Input,
   type ProducerDefinition,
   type Projection,
 } from './definition';
+import { isPlainObject } from '../value/record';
 import { createProcessor } from './graph/processor';
 import {
   createDirectReadable,
@@ -31,51 +24,46 @@ import {
 import type { Readable } from '../readable';
 import { createScheduler, type OutputRecord, type ProducerRecord } from './graph/scheduler';
 import { createSourceRegistry } from './source/registry';
-import type { KeyedInputDraft, SourceWrite } from './source/boundary';
-
-type KeyedDraft<K extends string, V> = {
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  set(key: K, value: V): void;
-  remove(key: K): void;
-};
+import type { SourceWrite } from './source/boundary';
 
 export type ProjectionRuntime = {
-  get<T>(projection: Projection<T, unknown>): T;
-  readable<T>(projection: Projection<T, unknown>): Readable<T>;
-  readable<T, R>(
-    projection: Projection<T, unknown>,
+  read<T>(projection: Projection<T>): T;
+  select<T>(projection: Projection<T>): Readable<T>;
+  select<T, R>(
+    projection: Projection<T>,
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
-  set<T>(input: Input<T>, value: T): void;
+  update<T>(input: Input<T>, value: T): void;
   update<K extends string, V>(
-    input: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
-    run: (draft: KeyedDraft<K, V>) => void
+    input: CollectionInput<K, V>,
+    run: (draft: CollectionInputDraft<K, V>) => void
   ): void;
-  batch<T>(run: () => T): T;
-  batch<T>(options: { readonly cause?: unknown }, run: () => T): T;
+  batch<T>(run: () => T, options?: { readonly cause?: unknown }): T;
   scope(): ProjectionScope;
   dispose(): void;
 };
 
+type ProjectionOwnershipTree = {
+  readonly [name: string]: Projection<unknown> | ProjectionOwnershipTree;
+};
+
 export type ProjectionScope = {
-  readonly input: typeof input;
-  readonly derive: typeof derive;
-  readonly incremental: typeof incremental;
-  get<T>(projection: Projection<T, unknown>): T;
-  readable<T>(projection: Projection<T, unknown>): Readable<T>;
-  readable<T, R>(
-    projection: Projection<T, unknown>,
+  own<P extends Projection<unknown>>(projection: P): P;
+  own<T extends ProjectionOwnershipTree>(tree: T): T;
+  read<T>(projection: Projection<T>): T;
+  select<T>(projection: Projection<T>): Readable<T>;
+  select<T, R>(
+    projection: Projection<T>,
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
-  set<T>(input: Input<T>, value: T): void;
+  update<T>(input: Input<T>, value: T): void;
   update<K extends string, V>(
-    input: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
-    run: (draft: KeyedDraft<K, V>) => void
+    input: CollectionInput<K, V>,
+    run: (draft: CollectionInputDraft<K, V>) => void
   ): void;
-  batch: ProjectionRuntime['batch'];
+  batch<T>(run: () => T, options?: { readonly cause?: unknown }): T;
   dispose(): void;
 };
 
@@ -150,15 +138,13 @@ export const createProjectionRuntime = (options?: {
       });
     }
 
+    definition.materialized = true;
     materialized.set(definition, result);
     rememberScoped(definition, requester);
     return result;
   };
 
-  const resolveOutput = (
-    projection: Projection<unknown, unknown>,
-    requester?: ScopeState
-  ): OutputRecord => {
+  const resolveOutput = (projection: Projection<unknown>, requester?: ScopeState): OutputRecord => {
     const ref = projectionRef(projection);
     const producer = materializeProducer(ref.producer, requester);
     const output = producer.outputs[ref.output];
@@ -193,17 +179,17 @@ export const createProjectionRuntime = (options?: {
     return current;
   };
 
-  const get = <T>(projection: Projection<T, unknown>, requester?: ScopeState): T =>
-    publicCurrent(resolveOutput(projection as Projection<unknown, unknown>, requester)) as T;
+  const readProjection = <T>(projection: Projection<T>, requester?: ScopeState): T =>
+    publicCurrent(resolveOutput(projection as Projection<unknown>, requester)) as T;
 
   const readableSource = <T>(
-    projection: Projection<T, unknown>,
+    projection: Projection<T>,
     requester?: ScopeState
   ): ProjectionReadableSource<T> => {
-    const output = resolveOutput(projection as Projection<unknown, unknown>, requester);
+    const output = resolveOutput(projection as Projection<unknown>, requester);
     return Object.freeze({
       kind: output.kind,
-      current: () => get(projection, requester),
+      current: () => readProjection(projection, requester),
       revision: () => {
         assertOutput(output);
         return output.revision();
@@ -213,7 +199,7 @@ export const createProjectionRuntime = (options?: {
   };
 
   const makeReadable = <T, R>(
-    projection: Projection<T, unknown>,
+    projection: Projection<T>,
     selector?: (value: T) => R,
     equality?: (previous: R, next: R) => boolean,
     requester?: ScopeState
@@ -224,24 +210,21 @@ export const createProjectionRuntime = (options?: {
       : createDirectReadable(source);
   };
 
-  function readable<T>(projection: Projection<T, unknown>): Readable<T>;
-  function readable<T, R>(
-    projection: Projection<T, unknown>,
+  function selectProjection<T>(projection: Projection<T>): Readable<T>;
+  function selectProjection<T, R>(
+    projection: Projection<T>,
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
-  function readable<T, R>(
-    projection: Projection<T, unknown>,
+  function selectProjection<T, R>(
+    projection: Projection<T>,
     selector?: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<T | R> {
     return makeReadable(projection, selector, equality);
   }
 
-  const inputWrite = (
-    target: Projection<unknown, unknown>,
-    requester?: ScopeState
-  ): SourceWrite => {
+  const inputWrite = (target: Projection<unknown>, requester?: ScopeState): SourceWrite => {
     const ref = projectionRef(target);
     if (ref.output !== 0 || ref.producer.kind !== 'source')
       throw new TypeError('Projection is not an input.');
@@ -255,32 +238,24 @@ export const createProjectionRuntime = (options?: {
     return write;
   };
 
-  const setInput = <T>(target: Input<T>, value: T, requester?: ScopeState): void => {
-    const write = inputWrite(target as Projection<unknown, unknown>, requester);
-    if (write.kind !== 'value') throw new TypeError('Projection is not a value input.');
-    write.set(value);
-  };
-
-  const updateInput = <K extends string, V>(
-    target: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
-    run: (draft: KeyedDraft<K, V>) => void,
-    requester?: ScopeState
-  ): void => {
-    const write = inputWrite(target as Projection<unknown, unknown>, requester);
-    if (write.kind !== 'collection') throw new TypeError('Projection is not a collection input.');
-    write.update(run as (draft: KeyedInputDraft<string, unknown>) => void);
-  };
-
-  function batch<T>(run: () => T): T;
-  function batch<T>(options: { readonly cause?: unknown }, run: () => T): T;
-  function batch<T>(
-    optionsOrCallback: { readonly cause?: unknown } | (() => T),
-    maybeCallback?: () => T
-  ): T {
-    return typeof optionsOrCallback === 'function'
-      ? scheduler.batch(optionsOrCallback)
-      : scheduler.batch(optionsOrCallback, maybeCallback);
+  function update<T>(target: Input<T>, value: T): void;
+  function update<K extends string, V>(
+    target: CollectionInput<K, V>,
+    run: (draft: CollectionInputDraft<K, V>) => void
+  ): void;
+  function update(target: Projection<unknown>, valueOrRun: unknown): void {
+    const write = inputWrite(target);
+    if (write.kind === 'value') {
+      write.set(valueOrRun);
+      return;
+    }
+    if (typeof valueOrRun !== 'function')
+      throw new TypeError('Collection input update requires a draft callback.');
+    write.update(valueOrRun as (draft: CollectionInputDraft<string, unknown>) => void);
   }
+
+  const batch = <T>(run: () => T, options?: { readonly cause?: unknown }): T =>
+    options === undefined ? scheduler.batch(run) : scheduler.batch(options, run);
 
   const disposeScope = (state: ScopeState): void => {
     if (!state.active) return;
@@ -312,67 +287,45 @@ export const createProjectionRuntime = (options?: {
       if (!state.active) throw new ProjectionDisposedError();
       scheduler.assertActive();
     };
-    const own = <P extends Projection<unknown, unknown>>(projection: P): P => {
+    function own<P extends Projection<unknown>>(projection: P): P;
+    function own<T extends ProjectionOwnershipTree>(tree: T): T;
+    function own<T extends Projection<unknown> | ProjectionOwnershipTree>(target: T): T {
       assertActive();
-      return ownProjection(projection, state);
-    };
-    const ownOutputTree = <T>(tree: T): T => {
-      if (isProjection(tree)) return own(tree as Projection<unknown, unknown>) as T;
-      if (!tree || typeof tree !== 'object')
-        throw new TypeError('Incremental group output tree must be an object.');
-      for (const value of Object.values(tree as Record<string, unknown>)) ownOutputTree(value);
-      return tree;
-    };
+      const projections: Projection<unknown>[] = [];
+      const collect = (value: Projection<unknown> | ProjectionOwnershipTree): void => {
+        if (isProjection(value)) {
+          projections.push(value);
+          return;
+        }
+        if (!isPlainObject(value))
+          throw new TypeError('Projection ownership tree must be a plain object.');
+        for (const key of Reflect.ownKeys(value)) {
+          if (typeof key !== 'string')
+            throw new TypeError('Projection ownership tree keys must be strings.');
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (!descriptor?.enumerable || !('value' in descriptor))
+            throw new TypeError('Projection ownership tree must use enumerable data properties.');
+          const child = descriptor.value;
+          if (!isProjection(child) && !isPlainObject(child))
+            throw new TypeError('Projection ownership tree leaves must be projections.');
+          collect(child as Projection<unknown> | ProjectionOwnershipTree);
+        }
+      };
+      collect(target);
+      if (!projections.length)
+        throw new TypeError('Projection ownership tree must contain a projection.');
+      ownProjections(projections, state);
+      return target;
+    }
 
-    const scopedInput: typeof input = Object.assign(
-      <T>(initial: T, equality?: (previous: T, next: T) => boolean) =>
-        own(input(initial, equality)),
-      {
-        collection: <K extends string, V>(initial?: ReadonlyMap<K, V>) =>
-          own(input.collection(initial)),
-      }
-    );
-    const scopedKeyedDerive = ((...args: unknown[]) =>
-      own(
-        Reflect.apply(derive.keyed, undefined, args) as Projection<unknown, unknown>
-      )) as typeof derive.keyed;
-    const scopedDerive: typeof derive = Object.assign(
-      <const D extends readonly Projection<unknown, unknown>[], T>(
-        dependencies: D,
-        compute: Parameters<typeof derive<D, T>>[1],
-        equality?: (previous: T, next: T) => boolean
-      ) => own(derive(dependencies, compute, equality)),
-      { keyed: scopedKeyedDerive }
-    );
-    const scopedIncremental: typeof incremental = Object.assign(
-      <const D extends readonly Projection<unknown, unknown>[], T>(
-        dependencies: D,
-        processor: IncrementalValueProcessor<D, T>
-      ) => own(incremental(dependencies, processor)),
-      {
-        collection: <const D extends readonly Projection<unknown, unknown>[], K extends string, V>(
-          dependencies: D,
-          processor: IncrementalCollectionProcessor<D, K, V>
-        ) => own(incremental.collection(dependencies, processor)),
-        group: <
-          const D extends readonly Projection<unknown, unknown>[],
-          const O extends IncrementalGroupOutputTree,
-        >(
-          dependencies: D,
-          defineOutputs: (define: IncrementalGroupDefine) => O,
-          processor: IncrementalGroupProcessor<D, O>
-        ) => ownOutputTree(incremental.group(dependencies, defineOutputs, processor)),
-      }
-    );
-
-    function scopeReadable<T>(projection: Projection<T, unknown>): Readable<T>;
-    function scopeReadable<T, R>(
-      projection: Projection<T, unknown>,
+    function scopeSelect<T>(projection: Projection<T>): Readable<T>;
+    function scopeSelect<T, R>(
+      projection: Projection<T>,
       selector: (value: T) => R,
       equality?: (previous: R, next: R) => boolean
     ): Readable<R>;
-    function scopeReadable<T, R>(
-      projection: Projection<T, unknown>,
+    function scopeSelect<T, R>(
+      projection: Projection<T>,
       selector?: (value: T) => R,
       equality?: (previous: R, next: R) => boolean
     ): Readable<T | R> {
@@ -403,48 +356,45 @@ export const createProjectionRuntime = (options?: {
       });
     }
 
-    function scopeBatch<T>(run: () => T): T;
-    function scopeBatch<T>(options: { readonly cause?: unknown }, run: () => T): T;
-    function scopeBatch<T>(
-      optionsOrCallback: { readonly cause?: unknown } | (() => T),
-      maybeCallback?: () => T
-    ): T {
+    function scopeUpdate<T>(target: Input<T>, value: T): void;
+    function scopeUpdate<K extends string, V>(
+      target: CollectionInput<K, V>,
+      run: (draft: CollectionInputDraft<K, V>) => void
+    ): void;
+    function scopeUpdate(target: Projection<unknown>, valueOrRun: unknown): void {
       assertActive();
-      return typeof optionsOrCallback === 'function'
-        ? batch(optionsOrCallback)
-        : batch(optionsOrCallback, maybeCallback!);
+      const write = inputWrite(target, state);
+      if (write.kind === 'value') {
+        write.set(valueOrRun);
+        return;
+      }
+      if (typeof valueOrRun !== 'function')
+        throw new TypeError('Collection input update requires a draft callback.');
+      write.update(valueOrRun as (draft: CollectionInputDraft<string, unknown>) => void);
+    }
+
+    function scopeBatch<T>(run: () => T, options?: { readonly cause?: unknown }): T {
+      assertActive();
+      return batch(run, options);
     }
 
     return Object.freeze({
-      input: scopedInput,
-      derive: scopedDerive,
-      incremental: scopedIncremental,
-      get: <T>(projection: Projection<T, unknown>) => {
+      own,
+      read: <T>(projection: Projection<T>) => {
         assertActive();
-        return get(projection, state);
+        return readProjection(projection, state);
       },
-      readable: scopeReadable,
-      set: <T>(target: Input<T>, value: T) => {
-        assertActive();
-        setInput(target, value, state);
-      },
-      update: <K extends string, V>(
-        target: Input<ReadonlyMap<K, V>, CollectionChange<K, V>>,
-        run: (draft: KeyedDraft<K, V>) => void
-      ) => {
-        assertActive();
-        updateInput(target, run, state);
-      },
+      select: scopeSelect,
+      update: scopeUpdate,
       batch: scopeBatch,
       dispose: () => disposeScope(state),
     });
   };
 
   return Object.freeze({
-    get,
-    readable,
-    set: setInput,
-    update: updateInput,
+    read: readProjection,
+    select: selectProjection,
+    update,
     batch,
     scope: createScope,
     dispose: () => {

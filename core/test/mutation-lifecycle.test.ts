@@ -122,9 +122,8 @@ describe('mutation execution boundary', () => {
   it('restores earlier replay batches when a later history batch fails validation', () => {
     let rejectZero = false;
     const model = object({
-      a: field((v: unknown) => {
+      a: field<number>((v: unknown) => {
         if (typeof v !== 'number' || (rejectZero && v === 0)) throw new Error('number');
-        return v;
       }),
       z: field<number>(),
     });

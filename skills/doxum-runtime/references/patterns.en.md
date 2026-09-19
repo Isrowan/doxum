@@ -110,42 +110,53 @@ const decorated = derive.keyed(
     meta: { source: metadata, key: row => row.metadataId },
     density,
   },
-  (row, { meta, density }) => formatRow(row, meta, density)
+  (row, _rowId, { meta, density }) => formatRow(row, meta, density)
 );
-const count = derive([labels], labels => labels.size);
+const count = derive({ labels }, ({ labels }) => labels.size);
+const selection = input.collection<RowId, boolean>();
 const runtime = createProjectionRuntime({ onError: console.error });
-runtime.get(decorated);
-runtime.get(count);
+runtime.read(decorated);
+runtime.read(count);
+runtime.update(density, 'compact');
+runtime.update(selection, draft => draft.set(rowId, true));
 ```
 
-Provide the Runtime through `ProjectionProvider`, then use `useProjection` for
-projection definitions and `useProjection(projection, selector)` for keyed reads.
-`useInput` returns a value and setter. `derive.keyed` owns key-preserving selection
-and declared dynamic keyed lookup; the Runtime owns its reverse dependency index.
-Use tuple `derive` when the result is an aggregate or otherwise has no preserved
-per-key identity.
-Advanced collection processors in `doxum/advanced` stage `output.set/remove/order`
-and use scoped previous/next reads for custom retained/cross-key algorithms.
-Processor dependencies remain explicit even though React selectors track actual reads.
+Use named-object `derive` for aggregate values. Use `derive.keyed` when one keyed
+driver owns output keys/order. Its named dependency form handles dynamic keyed lookups;
+the Runtime owns the binding/reverse index. Use `input.collection` for Runtime-local
+keyed UI/application state rather than canonical document state.
+
+Provide the Runtime or a scope through `ProjectionProvider`. `useProjection` reads
+projections, including `useProjection(projection, selector, equality?)`; `useInput`
+handles both scalar and collection inputs. Document selectors use
+`useDocumentSelector(document, selector, equality?)` independently of the provider.
 
 ## Multi-output incremental processor
 
+Use this only when outputs share retained state or cross-key work that pure `derive`
+and `derive.keyed` cannot express:
+
 ```ts
 const render = incremental.group(
-  [scene],
-  define => ({
-    cards: define.collection<string, Card>(),
-    count: define.value<number>(),
-  }),
-  ({ sources, outputs }) => {
-    const cards = buildCards(sources[0]);
-    for (const [id, card] of cards) outputs.cards.set(id, card);
-    outputs.cards.order([...cards.keys()]);
-    outputs.count.set(cards.size);
+  { scene },
+  {
+    output: define => ({
+      cards: define.collection<string, Card>(),
+      count: define.value<number>(),
+    }),
+    state: () => ({ runs: 0 }),
+    process: ({ values, output, state }) => {
+      state.runs++;
+      const cards = buildCards(values.scene);
+      for (const [id, card] of cards) output.cards.set(id, card);
+      output.cards.order([...cards.keys()]);
+      output.count.set(cards.size);
+    },
   }
 );
 ```
 
-`define.value` / `define.collection` exist only inside the `incremental.group`
-declaration callback. Return a nested plain object when related output namespaces belong
-to the same processor.
+`define.value` / `define.collection` exist only inside the `output` declaration.
+The returned nested object mirrors ordinary Projection leaves from one processor.
+Dependencies are named; declare `state()` only when retained state is needed. Runtime
+recovery recreates declared state after a processor fault.

@@ -121,28 +121,21 @@ export const createProcessor = (
     return Object.freeze(changed);
   };
 
-  const run = (reset: boolean, runCause: unknown): readonly OutputRecord[] => {
+  const run = (reset: boolean, runCause: unknown, recreate = false): readonly OutputRecord[] => {
     cause = runCause;
     let active = true;
     try {
       const scopeActive = () => active;
       const sources = Object.freeze(dependencies.map(output => output.context(scopeActive)));
-      let outputs = begin(scopeActive, reset);
+      const outputs = begin(scopeActive, reset);
+      if (recreate && instance) {
+        instance.release?.();
+        instance = undefined;
+      }
       if (!instance) instance = definition.create();
       profile.materialized[reset ? 'rebuilt' : 'updated']();
-      let result = instance.evaluate({ reset, cause: runCause, sources, outputs });
+      const result = instance.evaluate({ reset, cause: runCause, sources, outputs });
       assertSynchronous(result);
-      if (result?.kind === 'rebuild') {
-        if (reset) throw new TypeError('Initial or reset projection processor cannot rebuild.');
-        instance.release?.();
-        instance = definition.create();
-        outputs = begin(scopeActive, true);
-        result = instance.evaluate({ reset: true, cause: runCause, sources, outputs });
-        assertSynchronous(result);
-        if (result?.kind === 'rebuild')
-          throw new TypeError('Reset projection processor cannot rebuild again.');
-        return seal(true);
-      }
       return seal(reset);
     } finally {
       active = false;

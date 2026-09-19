@@ -1,12 +1,12 @@
-import type { ObjectNode } from '../schema';
+import type { ObjectSchema } from '../schema';
 import { createAccess, type Read } from '../access/scope';
 import type { DependencyTracker } from '../access/dependency';
 import { DocumentDisposedError } from './contract';
-import type { DocumentReadable } from './contract';
+import type { ReadonlyDocument } from './contract';
 import { contextOf } from './context';
 
-export const readWith = <TSchema extends ObjectNode, TResult>(
-  runtime: DocumentReadable<TSchema>,
+export const readWith = <TSchema extends ObjectSchema<object>, TResult>(
+  runtime: ReadonlyDocument<TSchema>,
   run: (read: Read<TSchema>) => TResult,
   dependencies?: DependencyTracker
 ): TResult => {

@@ -93,14 +93,15 @@ export type CollectionDraft<K extends string, V> = {
 };
 
 export class ProjectionError extends Error {
+  readonly cause: unknown;
+
   constructor(
     readonly phase: 'processor' | 'listener' | 'source' | 'blocked',
-    readonly identity: string,
-    readonly revisions: readonly number[],
     cause: unknown
   ) {
-    super(`Projection ${phase} failed: ${identity}`, { cause });
+    super(`Projection ${phase} failed.`, { cause });
     this.name = 'ProjectionError';
+    this.cause = cause;
   }
 }
 

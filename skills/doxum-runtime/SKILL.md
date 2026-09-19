@@ -41,19 +41,24 @@ Before runtime changes read [invariants](references/invariants.en.md) or
 - Paths belong in subscription, impact and collection source callbacks.
 - Projection definitions are lazy; one ProjectionRuntime owns all materialized
   producers, outputs, scheduling and source attachments for that Runtime.
-  Use tuple `derive` for pure aggregate values. Use `derive.keyed` when one keyed
+  Use named-object `derive` for pure aggregate values. Use `derive.keyed` when one keyed
   driver owns the output key domain/order: per-entry equality suppresses unchanged
   selected values. Its dependency form uses a named object: plain Projection members
   invalidate the driver key set, while `{ source, key }` members let the Runtime own
   per-output-key source bindings and reverse lookup. Selectors receive
-  `(entry, dependencies, key)`. The producer graph remains explicit and static;
-  processors never discover dependencies with `runtime.get()`.
+  `(entry, key)` or `(entry, key, dependencies)`. The producer graph remains explicit and static;
+  processors never perform imperative Runtime reads to discover dependencies.
+  A `ProjectionScope` only adds lifecycle ownership through `scope.own(...)`; create
+  definitions with the root declaration APIs, then own a projection or static output tree
+  before that definition is first materialized as a root.
   Use advanced `incremental` only for retained state or cross-key coordination that
   cannot be expressed by `derive.keyed`. React selector tracking remains a consumer
   concern through `ProjectionProvider` and `useProjection(projection, selector)`.
-- `incremental.group` declares several outputs through its synchronous `define`
-  callback. `define.value` and `define.collection` are callback methods, not separate
-  imports; every returned leaf is an ordinary Projection from the same producer.
+- Advanced incremental definitions always declare `process`; `state()` is present only
+  when retained state is actually needed. `incremental.group` declares its static
+  output tree through the synchronous `output` callback. `define.value` and
+  `define.collection` are callback methods, not separate imports; every returned leaf
+  is an ordinary Projection from the same producer.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters consume standard `Readable`,
   document `select`, and projection readables without internal target/address protocols.

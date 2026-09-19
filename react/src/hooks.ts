@@ -1,6 +1,6 @@
 import type {
-  DocumentReadable,
-  ObjectNode,
+  ReadonlyDocument,
+  ObjectSchema,
   DocumentSelector,
   HistoryState,
   LocalHistory,
@@ -10,6 +10,8 @@ import type {
   ProjectionScope,
   Projection,
   Input,
+  CollectionInput,
+  CollectionInputDraft,
 } from 'doxum';
 import { select } from 'doxum';
 import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react';
@@ -17,14 +19,14 @@ import { createContext, useCallback, useContext, useMemo, useSyncExternalStore }
 const ProjectionContext = createContext<ProjectionRuntime | ProjectionScope | undefined>(undefined);
 export const ProjectionProvider = ProjectionContext.Provider;
 
-export function useProjection<T>(projection: Projection<T, unknown>): T;
+export function useProjection<T>(projection: Projection<T>): T;
 export function useProjection<T, R>(
-  projection: Projection<T, unknown>,
+  projection: Projection<T>,
   selector: (value: T) => R,
   equality?: (previous: R, next: R) => boolean
 ): R;
 export function useProjection<T, R>(
-  projection: Projection<T, unknown>,
+  projection: Projection<T>,
   selector?: (value: T) => R,
   equality: (previous: R, next: R) => boolean = Object.is
 ): T | R {
@@ -32,33 +34,36 @@ export function useProjection<T, R>(
   const owner = context;
   if (!owner) throw new Error('ProjectionRuntime is required.');
   const readable = useMemo(
-    () => (selector ? owner.readable(projection, selector, equality) : owner.readable(projection)),
+    () => (selector ? owner.select(projection, selector, equality) : owner.select(projection)),
     [equality, owner, projection, selector]
   );
   return useReadable(readable as Readable<T | R>);
 }
 
-export function useInput<T>(input: Input<T>): readonly [T, (value: T) => void] {
+export function useInput<T>(input: Input<T>): readonly [T, (value: T) => void];
+export function useInput<K extends string, V>(
+  input: CollectionInput<K, V>
+): readonly [ReadonlyMap<K, V>, (run: (draft: CollectionInputDraft<K, V>) => void) => void];
+export function useInput(input: Projection<unknown>): readonly [unknown, (next: never) => void] {
   const context = useContext(ProjectionContext);
   const owner = context;
   if (!owner) throw new Error('ProjectionRuntime is required.');
   const value = useProjection(input);
-  const set = useCallback((next: T) => owner.set(input, next), [input, owner]);
-  return useMemo(() => [value, set] as const, [set, value]);
+  const update = useCallback(
+    (next: never) =>
+      (owner.update as (target: Projection<unknown>, next: unknown) => void)(input, next),
+    [input, owner]
+  );
+  return useMemo(() => [value, update] as const, [update, value]);
 }
-
-export type DocumentSelectorOptions<TResult> = {
-  readonly isEqual?: (previous: TResult, next: TResult) => boolean;
-};
 
 const objectIs = <T>(previous: T, next: T): boolean => Object.is(previous, next);
 
-export function useDocumentSelector<TSchema extends ObjectNode, TResult>(
-  runtime: DocumentReadable<TSchema>,
+export function useDocumentSelector<TSchema extends ObjectSchema<object>, TResult>(
+  runtime: ReadonlyDocument<TSchema>,
   selector: DocumentSelector<TSchema, TResult>,
-  options?: DocumentSelectorOptions<TResult>
+  equality: (previous: TResult, next: TResult) => boolean = objectIs
 ): TResult {
-  const equality = options?.isEqual ?? objectIs;
   const readable = useMemo(
     () => select(runtime, selector, equality),
     [equality, runtime, selector]

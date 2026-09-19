@@ -1,61 +1,68 @@
 import { collectionView } from './collection/view';
 import type { CollectionChange, CollectionDraft, CollectionRead, SourceContext } from './contract';
 import type {
-  CollectionOutputEvaluation,
   OutputDefinition,
   OutputEvaluation,
   Projection,
-  Rebuild,
+  ProjectionChange,
+  ProjectionWithChange,
 } from './definition';
-import { defineProcessor, projectionRef } from './definition';
+import { defineProcessor, isProjection, projectionRef } from './definition';
 import { assertSynchronous } from './graph/scheduler';
 import { isPlainObject } from '../value/record';
 
-type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
-  readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
+type ProjectionDependencies = Readonly<Record<string, Projection<unknown>>>;
+
+type ProjectionValues<D extends ProjectionDependencies> = {
+  readonly [K in keyof D]: D[K] extends Projection<infer T> ? T : never;
 };
 
-type ProjectionChanges<D extends readonly Projection<unknown, unknown>[]> = {
-  readonly [K in keyof D]: D[K] extends Projection<unknown, infer C>
-    ? [C] extends [undefined]
-      ? undefined
-      : C | undefined
-    : undefined;
+type ProjectionChanges<D extends ProjectionDependencies> = {
+  readonly [K in keyof D]: ProjectionChange<D[K]> extends undefined
+    ? undefined
+    : ProjectionChange<D[K]> | undefined;
 };
 
-export type IncrementalValueContext<D extends readonly Projection<unknown, unknown>[], T> = {
-  readonly sources: ProjectionValues<D>;
+type RetainedStateContext<State> = [State] extends [never] ? {} : { readonly state: State };
+type RetainedStateDefinition<State> = [State] extends [never]
+  ? { readonly state?: never }
+  : { readonly state: () => State };
+
+export type IncrementalValueContext<D extends ProjectionDependencies, T, State = never> = {
+  readonly values: ProjectionValues<D>;
   readonly changes: ProjectionChanges<D>;
   readonly previous: T | undefined;
   readonly reset: boolean;
   readonly cause: unknown;
-  readonly state: Record<string, unknown>;
-};
+} & RetainedStateContext<State>;
 
-export type IncrementalValueProcessor<D extends readonly Projection<unknown, unknown>[], T> = (
-  context: IncrementalValueContext<D, T>
-) => T | Rebuild;
+export type IncrementalValueDefinition<D extends ProjectionDependencies, T, State = never> = {
+  readonly process: (context: IncrementalValueContext<D, T, State>) => T;
+} & RetainedStateDefinition<State>;
 
 export type IncrementalCollectionContext<
-  D extends readonly Projection<unknown, unknown>[],
+  D extends ProjectionDependencies,
   K extends string,
   V,
+  State = never,
 > = {
-  readonly sources: ProjectionValues<D>;
+  readonly values: ProjectionValues<D>;
   readonly changes: ProjectionChanges<D>;
   readonly previous: CollectionRead<K, V>;
   readonly next: CollectionRead<K, V>;
   readonly reset: boolean;
   readonly cause: unknown;
-  readonly state: Record<string, unknown>;
   readonly output: CollectionDraft<K, V>;
-};
+} & RetainedStateContext<State>;
 
-export type IncrementalCollectionProcessor<
-  D extends readonly Projection<unknown, unknown>[],
+export type IncrementalCollectionDefinition<
+  D extends ProjectionDependencies,
   K extends string,
   V,
-> = (context: IncrementalCollectionContext<D, K, V>) => void | Rebuild;
+  State = never,
+> = {
+  readonly process: (context: IncrementalCollectionContext<D, K, V, State>) => void;
+} & RetainedStateDefinition<State>;
 
 declare const groupOutput: unique symbol;
 
@@ -72,8 +79,6 @@ type GroupOutputShape = {
     GroupCollectionOutput<string, unknown> | GroupValueOutput<unknown> | GroupOutputShape;
 };
 
-export type IncrementalGroupOutputTree = GroupOutputShape;
-
 type GroupOutputBuilder = {
   collection<K extends string, V>(
     equality?: (previous: V, next: V) => boolean
@@ -81,11 +86,9 @@ type GroupOutputBuilder = {
   value<T>(equality?: (previous: T, next: T) => boolean): GroupValueOutput<T>;
 };
 
-export type IncrementalGroupDefine = GroupOutputBuilder;
-
-export type GroupProjections<O> =
+type GroupProjections<O> =
   O extends GroupCollectionOutput<infer K, infer V>
-    ? Projection<ReadonlyMap<K, V>, CollectionChange<K, V>>
+    ? ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>
     : O extends GroupValueOutput<infer T>
       ? Projection<T>
       : { readonly [P in keyof O]: GroupProjections<O[P]> };
@@ -105,78 +108,149 @@ type GroupDrafts<O> =
       : { readonly [P in keyof O]: GroupDrafts<O[P]> };
 
 export type IncrementalGroupContext<
-  D extends readonly Projection<unknown, unknown>[],
+  D extends ProjectionDependencies,
   O extends GroupOutputShape,
+  State = never,
 > = {
-  readonly sources: ProjectionValues<D>;
+  readonly values: ProjectionValues<D>;
   readonly changes: ProjectionChanges<D>;
   readonly previous: GroupReads<O>;
   readonly next: GroupReads<O>;
-  readonly outputs: GroupDrafts<O>;
+  readonly output: GroupDrafts<O>;
   readonly reset: boolean;
   readonly cause: unknown;
-  readonly state: Record<string, unknown>;
-};
+} & RetainedStateContext<State>;
 
-export type IncrementalGroupProcessor<
-  D extends readonly Projection<unknown, unknown>[],
+type IncrementalGroupDefinition<
+  D extends ProjectionDependencies,
   O extends GroupOutputShape,
-> = (context: IncrementalGroupContext<D, O>) => void | Rebuild;
+  State = never,
+> = {
+  readonly output: (define: GroupOutputBuilder) => O;
+  readonly process: (context: IncrementalGroupContext<D, O, State>) => void;
+} & RetainedStateDefinition<State>;
 
 const resetCollectionChange = Object.freeze({ kind: 'reset' as const });
-
-const isRebuild = (value: unknown): value is Rebuild =>
-  value !== null &&
-  typeof value === 'object' &&
-  (value as { readonly kind?: unknown }).kind === 'rebuild';
 
 const publicValue = (source: SourceContext): unknown =>
   source.kind === 'value' ? source.value : collectionView(source.read);
 
-const publicInputs = (
-  sources: readonly SourceContext[],
-  reset: boolean
-): { readonly values: readonly unknown[]; readonly changes: readonly unknown[] } => ({
-  values: Object.freeze(sources.map(publicValue)),
-  changes: Object.freeze(
-    sources.map(source =>
-      source.kind === 'collection' ? (reset ? resetCollectionChange : source.change) : undefined
-    )
-  ),
-});
-
-const validateDependencies = (dependencies: readonly Projection<unknown, unknown>[]) => {
-  if (!Array.isArray(dependencies))
-    throw new TypeError('Incremental dependencies must be projections.');
-  dependencies.forEach(projectionRef);
+const compileDependencies = <D extends ProjectionDependencies>(dependencies: D) => {
+  if (!isPlainObject(dependencies) || isProjection(dependencies))
+    throw new TypeError('Incremental dependencies must be a plain object.');
+  const names: string[] = [];
+  const projections: Projection<unknown>[] = [];
+  for (const key of Reflect.ownKeys(dependencies)) {
+    if (typeof key !== 'string')
+      throw new TypeError('Incremental dependency names must be strings.');
+    const descriptor = Object.getOwnPropertyDescriptor(dependencies, key);
+    if (!descriptor?.enumerable || !('value' in descriptor))
+      throw new TypeError('Incremental dependencies must be enumerable data properties.');
+    projectionRef(descriptor.value as Projection<unknown>);
+    names.push(key);
+    projections.push(descriptor.value as Projection<unknown>);
+  }
+  return Object.freeze({ names: Object.freeze(names), projections: Object.freeze(projections) });
 };
 
-function createIncrementalValue<const D extends readonly Projection<unknown, unknown>[], T>(
+const publicInputs = (
+  sources: readonly SourceContext[],
+  names: readonly string[],
+  reset: boolean
+): {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly changes: Readonly<Record<string, unknown>>;
+} => {
+  const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const changes: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (let index = 0; index < names.length; index++) {
+    const source = sources[index];
+    values[names[index]] = publicValue(source);
+    changes[names[index]] =
+      source.kind === 'collection' ? (reset ? resetCollectionChange : source.change) : undefined;
+  }
+  return Object.freeze({ values: Object.freeze(values), changes: Object.freeze(changes) });
+};
+
+function validateDefinition(
+  definition: unknown,
+  allowed: readonly string[],
+  label: string
+): asserts definition is Record<string, unknown> {
+  if (!isPlainObject(definition))
+    throw new TypeError(`${label} definition must be a plain object.`);
+  const allowedKeys = new Set(allowed);
+  for (const key of Reflect.ownKeys(definition)) {
+    if (typeof key !== 'string' || !allowedKeys.has(key))
+      throw new TypeError(`${label} definition contains an unknown property.`);
+    const descriptor = Object.getOwnPropertyDescriptor(definition, key);
+    if (!descriptor?.enumerable || !('value' in descriptor))
+      throw new TypeError(`${label} definition must contain enumerable data properties.`);
+  }
+}
+
+const validateRetainedState = (definition: Record<string, unknown>, label: string): void => {
+  if (
+    Object.prototype.hasOwnProperty.call(definition, 'state') &&
+    typeof definition.state !== 'function'
+  )
+    throw new TypeError(`${label} state must be a function when provided.`);
+};
+
+const initializeRetainedState = (definition: {
+  readonly state?: () => unknown;
+}): Readonly<Record<string, unknown>> => {
+  if (definition.state === undefined) return Object.freeze({});
+  const state = definition.state();
+  assertSynchronous(state);
+  return Object.freeze({ state });
+};
+
+type RuntimeIncrementalDefinition<Result> = {
+  readonly state?: () => unknown;
+  readonly process: (context: never) => Result;
+};
+
+function createIncrementalValue<const D extends ProjectionDependencies, T>(
   dependencies: D,
-  processor: IncrementalValueProcessor<D, T>
+  definition: IncrementalValueDefinition<D, T>
+): Projection<T>;
+function createIncrementalValue<const D extends ProjectionDependencies, T, State>(
+  dependencies: D,
+  definition: {
+    readonly state: () => State;
+    readonly process: (context: IncrementalValueContext<D, T, State>) => T;
+  }
+): Projection<T>;
+function createIncrementalValue<const D extends ProjectionDependencies, T>(
+  dependencies: D,
+  definition: RuntimeIncrementalDefinition<T>
 ): Projection<T> {
-  validateDependencies(dependencies);
+  const compiled = compileDependencies(dependencies);
+  validateDefinition(definition, ['state', 'process'], 'Incremental value');
+  validateRetainedState(definition, 'Incremental value');
+  if (typeof definition.process !== 'function')
+    throw new TypeError('Incremental value definition requires a process function.');
   const [projection] = defineProcessor({
-    dependencies,
+    dependencies: compiled.projections,
     outputs: [{ kind: 'value', equality: Object.is }],
     create: () => {
-      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      const state = initializeRetainedState(definition);
       return {
         evaluate: evaluation => {
           const output = evaluation.outputs[0];
           if (output.kind !== 'value') throw new Error('Incremental value output is invalid.');
-          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
-          const result = processor({
-            sources: publicInput.values as ProjectionValues<D>,
+          const publicInput = publicInputs(evaluation.sources, compiled.names, evaluation.reset);
+          const result = definition.process({
+            values: publicInput.values as ProjectionValues<D>,
             changes: publicInput.changes as ProjectionChanges<D>,
             previous: output.previous as T | undefined,
             reset: evaluation.reset,
             cause: evaluation.cause,
-            state,
-          });
+            ...state,
+          } as never);
           assertSynchronous(result);
-          if (isRebuild(result)) return result;
-          output.output.set(result as T);
+          output.output.set(result);
         },
       };
     },
@@ -184,43 +258,58 @@ function createIncrementalValue<const D extends readonly Projection<unknown, unk
   return projection as Projection<T>;
 }
 
+function createIncrementalCollection<const D extends ProjectionDependencies, K extends string, V>(
+  dependencies: D,
+  definition: IncrementalCollectionDefinition<D, K, V>
+): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
 function createIncrementalCollection<
-  const D extends readonly Projection<unknown, unknown>[],
+  const D extends ProjectionDependencies,
   K extends string,
   V,
+  State,
 >(
   dependencies: D,
-  processor: IncrementalCollectionProcessor<D, K, V>
-): Projection<ReadonlyMap<K, V>, CollectionChange<K, V>> {
-  validateDependencies(dependencies);
+  definition: {
+    readonly state: () => State;
+    readonly process: (context: IncrementalCollectionContext<D, K, V, State>) => void;
+  }
+): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+function createIncrementalCollection<const D extends ProjectionDependencies, K extends string, V>(
+  dependencies: D,
+  definition: RuntimeIncrementalDefinition<void>
+): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>> {
+  const compiled = compileDependencies(dependencies);
+  validateDefinition(definition, ['state', 'process'], 'Incremental collection');
+  validateRetainedState(definition, 'Incremental collection');
+  if (typeof definition.process !== 'function')
+    throw new TypeError('Incremental collection definition requires a process function.');
   const [projection] = defineProcessor({
-    dependencies,
+    dependencies: compiled.projections,
     outputs: [{ kind: 'collection', equality: Object.is }],
     create: () => {
-      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      const state = initializeRetainedState(definition);
       return {
         evaluate: evaluation => {
           const output = evaluation.outputs[0];
           if (output.kind !== 'collection')
             throw new Error('Incremental collection output is invalid.');
-          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
-          const result = processor({
-            sources: publicInput.values as ProjectionValues<D>,
+          const publicInput = publicInputs(evaluation.sources, compiled.names, evaluation.reset);
+          const result = definition.process({
+            values: publicInput.values as ProjectionValues<D>,
             changes: publicInput.changes as ProjectionChanges<D>,
             previous: output.previous as CollectionRead<K, V>,
             next: output.next as CollectionRead<K, V>,
             reset: evaluation.reset,
             cause: evaluation.cause,
-            state,
             output: output.output as CollectionDraft<K, V>,
-          });
+            ...state,
+          } as never);
           assertSynchronous(result);
-          return isRebuild(result) ? result : undefined;
         },
       };
     },
   });
-  return projection as Projection<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+  return projection as ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
 }
 
 type GroupShape = number | { readonly [key: string]: GroupShape };
@@ -307,18 +396,35 @@ const hydrateGroupReads = (
 };
 
 function createIncrementalGroup<
-  const D extends readonly Projection<unknown, unknown>[],
+  const D extends ProjectionDependencies,
+  const O extends GroupOutputShape,
+>(dependencies: D, definition: IncrementalGroupDefinition<D, O>): GroupProjections<O>;
+function createIncrementalGroup<
+  const D extends ProjectionDependencies,
+  const O extends GroupOutputShape,
+  State,
+>(
+  dependencies: D,
+  definition: {
+    readonly output: (define: GroupOutputBuilder) => O;
+    readonly state: () => State;
+    readonly process: (context: IncrementalGroupContext<D, O, State>) => void;
+  }
+): GroupProjections<O>;
+function createIncrementalGroup<
+  const D extends ProjectionDependencies,
   const O extends GroupOutputShape,
 >(
   dependencies: D,
-  defineOutputs: (define: GroupOutputBuilder) => O,
-  processor: IncrementalGroupProcessor<D, O>
+  definition: RuntimeIncrementalDefinition<void> & {
+    readonly output: (define: GroupOutputBuilder) => O;
+  }
 ): GroupProjections<O> {
-  validateDependencies(dependencies);
-  if (typeof defineOutputs !== 'function')
-    throw new TypeError('Incremental group outputs must be declared by a callback.');
-  if (typeof processor !== 'function')
-    throw new TypeError('Incremental group processor must be a function.');
+  const compiled = compileDependencies(dependencies);
+  validateDefinition(definition, ['output', 'state', 'process'], 'Incremental group');
+  validateRetainedState(definition, 'Incremental group');
+  if (typeof definition.output !== 'function' || typeof definition.process !== 'function')
+    throw new TypeError('Incremental group definition requires output and process functions.');
 
   let active = true;
   const metadata = new Map<object, GroupOutputMetadata>();
@@ -342,7 +448,7 @@ function createIncrementalGroup<
       return descriptor as GroupValueOutput<T>;
     },
   };
-  const declared = defineOutputs(defineOutput);
+  const declared = definition.output(defineOutput);
   assertSynchronous(declared);
   active = false;
   const outputs: OutputDefinition[] = [];
@@ -354,28 +460,27 @@ function createIncrementalGroup<
     throw new TypeError('Every incremental group output must be returned by the declaration.');
 
   const projections = defineProcessor({
-    dependencies,
+    dependencies: compiled.projections,
     outputs,
     create: () => {
-      const state: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      const state = initializeRetainedState(definition);
       return {
         evaluate: evaluation => {
-          const publicInput = publicInputs(evaluation.sources, evaluation.reset);
-          const result = processor({
-            sources: publicInput.values as ProjectionValues<D>,
+          const publicInput = publicInputs(evaluation.sources, compiled.names, evaluation.reset);
+          const result = definition.process({
+            values: publicInput.values as ProjectionValues<D>,
             changes: publicInput.changes as ProjectionChanges<D>,
             previous: hydrateGroupReads(shape, evaluation.outputs, false) as GroupReads<O>,
             next: hydrateGroupReads(shape, evaluation.outputs, true) as GroupReads<O>,
-            outputs: hydrateGroupShape(
+            output: hydrateGroupShape(
               shape,
               evaluation.outputs.map(output => output.output)
             ) as GroupDrafts<O>,
             reset: evaluation.reset,
             cause: evaluation.cause,
-            state,
-          });
+            ...state,
+          } as never);
           assertSynchronous(result);
-          return isRebuild(result) ? result : undefined;
         },
       };
     },

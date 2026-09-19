@@ -17,11 +17,13 @@
    capture、restore 和按域 seal 分离；当前顺序确实变化后才复制最终 order，净变化为零也保留执行期间的回滚基线。
 5. 原子值按 Object.is 比较，canonical 结构依所有权契约保留原子引用；
    快照只复制结构，payload 与 commit、history 共享且只读，不做深复制或发布冻结。
-   校验器直接读取原始输入，必须纯同步，成功返回值被忽略。
+   validator 直接读取原始输入且必须纯同步；函数形式是 predicate/assertion，
+   Standard Schema 成功时不能 transform canonical value。
 6. list 以稳定键标记身份，替换值必须保留键。anchor 拥有排序语义；
    tree 拥有双向一致、连通、无环、空树或单根的拓扑约束。
-7. ObjectNode 拥有定义身份；runtime、history 和只读 alias 共享唯一 RuntimeContext
-   实例身份。共享路径 compiler 与 Core impact target 算法拥有寻址、身份、相等、
+7. 公开 `Schema` / `ObjectSchema` handle 拥有定义身份，concrete node 留在内部；
+   runtime、history 和 `document.readonly()` alias 共享唯一 RuntimeContext 实例身份。
+   共享路径 compiler 与 Core impact target 算法拥有寻址、身份、相等、
    分桶和精确匹配；React 只消费 Readable/select 契约。通知直接匹配分组变化，
    不构建 commit impact 索引。
 8. apply 要求 expectedRevision，记录本地真实旧状态。本地 reset 可撤销，
@@ -30,8 +32,9 @@
    `derive.keyed` 用一个命名依赖对象声明额外 source；其中 `{ source, key }` 成员可以
    把每个 output key 绑定到已显式声明 keyed source 的某个 key。物化后的 Runtime
    拥有这些 binding 和 reverse index，包括当前尚不存在的 source entry。processor
-   不通过 `runtime.get()` 创建图依赖。通知失败不撤销提交；batch 推迟投影发布，不推迟
-   文档提交与文档监听。
+   不通过 imperative Runtime read 创建图依赖。scope 只通过 `scope.own` 增加 lifecycle
+   ownership；scoped definition 可以依赖 root definition，root 与 sibling scope 不能依赖
+   scoped definition。通知失败不撤销提交；batch 推迟投影发布，不推迟文档提交与文档监听。
 10. local-sync 使用 Web Lock 领导权和连续 durable seq，先可见后异步持久化。
     版本 5 / 格式 3 拒绝旧数据库并保留原数据，附着期间禁止外部 replace 和 remote apply。
 11. core 框架无关，公开导出需明确用途；根 dist 为构建产物。

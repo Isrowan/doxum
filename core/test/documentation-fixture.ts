@@ -18,14 +18,17 @@ export const documentationExamples = () => {
   const initial: Value = { title: 'Launch', tasks: { a: { title: 'Write', done: false } } };
   const document = createDocument({ schema: model, initial });
   const tasks = observe(document, path => path.tasks);
-  const titles = derive([tasks], rows => new Map([...rows].map(([id, item]) => [id, item.title])));
-  const count = derive([titles], values => values.size);
+  const titles = derive(
+    { tasks },
+    ({ tasks }) => new Map([...tasks].map(([id, item]) => [id, item.title]))
+  );
+  const count = derive({ titles }, ({ titles }) => titles.size);
   const zoom = input(1);
-  const scaled = derive([count, zoom], (size, factor) => size * factor);
+  const scaled = derive({ count, zoom }, ({ count, zoom }) => count * zoom);
   const runtime = createProjectionRuntime({ onError: console.error });
-  expectSnapshot(runtime.get(scaled));
+  expectSnapshot(runtime.read(scaled));
   runtime.batch(() => {
-    runtime.set(zoom, 2);
+    runtime.update(zoom, 2);
     document.update(draft => {
       draft.title = 'Done';
     });
