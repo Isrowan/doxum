@@ -25,6 +25,11 @@ sources use `kind: 'value'` or `kind: 'collection'`; the caller still uses only
 Schema maps, tables, and `list(field, { keyOf })` nodes are all keyed collection
 paths. A list uses its schema `keyOf` identity and preserves document order in
 iteration; array-valued fields remain scalar value observations.
+Tree structure reuses the same source kinds: `path.tree.rootId` is a scalar,
+`path.tree.nodes` is a keyed collection, and `path.tree.nodes.item(id)` is a
+single-node value. Committed tree-node groups route directly to affected keyed
+entries, and the existing `CollectionOutput` publishes ordinary `CollectionChange`
+entries, so unrelated node snapshots keep their identity.
 
 External events are smaller than Runtime contexts. A value event carries the new
 `value` and `revision`; a collection event carries a stable `previous` read,

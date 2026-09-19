@@ -199,6 +199,14 @@ schema structure and shares immutable payloads, including opaque classes, functi
 list items and tree values. Snapshots never expose mutable canonical structure.
 There is no generic payload clone, field copier or separate snapshot copying protocol.
 
+Tree topology and tree payload presence are separate schema facts. `mutation/tree.ts`
+validates only empty-or-single-root connectivity, acyclicity and reciprocal
+parent/children links. `schema-value.ts` then validates every node payload against the
+tree's field schema: `tree(field(...))` requires an own `value`, while
+`tree(optional(field(...)))` permits it to be absent. Whole-tree optionality remains
+owned by `optional(tree(...))`. Initial state, parse, replacement and replay all enter
+this same schema validation boundary.
+
 Validators run on original references under a pure, synchronous contract. Successful
 outputs are ignored. There is no protective copy or deep transformation detection;
 input mutation is a contract violation. Shape, key, tree and ChangeSet validation
@@ -271,13 +279,18 @@ revalidated merely because one member or the order changed.
 Impact is derived only from sealed changes. Field/order indexes and collection
 query results are lazy. Collection queries do not construct a field trie.
 Subscriptions use a registration-time index to avoid scanning unrelated listeners.
-`impact-target.ts` classifies ordinary targets and membership-only targets, and
+`impact-target.ts` classifies ordinary targets, membership-only targets and tree
+structural root/node targets, and
 owns matching in both query directions. Notification traverses shared group
 prefixes and changed member branches to collect exact hits, without expanding
 flat changes or querying commit impact. Order changes reach ordinary ancestor
 targets; member-internal edits do not reach membership-only targets. Multiple
 hits invoke a listener once. The public impact trie remains lazy for explicit
 queries, including those made by projections.
+Tree ChangeSets keep their existing exact `before/after root + nodes[]` facts. A
+tree root target is affected only by a root transition, a tree-node target only by
+that node ID, and the tree `nodes` collection maps node transitions directly to
+added/updated/removed collection impact. Whole-tree targets remain aggregate targets.
 React's tracked selection uses internal dependency capabilities from `integration`;
 application subscription APIs accept symbolic paths directly.
 
@@ -307,9 +320,20 @@ revision for store integrations. Selector tracking and equality belong to a runt
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
 Schema map, table and list nodes with schema-owned stable keys all resolve through
-the same collection selector/source boundary. Lists use `keyOf` identity and keep
-document order in the collection read; ordinary array-valued fields remain scalar
-value observations.
+the same collection selector/source boundary. Tree structural paths reuse those same
+two source kinds: `tree.rootId` is a value source, `tree.nodes` is a keyed collection
+source, and `tree.nodes.item(id)` is a node value source. There is no TreeOutput,
+TreeChange or child Runtime. Lists use `keyOf` identity and keep document order in the
+collection read; ordinary array-valued fields remain scalar value observations.
+Document source routing uses the same target index as document subscriptions. Each
+source merges only the affected locations from committed groups and settles from the
+previously published snapshot plus the canonical final value. Structural sharing
+copies an affected container at most once per settle and reuses unchanged descendants;
+the projection layer does not replay ChangeSets as a second mutation engine. Multiple
+document commits inside one Projection Runtime batch collapse to the exact net
+published value. All pending document sources publish before dependent processors are
+run, which makes root/node tree sources causally atomic without a multi-output source
+protocol.
 External events carry only boundary cause/revision metadata and, for collections,
 a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
@@ -362,8 +386,13 @@ installs it in O(N). Neither operation loops a bulk intent through the single-ke
 and there is no transaction-local writable shadow order/index. Array insertion and
 removal remain O(N). `profile.address.listIndexes/listItems` counts index builds and
 scanned items; `profile.recorder.indexedGroups` counts coverage registrations. Tree deletion touches its
-subtree; child-order edits touch affected child arrays. These costs are deliberate
-and instrumented, not hidden behind a constant-time promise.
+subtree; child-order edits touch affected child arrays. Native `tree.nodes` projection
+work is proportional to touched node IDs rather than total tree size, and unchanged
+node snapshot references are retained. An aggregate tree still exposes a plain
+`Record` for `nodes`; path-copying such an aggregate may therefore copy O(N) key
+references, but it does not rebuild O(N) node structures. `profile.copy.treeNodes`
+measures actual detached tree-node copies. These costs are deliberate and
+instrumented, not hidden behind a constant-time promise.
 `profile.recorder.orderItems` counts first-touch baseline keys;
 `publishedOrderItems` counts detached final order keys. `core/bench/profile.ts`
 also reports generation advances for membership, value replay, sequence, tree and

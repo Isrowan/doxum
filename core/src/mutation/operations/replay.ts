@@ -2,7 +2,9 @@ import type { ChangeDirection, ChangeSet } from '../../changes';
 import type { MutationSession } from '../session';
 import { installOrder, installMember, orderOf } from '../state';
 import * as anchor from '../anchor';
-import { fail } from '../issue';
+import { fail, invalidValue } from '../issue';
+import { checkTreePayload, copyTreeNode } from '../../schema-value';
+import { validate as validTree } from '../tree';
 export function apply(
   session: MutationSession,
   changes: ChangeSet,
@@ -71,14 +73,13 @@ export function apply(
             : item.kind !== 'added'
               ? item.before
               : undefined;
-        installMember(
-          current.nodes,
-          item.id,
-          next !== undefined,
-          next && { ...next, children: [...next.children] }
-        );
+        if (next !== undefined) {
+          const issue = checkTreePayload(node.value, next, change.at.concat(item.id));
+          if (issue) invalidValue(issue);
+        }
+        installMember(current.nodes, item.id, next !== undefined, next && copyTreeNode(next));
       }
-      session.validate(node, current, change.at);
+      if (!validTree(current)) return fail(change.at, 'invalid-tree', 'Invalid tree structure.');
       session.invalidate();
     }
   }

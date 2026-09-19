@@ -36,6 +36,7 @@ import * as orderOperations from '../mutation/operations/order';
 import * as tree from '../mutation/tree';
 import * as anchor from '../mutation/anchor';
 import { profile } from '../profile';
+import * as impactTarget from '../impact-target';
 
 declare const scopeValue: unique symbol;
 type Scoped<N extends DocumentNode, W extends boolean, V = Infer<N>> = {
@@ -90,7 +91,7 @@ type ListAccess<T, W extends boolean> = {
       replace(key: string, value: ReadonlyValue<T>): void;
     }
   : {});
-type TreeAccess<T, W extends boolean> = {
+type TreeAccess<T, O extends boolean, W extends boolean> = {
   rootId(): string | undefined;
   get(id: string): ReadonlyValue<T> | undefined;
   has(id: string): boolean;
@@ -98,11 +99,18 @@ type TreeAccess<T, W extends boolean> = {
   children(id: string): readonly string[] | undefined;
 } & (W extends true
   ? {
-      insert(id: string, value: ReadonlyValue<T>, position?: tree.TreePosition): void;
+      insert(
+        id: string,
+        value: O extends true ? ReadonlyValue<T> | undefined : ReadonlyValue<T>,
+        position?: tree.TreePosition
+      ): void;
       move(id: string, position?: tree.TreePosition): void;
       remove(id: string): void;
-      replace(value: DocumentTreeValue<T>): void;
-      replace(id: string, value: ReadonlyValue<T>): void;
+      replace(value: DocumentTreeValue<T, O>): void;
+      replace(
+        id: string,
+        value: O extends true ? ReadonlyValue<T> | undefined : ReadonlyValue<T>
+      ): void;
     }
   : {});
 type NodeAccess<N extends DocumentNode, W extends boolean> =
@@ -122,8 +130,8 @@ type NodeAccess<N extends DocumentNode, W extends boolean> =
             ? TableAccess<K, V, W> & Scoped<N, W>
             : N extends ListNode<infer T>
               ? ListAccess<T, W> & Scoped<N, W>
-              : N extends TreeNode<infer T>
-                ? TreeAccess<T, W> & Scoped<N, W>
+              : N extends TreeNode<infer T, infer O>
+                ? TreeAccess<T, O, W> & Scoped<N, W>
                 : never;
 type Access<N extends DocumentNode, W extends boolean> = N extends { readonly optional: true }
   ? NodeAccess<N, W> | undefined
@@ -177,6 +185,11 @@ const collect = (
     kind === 'value' ? { kind, at } : { kind, at, ...(id === undefined ? {} : { id }) }
   );
 };
+const collectTree = (
+  context: AccessContext,
+  at: DocumentAddress,
+  selection: { readonly kind: 'root' } | { readonly kind: 'node'; readonly id: string }
+) => context.dependencies?.record(impactTarget.tree(at, selection));
 export const snapshot = <T>(value: T): Snapshot<T> => {
   const location = value && typeof value === 'object' ? locationOf(value) : undefined;
   if (!location) return value as Snapshot<T>;
@@ -505,20 +518,31 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
         const writable = writableTree(target, node);
         treeOperations.replace(context.session!, writable, valueOrId as string, value);
       };
-    const current = () => {
-      collect(context, at);
-      return collectionValue(target, node) as tree.MutableTree;
-    };
-    if (property === 'rootId') return () => current().rootId;
+    const current = () => collectionValue(target, node) as tree.MutableTree;
+    if (property === 'rootId')
+      return () => {
+        collectTree(context, at, { kind: 'root' });
+        return current().rootId;
+      };
     if (property === 'get')
       return (id: string) => {
+        collectTree(context, at, { kind: 'node', id });
         const value = current();
         return tree.contains(value, id) ? value.nodes[id].value : undefined;
       };
-    if (property === 'has') return (id: string) => tree.contains(current(), id);
-    if (property === 'parent') return (id: string) => tree.parent(current(), id);
+    if (property === 'has')
+      return (id: string) => {
+        collectTree(context, at, { kind: 'node', id });
+        return tree.contains(current(), id);
+      };
+    if (property === 'parent')
+      return (id: string) => {
+        collectTree(context, at, { kind: 'node', id });
+        return tree.parent(current(), id);
+      };
     if (property === 'children')
       return (id: string) => {
+        collectTree(context, at, { kind: 'node', id });
         const children = tree.children(current(), id);
         return children ? [...children] : undefined;
       };

@@ -11,6 +11,7 @@ import {
   observe,
   ProjectionDisposedError,
   table,
+  tree,
   type ExternalCollectionEvent,
   type ExternalValueEvent,
 } from '../src';
@@ -418,6 +419,115 @@ describe('projection runtime', () => {
       kind: 'incremental',
       updated: [{ key: 'c', after: { id: 'c', n: 5 } }],
     });
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('observes tree root, keyed nodes, and individual nodes through native source protocols', () => {
+    const schema = object({ outline: tree(field<number>()) });
+    const document = createDocument({
+      schema,
+      initial: {
+        outline: {
+          rootId: 'root',
+          nodes: {
+            root: { children: ['a', 'b'], value: 0 },
+            a: { parentId: 'root', children: [], value: 1 },
+            b: { parentId: 'root', children: [], value: 2 },
+          },
+        },
+      },
+    });
+    const root = observe(document, path => path.outline.rootId);
+    const nodes = observe(document, path => path.outline.nodes);
+    const a = observe(document, path => path.outline.nodes.item('a'));
+    const changes: unknown[] = [];
+    const probe = incremental([nodes], ({ changes: next }) => {
+      changes.push(next[0]);
+      return changes.length;
+    });
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(root)).toBe('root');
+    expect([...runtime.get(nodes).keys()]).toEqual(['root', 'a', 'b']);
+    expect(runtime.get(a)).toEqual({ parentId: 'root', children: [], value: 1 });
+    expect(runtime.get(probe)).toBe(1);
+
+    const rootListener = vi.fn();
+    const aListener = vi.fn();
+    const stopRoot = runtime.readable(root).subscribe(rootListener);
+    const stopA = runtime.readable(a).subscribe(aListener);
+    const updatedB = document.update(draft => draft.outline.replace('b', 20));
+    if (updatedB.status !== 'committed') throw new Error('tree update');
+    expect(updatedB.commit.impact.collection(path => path.outline.nodes)).toEqual({
+      kind: 'incremental',
+      added: new Set(),
+      removed: new Set(),
+      updated: new Set(['b']),
+      orderChanged: false,
+    });
+    expect(rootListener).not.toHaveBeenCalled();
+    expect(aListener).not.toHaveBeenCalled();
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [
+        {
+          key: 'b',
+          before: { parentId: 'root', children: [], value: 2 },
+          after: { parentId: 'root', children: [], value: 20 },
+        },
+      ],
+      removed: [],
+    });
+
+    document.update(draft => draft.outline.insert('c', 3, { parentId: 'root' }));
+    expect(changes.at(-1)).toMatchObject({
+      kind: 'incremental',
+      added: [{ key: 'c', after: { parentId: 'root', children: [], value: 3 } }],
+      updated: [
+        {
+          key: 'root',
+          after: { children: ['a', 'b', 'c'], value: 0 },
+        },
+      ],
+      removed: [],
+    });
+    expect(rootListener).not.toHaveBeenCalled();
+
+    document.update(draft =>
+      draft.outline.replace({
+        rootId: 'next',
+        nodes: { next: { children: [], value: 30 } },
+      })
+    );
+    expect(changes.at(-1)).toEqual({ kind: 'reset' });
+    expect(runtime.get(root)).toBe('next');
+    expect([...runtime.get(nodes).keys()]).toEqual(['next']);
+    expect(rootListener).toHaveBeenCalledTimes(1);
+    expect(aListener).toHaveBeenCalledTimes(1);
+    stopRoot();
+    stopA();
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('publishes tree root and node sources atomically in one causal batch', () => {
+    const schema = object({ outline: tree(field<number>()) });
+    const document = createDocument({ schema, initial: { outline: { nodes: {} } } });
+    const root = observe(document, path => path.outline.rootId);
+    const nodes = observe(document, path => path.outline.nodes);
+    const combined = derive(
+      [root, nodes],
+      (rootId, values) => `${rootId ?? 'none'}:${values.size}`
+    );
+    const runtime = createProjectionRuntime();
+    expect(runtime.get(combined)).toBe('none:0');
+    const listener = vi.fn();
+    const stop = runtime.readable(combined).subscribe(listener);
+    document.update(draft => draft.outline.insert('root', 1));
+    expect(runtime.get(combined)).toBe('root:1');
+    expect(listener).toHaveBeenCalledTimes(1);
+    stop();
     document.dispose();
     runtime.dispose();
   });

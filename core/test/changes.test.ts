@@ -298,6 +298,40 @@ describe('ChangeSet boundary', () => {
     ).toBe('rejected');
     expect(runtime.snapshot()).toEqual(initial);
   });
+  it('validates only touched tree payloads during incremental replay', () => {
+    let validations = 0;
+    const payload = field<number>(value => {
+      validations++;
+      if (typeof value !== 'number') throw new TypeError('number');
+      return value;
+    });
+    const schema = object({ outline: tree(payload) });
+    const count = 1_024;
+    const nodes = Object.fromEntries(
+      Array.from({ length: count }, (_, index) => [
+        `node-${index}`,
+        index === 0
+          ? {
+              children: Array.from({ length: count - 1 }, (_, child) => `node-${child + 1}`),
+              value: 0,
+            }
+          : { parentId: 'node-0', children: [], value: index },
+      ])
+    );
+    const initial = { outline: { rootId: 'node-0', nodes } };
+    const source = createDocument({ schema, initial });
+    const replica = createDocument({ schema, initial });
+    const result = source.update(draft => draft.outline.replace('node-512', 9_999));
+    if (result.status !== 'committed') throw new Error('tree update');
+
+    validations = 0;
+    expect(replica.apply(result.commit.changes, { expectedRevision: 0 }).status).toBe('committed');
+    expect(validations).toBe(1);
+    expect(replica.snapshot()).toEqual(source.snapshot());
+
+    source.dispose();
+    replica.dispose();
+  });
   it('replays list entry values and order in both directions', () => {
     const schema = object({ rows: list(field<{ id: string; n: number }>(), { keyOf: v => v.id }) });
     const initial = {

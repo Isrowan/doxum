@@ -23,6 +23,11 @@ source 通过 `kind: 'value'` 或 `kind: 'collection'` 区分语义，但调用�
 schema map、table 和 `list(field, { keyOf })` 都是 keyed collection path。list
 直接使用 schema 的 `keyOf` 作为稳定 identity，并按文档顺序迭代；数组类型的普通
 `field(...)` 仍然是 scalar value observation。
+tree 结构复用相同的 source 类型：`path.tree.rootId` 是 scalar，
+`path.tree.nodes` 是 keyed collection，`path.tree.nodes.item(id)` 是单节点 value。
+tree 的 committed node group 直接路由到受影响的 keyed entry，由现有
+`CollectionOutput` 生成普通 `CollectionChange`；未变化节点的 snapshot identity
+保持稳定。
 
 External event 不再复用 Runtime context：value event 提供新 `value` 和
 `revision`；collection event 提供稳定的 `previous` read、`revision` 和可选的

@@ -1,4 +1,4 @@
-import type { DocumentAddress, DocumentNode, Infer } from './schema';
+import type { DocumentAddress, DocumentNode, DocumentTreeNode, FieldNode, Infer } from './schema';
 import { compiledShape } from './address';
 import { isPlainObject, isRecord } from './value/ownership';
 import { validate as validTree } from './mutation/tree';
@@ -178,16 +178,44 @@ export const checkValue = (
     return undefined;
   }
   if (!validTree(value)) return issue(address, 'Invalid tree structure.', 'invalid-tree');
-  if (isRecord(value) && isRecord(value.nodes)) {
-    for (const id of Object.keys(value.nodes)) {
-      const entry = value.nodes[id];
-      if (isRecord(entry) && Object.prototype.hasOwnProperty.call(entry, 'value')) {
-        const failure = checkValue(node.value, entry.value, [...address, id], strict);
-        if (failure) return failure;
-      }
-    }
+  for (const id of Object.keys(value.nodes)) {
+    const failure = checkTreePayload(node.value, value.nodes[id], [...address, id], strict);
+    if (failure) return failure;
   }
   return undefined;
+};
+
+export const checkTreePayload = (
+  node: FieldNode<unknown, boolean>,
+  value: unknown,
+  address: DocumentAddress,
+  strict = false
+): ParseIssue | undefined => {
+  if (!isRecord(value)) return issue(address, 'Invalid tree node.', 'invalid-tree');
+  const present = Object.prototype.hasOwnProperty.call(value, 'value');
+  if (!present && !node.optional) return issue(address, 'Tree node value is required.');
+  return present ? checkValue(node, value.value, address, strict) : undefined;
+};
+
+export const copyTreeNode = <T extends { readonly children: readonly string[] }>(
+  value: T
+): Omit<T, 'children'> & { children: string[] } => {
+  profile.copy.treeNode();
+  return { ...value, children: [...value.children] };
+};
+
+export const equalTreeNode = (
+  left: DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true> | undefined,
+  right: DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true> | undefined
+): boolean => {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.parentId === right.parentId &&
+    anchor.equal(left.children, right.children) &&
+    Object.hasOwn(left, 'value') === Object.hasOwn(right, 'value') &&
+    Object.is(left.value, right.value)
+  );
 };
 
 /** Copy editable structure; atomic payloads retain their immutable ownership contract. */
@@ -219,12 +247,13 @@ export const copyValue = (node: DocumentNode, value: unknown): unknown => {
   }
   if (node.kind === 'list') return [...(value as unknown[])];
   if (node.kind === 'tree' && isRecord(value)) {
-    const entries = value.nodes as Record<string, { children: readonly string[] }>;
+    const entries = value.nodes as Record<
+      string,
+      DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>
+    >;
     return {
       ...value,
-      nodes: Object.fromEntries(
-        Object.entries(entries).map(([id, n]) => [id, { ...n, children: [...n.children] }])
-      ),
+      nodes: Object.fromEntries(Object.entries(entries).map(([id, n]) => [id, copyTreeNode(n)])),
     };
   }
   return value;
@@ -254,19 +283,12 @@ export const equalValue = (node: DocumentNode, left: unknown, right: unknown): b
     if (left.rootId !== right.rootId) return false;
     const a = left.nodes as Record<
         string,
-        { parentId?: string; children: string[]; value?: unknown }
+        DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>
       >,
       b = right.nodes as typeof a;
     return (
       Object.keys(a).length === Object.keys(b).length &&
-      Object.keys(a).every(
-        id =>
-          Object.hasOwn(b, id) &&
-          a[id].parentId === b[id].parentId &&
-          anchor.equal(a[id].children, b[id].children) &&
-          Object.hasOwn(a[id], 'value') === Object.hasOwn(b[id], 'value') &&
-          equalValue(node.value, a[id].value, b[id].value)
-      )
+      Object.keys(a).every(id => Object.hasOwn(b, id) && equalTreeNode(a[id], b[id]))
     );
   }
   if (node.kind === 'map' && isRecord(left) && isRecord(right)) {

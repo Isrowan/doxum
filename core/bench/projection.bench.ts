@@ -4,10 +4,12 @@ import {
   createProjectionRuntime,
   field,
   input,
+  map,
   object,
   derive,
   observe,
   table,
+  tree,
 } from '../src';
 const model = object({ rows: table(object({ value: field<number>() })) });
 // Keep the regular suite quick; run the 100k stress case with
@@ -79,4 +81,80 @@ describe('explicit projection runtime', () => {
 afterAll(() => {
   store.dispose();
   runtime.dispose();
+});
+
+const treeCount = Math.max(1, Math.min(collectionSize, 10_000));
+const treeIds = Array.from({ length: treeCount }, (_, index) => `node-${index}`);
+const outline = tree(field<number>());
+const boardModel = object({ boards: map(object({ outline })) });
+const treeInitial = () => ({
+  boards: {
+    board: {
+      outline: {
+        rootId: treeIds[0],
+        nodes: Object.fromEntries(
+          treeIds.map((id, index) => [
+            id,
+            index === 0
+              ? { children: treeIds.slice(1), value: 0 }
+              : { parentId: treeIds[0], children: [], value: index },
+          ])
+        ),
+      },
+    },
+  },
+});
+const createTreeDocument = () =>
+  createDocument({ schema: boardModel, history: false, initial: treeInitial() });
+const createTreeStore = () =>
+  createProjectionRuntime({
+    onError: error => {
+      throw error;
+    },
+  });
+const createNativeTreeBench = () => {
+  const document = createTreeDocument();
+  const store = createTreeStore();
+  const projection = observe(document, path => path.boards.item('board').outline.nodes);
+  store.get(projection);
+  return { document, store, projection };
+};
+const createAggregateTreeBench = () => {
+  const document = createTreeDocument();
+  const store = createTreeStore();
+  const projection = observe(document, path => path.boards);
+  store.get(projection);
+  return { document, store, projection };
+};
+const nativeTree = createNativeTreeBench();
+const aggregateTree = createAggregateTreeBench();
+let nativeTreeRevision = 0;
+let aggregateTreeRevision = 0;
+describe('tree projection materialization', () => {
+  bench(
+    `one native tree node in ${treeCount}`,
+    () => {
+      nativeTree.document.update(tx =>
+        tx.boards.get('board')!.outline.replace(treeIds[treeCount - 1], ++nativeTreeRevision)
+      );
+      nativeTree.store.get(nativeTree.projection).get(treeIds[treeCount - 1]);
+    },
+    { iterations: 10, time: 100 }
+  );
+  bench(
+    `one nested tree node through outer map in ${treeCount}`,
+    () => {
+      aggregateTree.document.update(tx =>
+        tx.boards.get('board')!.outline.replace(treeIds[treeCount - 1], ++aggregateTreeRevision)
+      );
+      aggregateTree.store.get(aggregateTree.projection).get('board');
+    },
+    { iterations: 10, time: 100 }
+  );
+});
+afterAll(() => {
+  nativeTree.store.dispose();
+  nativeTree.document.dispose();
+  aggregateTree.store.dispose();
+  aggregateTree.document.dispose();
 });

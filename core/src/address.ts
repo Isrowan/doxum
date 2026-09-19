@@ -439,19 +439,20 @@ export class AddressIndex<T> {
     node.values.add(value);
   }
 
-  delete(address: DocumentAddress, value: T): void {
+  delete(address: DocumentAddress, value: T, member?: string): void {
     const parents: AddressIndexNode<T>[] = [];
     let node = this.root;
-    for (const segment of address) {
+    const segments = member === undefined ? address : [...address, member];
+    for (const segment of segments) {
       const child = node.children.get(segment);
       if (!child) return;
       parents.push(node);
       node = child;
     }
     node.values.delete(value);
-    for (let i = address.length - 1; i >= 0 && !node.values.size && !node.children.size; i--) {
+    for (let i = segments.length - 1; i >= 0 && !node.values.size && !node.children.size; i--) {
       node = parents[i];
-      node.children.delete(address[i]);
+      node.children.delete(segments[i]);
     }
   }
 

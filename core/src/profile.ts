@@ -8,7 +8,7 @@ const counters = () => ({
     publishedNodes: 0,
     flushes: 0,
   },
-  copy: { structures: 0 },
+  copy: { structures: 0, treeNodes: 0, shallowRecordItems: 0 },
   equality: { calls: 0, containers: 0 },
   recorder: {
     facts: 0,
@@ -60,6 +60,12 @@ export const profile = {
   copy: {
     structure: () => {
       if (active) active.copy.structures++;
+    },
+    treeNode: () => {
+      if (active) active.copy.treeNodes++;
+    },
+    shallowRecord: (items: number) => {
+      if (active) active.copy.shallowRecordItems += items;
     },
   },
   equality: {

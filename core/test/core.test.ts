@@ -17,6 +17,7 @@ import {
   type Draft,
   type SchemaPath,
 } from '../src';
+import { subscribeDependencies, track } from '../src/integration';
 
 const row = object({ n: field<number>(), title: field<string>() });
 const model = object({
@@ -277,6 +278,100 @@ describe('draft transactions', () => {
       })
     ).toThrow('synchronous');
     expect(runtime.snapshot()).toEqual(initial());
+  });
+});
+
+describe('tree payload presence', () => {
+  const numberField = field<number>(value => {
+    if (typeof value !== 'number') throw new TypeError('Expected number.');
+    return value;
+  });
+
+  it('requires an own value for required tree payloads at every canonical admission boundary', () => {
+    const schema = object({ outline: tree(numberField) });
+    expect(() =>
+      createDocument({
+        schema,
+        initial: { outline: { rootId: 'r', nodes: { r: { children: [] } } } } as never,
+      })
+    ).toThrow('Tree node value is required');
+
+    const runtime = createDocument({
+      schema,
+      initial: { outline: { rootId: 'r', nodes: { r: { children: [], value: 1 } } } },
+    });
+    expect(
+      runtime.replace({ outline: { rootId: 'r', nodes: { r: { children: [] } } } } as never).status
+    ).toBe('rejected');
+    expect(
+      runtime.apply(
+        {
+          changes: [
+            {
+              kind: 'tree',
+              at: ['outline'],
+              before: 'r',
+              after: 'r',
+              nodes: [
+                {
+                  id: 'x',
+                  kind: 'added',
+                  after: { parentId: 'r', children: [] },
+                },
+                {
+                  id: 'r',
+                  kind: 'updated',
+                  before: { children: [], value: 1 },
+                  after: { children: ['x'], value: 1 },
+                },
+              ],
+            },
+          ],
+        },
+        { expectedRevision: 0 }
+      ).status
+    ).toBe('rejected');
+    expect(runtime.snapshot().outline.nodes).toEqual({ r: { children: [], value: 1 } });
+    runtime.dispose();
+  });
+
+  it('allows missing tree payloads only when the payload field itself is optional', () => {
+    const schema = object({ outline: tree(optional(numberField)) });
+    const runtime = createDocument({
+      schema,
+      initial: { outline: { rootId: 'r', nodes: { r: { children: [] } } } },
+    });
+    expect(runtime.snapshot().outline.nodes.r).toEqual({ children: [] });
+    runtime.dispose();
+  });
+});
+
+describe('tree dependency precision', () => {
+  it('tracks tree reads at node granularity instead of invalidating on unrelated nodes', () => {
+    const schema = object({ outline: tree(field<number>()) });
+    const runtime = createDocument({
+      schema,
+      initial: {
+        outline: {
+          rootId: 'root',
+          nodes: {
+            root: { children: ['a', 'b'], value: 0 },
+            a: { parentId: 'root', children: [], value: 1 },
+            b: { parentId: 'root', children: [], value: 2 },
+          },
+        },
+      },
+    });
+    const selection = track(runtime, read => read.outline.get('a'));
+    expect(selection.value).toBe(1);
+    const listener = vi.fn();
+    const stop = subscribeDependencies(runtime, selection.targets, listener);
+    runtime.update(draft => draft.outline.replace('b', 20));
+    expect(listener).not.toHaveBeenCalled();
+    runtime.update(draft => draft.outline.replace('a', 10));
+    expect(listener).toHaveBeenCalledTimes(1);
+    stop();
+    runtime.dispose();
   });
 });
 

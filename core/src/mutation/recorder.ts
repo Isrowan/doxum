@@ -13,7 +13,7 @@ import {
   type FixedLayout,
 } from '../address';
 import * as anchor from './anchor';
-import { copyValue, equalValue } from '../schema-value';
+import { copyTreeNode, copyValue, equalTreeNode, equalValue } from '../schema-value';
 import type { MutableTree, MutableTreeNode } from './tree';
 import { profile } from '../profile';
 import { sealChanges } from './changes';
@@ -57,10 +57,6 @@ const forgetMember = (group: MemberGroup, key: string): void => {
 const emptyGroup = (group: MemberGroup): boolean =>
   !group.order && (group.layout === 'fixed' ? !group.members.some(Boolean) : !group.members?.size);
 
-const copyNode = (node: MutableTreeNode): MutableTreeNode => ({
-  ...node,
-  children: [...node.children],
-});
 const transition = (
   node: DocumentNode,
   key: string,
@@ -188,7 +184,7 @@ const restore = (fact: RestoreFact, schema: DocumentNode, root: unknown, skip = 
     if (fact.before === null) delete tree.rootId;
     else tree.rootId = fact.before;
     for (const [id, node] of fact.nodes)
-      installMember(tree.nodes, id, node !== undefined, node && copyNode(node));
+      installMember(tree.nodes, id, node !== undefined, node && copyTreeNode(node));
   }
   return root;
 };
@@ -261,21 +257,13 @@ const sealTree = (fact: TreeFact, state: CanonicalState, changes: Change[]): voi
   for (const [id, before] of fact.nodes) {
     const after = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
     if (!before && !after) continue;
-    if (
-      before &&
-      after &&
-      before.parentId === after.parentId &&
-      anchor.equal(before.children, after.children) &&
-      Object.hasOwn(before, 'value') === Object.hasOwn(after, 'value') &&
-      equalValue(node.value, before.value, after.value)
-    )
-      continue;
+    if (before && after && equalTreeNode(before, after)) continue;
     nodes.push(
       !before
-        ? { id, kind: 'added', after: copyNode(after!) }
+        ? { id, kind: 'added', after: copyTreeNode(after!) }
         : !after
           ? { id, kind: 'removed', before }
-          : { id, kind: 'updated', before, after: copyNode(after) }
+          : { id, kind: 'updated', before, after: copyTreeNode(after) }
     );
   }
   const after = tree.rootId ?? null;
@@ -470,7 +458,7 @@ export class ChangeRecorder {
     }
     if (id !== undefined && !fact.nodes.has(id)) {
       profile.recorder('treeNodes');
-      fact.nodes.set(id, Object.hasOwn(tree.nodes, id) ? copyNode(tree.nodes[id]) : undefined);
+      fact.nodes.set(id, Object.hasOwn(tree.nodes, id) ? copyTreeNode(tree.nodes[id]) : undefined);
     }
   }
   rollback(): void {

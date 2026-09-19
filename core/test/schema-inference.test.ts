@@ -7,6 +7,8 @@ import {
   map,
   object,
   observe,
+  optional,
+  tree,
   type Infer,
 } from '../src';
 
@@ -41,10 +43,70 @@ describe('projection schema inference', () => {
     const runtime = createProjectionRuntime();
     const collection = runtime.get(items);
     expectTypeOf(collection.get('a')).toEqualTypeOf<Model['items'][number] | undefined>();
-    expectTypeOf(runtime.get(item)).toEqualTypeOf<Model['items'][number]>();
+    expectTypeOf(runtime.get(item)).toEqualTypeOf<Model['items'][number] | undefined>();
     expect(collection.get('a')?.n).toBe(1);
-    expect(runtime.get(item).n).toBe(1);
+    expect(runtime.get(item)?.n).toBe(1);
     expect(runtime.get(plain)).toEqual([{ id: 'p', n: 2 }]);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('preserves required and optional tree payload presence in Infer and tree observations', () => {
+    const model = object({
+      required: tree(field<number>()),
+      sparse: tree(optional(field<number>())),
+    });
+    type Model = Infer<typeof model>;
+    const requiredNode: Model['required']['nodes'][string] = { children: [], value: 1 };
+    const sparseNode: Model['sparse']['nodes'][string] = { children: [] };
+    expectTypeOf(requiredNode.value).toEqualTypeOf<number>();
+    expectTypeOf(sparseNode.value).toEqualTypeOf<number | undefined>();
+
+    const document = createDocument({
+      schema: model,
+      initial: {
+        required: { rootId: 'r', nodes: { r: requiredNode } },
+        sparse: { rootId: 's', nodes: { s: sparseNode } },
+      },
+    });
+    const nodes = observe(document, path => path.required.nodes);
+    const node = observe(document, path => path.required.nodes.item('r'));
+    const root = observe(document, path => path.required.rootId);
+    const runtime = createProjectionRuntime();
+    const observedNodes: ReadonlyMap<string, Model['required']['nodes'][string]> =
+      runtime.get(nodes);
+    const observedNode: Model['required']['nodes'][string] | undefined = runtime.get(node);
+    const observedRoot: string | undefined = runtime.get(root);
+    expect(observedNodes.get('r')?.value).toBe(1);
+    expect(observedNode?.value).toBe(1);
+    expect(observedRoot).toBe('r');
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('propagates optional tree and dynamic item absence through observations and writes', () => {
+    const model = object({
+      maybe: optional(tree(field<number>())),
+      sparse: tree(optional(field<number>())),
+    });
+    type Model = Infer<typeof model>;
+    const document = createDocument({
+      schema: model,
+      initial: { sparse: { nodes: {} } },
+    });
+    const maybe = observe(document, path => path.maybe);
+    const missing = observe(document, path => path.sparse.nodes.item('missing'));
+    const runtime = createProjectionRuntime();
+
+    expectTypeOf(runtime.get(maybe)).toEqualTypeOf<Model['maybe']>();
+    expectTypeOf(runtime.get(missing)).toEqualTypeOf<
+      Model['sparse']['nodes'][string] | undefined
+    >();
+    expect(runtime.get(maybe)).toBeUndefined();
+    expect(runtime.get(missing)).toBeUndefined();
+
+    document.update(draft => draft.sparse.insert('s', undefined));
+    expect(document.snapshot().sparse.nodes.s).toEqual({ children: [], value: undefined });
     document.dispose();
     runtime.dispose();
   });

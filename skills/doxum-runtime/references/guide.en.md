@@ -66,6 +66,9 @@ present undefined. Variant tags are readonly; change branch by whole replacement
 For table/list, `move(key | readonly key[], anchor?)` preserves a moved selection's
 current relative order and resolves the anchor after removal. `reorder(keys)` requires
 an exact permutation of current membership and changes only order.
+Trees may be empty. `tree(field(...))` requires an own `value` on every existing
+node; `tree(optional(field(...)))` explicitly permits missing node payloads, while
+`optional(tree(...))` independently permits the whole tree member to be absent.
 
 Pure synchronous functions and Standard Schema v1 validators receive original input.
 They must not mutate it; successful output is ignored, with no copy or deep conversion
@@ -97,6 +100,12 @@ remain explicit. Retained state, reverse indexes and keyed output patches belong
 the isolated `doxum/advanced` incremental entry points. See the [projection
 reference](projections.en.md) for lifecycle, draft semantics, selector tracking,
 batching and recovery.
+Tree structure uses the same projection source protocols: observe `path.tree.rootId`
+as a scalar, `path.tree.nodes` as a keyed collection, or
+`path.tree.nodes.item(id)` as a single node. Committed tree-node groups route directly
+to affected keyed entries and the existing `CollectionOutput` publishes ordinary
+`CollectionChange` entries; unrelated nodes keep stable snapshot references instead
+of being resnapshotted.
 `input` and `observe(source)` connect external boundary values, including
 eventful value and collection sources. Dispose the
 Runtime with the owning service. `runtime.batch` defers projection settlement and

@@ -58,6 +58,9 @@ table/list/tree 的 `replace(id, value)` 只替换已存在成员，保持 table
 table/list 的 `move(key | readonly key[], anchor?)` 会保持 moved selection 当前的相对顺序，
 并在移除 selection 后解析 anchor；`reorder(keys)` 要求与当前 membership 完全一致的排列，
 只改变顺序而不改变成员值。
+tree 可以为空。`tree(field(...))` 要求每个已存在节点都拥有自己的 `value`；只有
+`tree(optional(field(...)))` 才允许节点缺失 payload，而 `optional(tree(...))` 独立控制整棵
+tree 成员是否可以缺失。
 
 校验器是纯同步函数或 Standard Schema v1，直接接收原始引用且不得修改它。
 成功返回值被忽略，不复制输入，也不深度检查转换；数据转换在进入 Doxum 前完成。
@@ -83,6 +86,11 @@ observerErrors 属于已提交结果。
 `createProjectionRuntime({ onError })` owner 物化和管理。保留状态、反向索引和
 keyed patch 放在隔离的 `doxum/advanced` incremental 入口。生命周期、draft、
 selector 追踪、batch 与故障恢复见 [Projection 参考](projections.zh-CN.md)。
+tree 结构复用同一套 projection source 协议：`path.tree.rootId` 是 scalar，
+`path.tree.nodes` 是 keyed collection，`path.tree.nodes.item(id)` 是单节点 value。
+committed tree node group 直接路由到受影响的 keyed entry，由现有
+`CollectionOutput` 发布普通 `CollectionChange`；未变化节点保持稳定的 snapshot
+引用，不再因单节点变化而全部重新 snapshot。
 `input` 与 `observe(source)` 接入外部边界值，包括带事件的 value 和 collection
 source。随所属服务 dispose Runtime。
 `runtime.batch` 推迟投影结算与通知，但不推迟文档提交和文档通知；内部读取上次发布值，

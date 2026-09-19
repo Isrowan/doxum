@@ -24,6 +24,11 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   object or variant members whose Draft type contains collection tools.
 - Ordered table/list Drafts use move(key | readonly key[], anchor?) for relative
   movement and reorder(keys) for an exact full-membership permutation.
+- Trees may be empty. `tree(field(...))` requires every existing node to own `value`;
+  use `tree(optional(field(...)))` only when node payload absence is part of the model.
+  `optional(tree(...))` controls whole-tree presence independently.
+- Tree projection paths reuse ordinary source protocols: `tree.rootId` is scalar,
+  `tree.nodes` is keyed, and `tree.nodes.item(id)` is a single-node value.
 - Expected business failure throws TransactionRejected. Other exceptions roll back
   and rethrow unchanged. Callback returns carry business values and notices.
 - Commits contain final reversible ChangeSets. History and impact share those facts.

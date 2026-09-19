@@ -52,12 +52,11 @@ export const createImpact = <S extends ObjectNode>(
       profile.impact.index();
       values = new AddressIndex();
       orders = new AddressIndex();
-      for (const change of changes.changes) {
-        if (change.kind === 'members') {
-          for (const member of change.members) values.add(change.at, true, member.key);
-          if (change.order) orders.add(change.at, true);
-        } else if (change.kind === 'tree') values.add(change.at, true);
-      }
+      target.visitChangedLocations(
+        changes,
+        at => values!.add(at, true),
+        at => orders!.add(at, true)
+      );
     }
     return values;
   };
@@ -72,7 +71,7 @@ export const createImpact = <S extends ObjectNode>(
     collection(selector) {
       if (selector.schema !== schema)
         throw new TypeError('Collection belongs to another root model.');
-      const key = JSON.stringify(selector.address),
+      const key = JSON.stringify(target.indexedAddress(selector)),
         cached = cache.get(key);
       if (cached) return cached;
       if (reset) {
@@ -81,6 +80,7 @@ export const createImpact = <S extends ObjectNode>(
         return result;
       }
       const at = selector.address;
+      const tree = selector.tree;
       const added = new Set<string>(),
         removed = new Set<string>(),
         updated = new Set<string>();
@@ -116,6 +116,14 @@ export const createImpact = <S extends ObjectNode>(
           continue;
         }
         if (change.kind === 'tree' && contains(change.at, at)) {
+          if (tree?.kind === 'nodes' && change.at.length === at.length && contains(at, change.at)) {
+            for (const node of change.nodes) {
+              if (node.kind === 'added') added.add(node.id);
+              else if (node.kind === 'removed') removed.add(node.id);
+              else updated.add(node.id);
+            }
+            continue;
+          }
           const result = { kind: 'reset' } as const;
           cache.set(key, result);
           return result;

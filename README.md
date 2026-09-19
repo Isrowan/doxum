@@ -116,6 +116,12 @@ Doxum; it does not detect validator mutation or conversion. `parse(model, unknow
 validates and copies schema structure while sharing readonly payloads. Strict parsing
 requires validators for atomic fields; typed in-memory fields can omit them.
 
+A tree may be empty, but payload presence follows the payload field schema exactly.
+`tree(field<T>())` requires every existing node to own a `value` property;
+`tree(optional(field<T>()))` is the explicit sparse-payload form. This is independent
+from `optional(tree(...))`, which controls whether the whole tree member may be absent.
+Missing and present-`undefined` payloads remain distinct when the payload field is optional.
+
 Ordered table/list drafts accept either one key or a key selection in
 `move(key | readonly key[], anchor?)`. A selection is moved as one block while
 preserving its current canonical relative order; the anchor is resolved after the
@@ -277,8 +283,21 @@ runtime.update(overrides, draft => {
 and eventful external sources. External sources declare `kind: 'value'` or
 `kind: 'collection'`; collection invalidation remains keyed internally. Schema
 `map`, `table`, and `list(field, { keyOf })` paths are all observed as keyed
-collection projections. A schema `list` uses its `keyOf` identity and publishes
-in document order; ordinary array-valued `field(...)` nodes remain scalar values.
+collection projections. Trees expose structural observation without a second
+projection protocol: `path.tree.rootId` is a scalar source,
+`path.tree.nodes` is a keyed collection source, and
+`path.tree.nodes.item(id)` is a single-node value source. A schema `list` uses its
+`keyOf` identity and publishes in document order; ordinary array-valued `field(...)`
+nodes remain scalar values.
+
+Document projection sources route committed groups directly to their observed
+targets, merge affected locations for the current projection batch, then combine the
+previously published snapshot with the canonical final value. A touched tree node
+replaces only that node structure and the necessary ancestor containers; unchanged
+tree-node snapshots keep their identity. Whole aggregate tree values still use the
+public `{ rootId?, nodes: Record }` shape, so changing a node may shallow-copy the
+`nodes` record, while native `tree.nodes` observation remains keyed and touches only
+changed nodes.
 
 For retained state, reverse indexes and keyed patches, use the isolated advanced
 entry point. Whole-value processors use `incremental(...)`; keyed collection

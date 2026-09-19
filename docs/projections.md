@@ -38,6 +38,22 @@ A list projection uses the schema `keyOf` result as its stable string key and
 preserves document list order in `ReadonlyMap` iteration. It never uses the array
 index as identity. An ordinary array-valued `field(...)` remains a scalar value.
 
+Trees expose their structural facts through the same value/collection protocols:
+
+```ts
+const root = observe(document, path => path.outline.rootId);
+const nodes = observe(document, path => path.outline.nodes);
+const node = observe(document, path => path.outline.nodes.item(nodeId));
+```
+
+`rootId` publishes only when the root changes. `nodes` is a keyed
+`ReadonlyMap<string, DocumentTreeNode<T>>`; committed tree-node groups route directly
+to the affected keyed entries and the existing `CollectionOutput` publishes the
+ordinary `CollectionChange`. A payload or topology edit of one node does not
+resnapshot unrelated nodes. Root and node sources captured from the same document
+commit settle in the same Runtime causal batch, so downstream processors never
+observe a new root with old nodes or vice versa.
+
 ```ts
 const order = observe(document, path => path.order);
 const item = runtime.readable(order, items => items.get(itemId));

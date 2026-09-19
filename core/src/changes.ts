@@ -20,7 +20,9 @@ export type Change =
       readonly at: DocumentAddress;
       readonly before: string | null;
       readonly after: string | null;
-      readonly nodes: readonly (ValueTransition<DocumentTreeNode<unknown>> & {
+      readonly nodes: readonly (ValueTransition<
+        DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>
+      > & {
         readonly id: string;
       })[];
     }

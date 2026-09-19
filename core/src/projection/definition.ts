@@ -1,8 +1,8 @@
 import { accessOf } from '../runtime/access';
 import type { DocumentReadable, Synchronous } from '../runtime/contract';
 import type {
+  CollectionEntry,
   CollectionId,
-  CollectionNode as SchemaCollectionNode,
   CollectionPath,
   CollectionSelector,
   Infer,
@@ -112,14 +112,9 @@ type SourceAdapter =
       readonly source: ExternalCollectionSource<string, unknown>;
     }
   | {
-      readonly kind: 'document-value';
+      readonly kind: 'document';
       readonly document: DocumentReadable<ObjectNode>;
-      readonly selector?: ValueSelector;
-    }
-  | {
-      readonly kind: 'document-collection';
-      readonly document: DocumentReadable<ObjectNode>;
-      readonly selector: CollectionSelector;
+      readonly selector: ValueSelector | CollectionSelector;
     };
 
 export type SourceDefinition = {
@@ -266,8 +261,8 @@ export function observe<S extends ObjectNode, P extends CollectionPath>(
   document: DocumentReadable<S>,
   selector: (path: SchemaPath<S['shape']>) => P
 ): Projection<
-  ReadonlyMap<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>,
-  CollectionChange<CollectionId<P>, ReadonlyValue<Infer<SchemaCollectionNode<P>>>>
+  ReadonlyMap<CollectionId<P>, ReadonlyValue<CollectionEntry<P>>>,
+  CollectionChange<CollectionId<P>, ReadonlyValue<CollectionEntry<P>>>
 >;
 export function observe<S extends ObjectNode, P>(
   document: DocumentReadable<S>,
@@ -298,22 +293,18 @@ export function observe<S extends ObjectNode>(
     );
 
   const document = source as DocumentReadable<ObjectNode>;
-  if (!selector)
-    return defineSource(
-      { kind: 'document-value', document },
-      { kind: 'value', equality: Object.is }
-    );
   const state = accessOf(document);
-  const selected = compilePath(state.schema, 'auto', selector as never);
-  return selected.kind === 'collection'
-    ? defineSource(
-        { kind: 'document-collection', document, selector: selected },
-        { kind: 'collection', equality: Object.is }
-      )
-    : defineSource(
-        { kind: 'document-value', document, selector: selected },
-        { kind: 'value', equality: Object.is }
-      );
+  const selected = selector
+    ? compilePath(state.schema, 'auto', selector as never)
+    : (Object.freeze({
+        kind: 'value' as const,
+        schema: state.schema,
+        address: Object.freeze([]),
+      }) as ValueSelector);
+  return defineSource(
+    { kind: 'document', document, selector: selected },
+    { kind: selected.kind, equality: Object.is }
+  );
 }
 
 const isExternalSource = (

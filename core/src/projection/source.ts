@@ -1,12 +1,20 @@
-import { read as readAddress, nodeAt } from '../address';
-import { collectionAccess, snapshot } from '../access/scope';
-import { affectsTarget, collectionImpact } from '../impact';
+import { contains, read as readAddress, nodeAt } from '../address';
+import type { ChangeSet } from '../changes';
+import * as impactTarget from '../impact-target';
+import * as anchor from '../mutation/anchor';
 import { accessOf } from '../runtime/access';
 import { attachProjection, documentReadableOwner } from '../runtime/notification';
 import type { DocumentCommit, DocumentReadable, Unsubscribe } from '../runtime/contract';
-import type { CollectionSelector, ObjectNode, ValueSelector } from '../schema';
+import type {
+  CollectionSelector,
+  DocumentTreeNode,
+  ImpactTarget,
+  ObjectNode,
+  ValueSelector,
+} from '../schema';
 import { collectionEntryNode } from '../schema';
-import { copyValue, equalValue } from '../schema-value';
+import { copyTreeNode, copyValue, equalTreeNode } from '../schema-value';
+import { isRecord } from '../value/ownership';
 import {
   createCollectionOutput,
   mapRead,
@@ -30,6 +38,15 @@ import {
   type SourceBoundaryRecord,
 } from './scheduler';
 import { createValueOutput, type ValueOutputState } from './value-output';
+import {
+  clearDocumentDirty,
+  createDocumentDirty,
+  markDocumentOrder,
+  markDocumentReplace,
+  markDocumentTree,
+  materializeDocumentValue,
+  type DocumentDirty,
+} from './document-materialization';
 
 export type KeyedInputDraft<K extends string, V> = {
   get(key: K): V | undefined;
@@ -59,7 +76,6 @@ type CollectionMark = SourceMark & {
 };
 
 type ValueBoundary = SourceMaterialization & {
-  readonly setLatest: (value: unknown) => void;
   readonly mark: (metadata?: SourceMark) => void;
   readonly fail: (cause: unknown) => void;
   readonly detach: (cleanup: Unsubscribe) => void;
@@ -78,11 +94,12 @@ const createValueBoundary = (
   scheduler: Scheduler,
   name: string,
   initial: unknown,
-  equality: (previous: unknown, next: unknown) => boolean
+  equality: (previous: unknown, next: unknown) => boolean,
+  prepare: (previous: unknown) => unknown,
+  clearSource: (failed: boolean) => void
 ): ValueBoundary => {
   const state: ValueOutputState<unknown> = createValueOutput();
   let boundary!: SourceBoundaryRecord;
-  let latest = initial;
   let pendingReset = false;
   let pendingCause: unknown;
   let contextCause: unknown;
@@ -128,7 +145,7 @@ const createValueBoundary = (
       let active = true;
       try {
         const evaluation = state.begin(() => active, pendingReset);
-        evaluation.output.set(latest);
+        evaluation.output.set(prepare(evaluation.previous));
         const changed = state.seal(pendingReset, equality);
         recovering = false;
         return { changed, force: pendingReset };
@@ -138,11 +155,13 @@ const createValueBoundary = (
     },
     publish: state.publish,
     clear: () => {
+      const failed = boundary.fault !== undefined;
       state.clear();
       pendingReset = false;
       pendingCause = undefined;
       contextCause = undefined;
       recovering = false;
+      clearSource(failed);
     },
     release: () => {
       cleanup?.();
@@ -181,9 +200,6 @@ const createValueBoundary = (
   return {
     producer: boundary,
     output,
-    setLatest: value => {
-      latest = value;
-    },
     mark,
     fail,
     detach: next => {
@@ -195,8 +211,12 @@ const createValueBoundary = (
 const createCollectionBoundary = (
   scheduler: Scheduler,
   name: string,
-  readLatest: (active: () => boolean) => CollectionRead<string, unknown>,
-  equality: (previous: unknown, next: unknown) => boolean
+  readLatest: (
+    active: () => boolean,
+    previous: CollectionRead<string, unknown>
+  ) => CollectionRead<string, unknown>,
+  equality: (previous: unknown, next: unknown) => boolean,
+  clearSource: (failed: boolean) => void
 ): CollectionBoundary => {
   const state: CollectionOutputState<string, unknown> = createCollectionOutput();
   let boundary!: SourceBoundaryRecord;
@@ -249,7 +269,10 @@ const createCollectionBoundary = (
       try {
         const changed = stageCollectionRead(
           state,
-          readLatest(() => active),
+          readLatest(
+            () => active,
+            state.current(() => undefined)
+          ),
           () => active,
           {
             reset: pendingReset,
@@ -266,6 +289,7 @@ const createCollectionBoundary = (
     },
     publish: state.publish,
     clear: () => {
+      const failed = boundary.fault !== undefined;
       state.clear();
       pendingReset = false;
       pendingCause = undefined;
@@ -274,6 +298,7 @@ const createCollectionBoundary = (
       fullScan = false;
       orderMayChange = false;
       candidates.clear();
+      clearSource(failed);
     },
     release: () => {
       cleanup?.();
@@ -288,7 +313,10 @@ const createCollectionBoundary = (
     try {
       stageCollectionRead(
         state,
-        readLatest(() => active),
+        readLatest(
+          () => active,
+          state.current(() => undefined)
+        ),
         () => active,
         {
           reset: true,
@@ -330,7 +358,7 @@ const createCollectionBoundary = (
 };
 
 type DocumentBinding = {
-  matches(commit: DocumentCommit<ObjectNode>): boolean;
+  readonly target: ImpactTarget;
   capture(commit: DocumentCommit<ObjectNode>): void;
   dispose(): void;
 };
@@ -343,6 +371,150 @@ type DocumentConnection = {
 type ValueMember = {
   readonly boundary: ValueBoundary;
   receive(value: unknown, metadata?: SourceMark): void;
+};
+
+const documentRootTarget: ImpactTarget = Object.freeze({
+  kind: 'value' as const,
+  at: Object.freeze([]),
+});
+
+type DocumentCollectionPending = {
+  reset: boolean;
+  order: boolean;
+  readonly entries: Map<string, DocumentDirty>;
+};
+
+const createCollectionPending = (): DocumentCollectionPending => ({
+  reset: false,
+  order: false,
+  entries: new Map(),
+});
+
+const resetCollectionPending = (pending: DocumentCollectionPending): void => {
+  pending.reset = true;
+  pending.order = false;
+  pending.entries.clear();
+};
+
+const clearCollectionPending = (pending: DocumentCollectionPending): void => {
+  pending.reset = false;
+  pending.order = false;
+  pending.entries.clear();
+};
+
+const dirtyEntry = (pending: DocumentCollectionPending, key: string): DocumentDirty => {
+  let dirty = pending.entries.get(key);
+  if (!dirty) {
+    dirty = createDocumentDirty();
+    pending.entries.set(key, dirty);
+  }
+  return dirty;
+};
+
+const mergeValueChanges = (
+  selector: ValueSelector,
+  dirty: DocumentDirty,
+  changes: ChangeSet
+): void => {
+  if (selector.tree) return;
+  const at = selector.address;
+  for (const change of changes.changes) {
+    if (change.kind === 'reset') {
+      markDocumentReplace(dirty, []);
+      return;
+    }
+    if (change.kind === 'members') {
+      for (const member of change.members) {
+        const changed = [...change.at, member.key];
+        if (contains(changed, at)) markDocumentReplace(dirty, []);
+        else if (contains(at, changed)) markDocumentReplace(dirty, changed.slice(at.length));
+      }
+      if (change.order && contains(at, change.at))
+        markDocumentOrder(dirty, change.at.slice(at.length));
+      continue;
+    }
+    if (contains(at, change.at))
+      markDocumentTree(
+        dirty,
+        change.at.slice(at.length),
+        change.before !== change.after,
+        change.nodes.map(node => node.id)
+      );
+  }
+};
+
+const mergeCollectionChanges = (
+  selector: CollectionSelector,
+  pending: DocumentCollectionPending,
+  changes: ChangeSet
+): void => {
+  if (pending.reset) return;
+  const at = selector.address;
+  for (const change of changes.changes) {
+    if (change.kind === 'reset') {
+      resetCollectionPending(pending);
+      return;
+    }
+
+    if (selector.tree?.kind === 'nodes') {
+      if (change.kind === 'members') {
+        for (const member of change.members) {
+          const changed = [...change.at, member.key];
+          if (contains(changed, at)) {
+            resetCollectionPending(pending);
+            return;
+          }
+        }
+      } else if (change.at.length === at.length && contains(change.at, at)) {
+        for (const node of change.nodes) {
+          markDocumentReplace(dirtyEntry(pending, node.id), []);
+          pending.order ||= node.kind !== 'updated';
+        }
+      } else if (contains(change.at, at)) {
+        resetCollectionPending(pending);
+        return;
+      }
+      continue;
+    }
+
+    if (change.kind === 'members') {
+      for (const member of change.members) {
+        const changed = [...change.at, member.key];
+        if (contains(changed, at)) {
+          resetCollectionPending(pending);
+          return;
+        }
+        if (!contains(at, changed)) continue;
+        const relative = changed.slice(at.length);
+        if (!relative.length) {
+          resetCollectionPending(pending);
+          return;
+        }
+        const entry = dirtyEntry(pending, relative[0]);
+        markDocumentReplace(entry, relative.slice(1));
+        if (relative.length === 1 && member.kind !== 'updated') pending.order = true;
+      }
+      if (change.order && contains(at, change.at)) {
+        const relative = change.at.slice(at.length);
+        if (!relative.length) pending.order = true;
+        else markDocumentOrder(dirtyEntry(pending, relative[0]), relative.slice(1));
+      }
+      continue;
+    }
+
+    if (!contains(at, change.at)) continue;
+    const relative = change.at.slice(at.length);
+    if (!relative.length) {
+      resetCollectionPending(pending);
+      return;
+    }
+    markDocumentTree(
+      dirtyEntry(pending, relative[0]),
+      relative.slice(1),
+      change.before !== change.after,
+      change.nodes.map(node => node.id)
+    );
+  }
 };
 
 export const createSourceRegistry = (scheduler: Scheduler) => {
@@ -362,6 +534,8 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
     if (cached) return cached;
     if (state.disposed) throw new Error('Document has been disposed.');
     const bindings = new Set<DocumentBinding>();
+    const index = new impactTarget.SubscriptionIndex<DocumentBinding>(state.schema);
+    const candidates = new Set<DocumentBinding>();
     const guard = (locked: boolean) => {
       state.projectionLocks = (state.projectionLocks ?? 0) + (locked ? 1 : -1);
     };
@@ -372,11 +546,13 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
       add(binding) {
         if (closed) throw new Error('Document projection connection is closed.');
         bindings.add(binding);
+        index.add(binding.target, binding);
         let active = true;
         return () => {
           if (!active) return;
           active = false;
           bindings.delete(binding);
+          index.delete(binding.target, binding);
           if (!bindings.size) connection.close();
         };
       },
@@ -385,15 +561,17 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
         closed = true;
         detach();
         bindings.clear();
+        candidates.clear();
+        index.clear();
         scheduler.guards.delete(guard);
         documents.delete(state);
       },
     };
     detach = attachProjection(runtime, {
       capture: commit => {
-        for (const binding of bindings)
-          if (binding.matches(commit as DocumentCommit<ObjectNode>))
-            binding.capture(commit as DocumentCommit<ObjectNode>);
+        candidates.clear();
+        index.collect(commit.changes, binding => candidates.add(binding));
+        candidates.forEach(binding => binding.capture(commit as DocumentCommit<ObjectNode>));
       },
       settle: scheduler.settle,
       flush: scheduler.flush,
@@ -409,11 +587,14 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
   const valueInput = (definition: SourceDefinition): SourceMaterialization => {
     if (definition.source.kind !== 'value-input') throw new Error('Invalid value input source.');
     const source = definition.source;
+    let latest = source.initial;
     const boundary = createValueBoundary(
       scheduler,
       'projection input',
       source.initial,
-      source.equality
+      source.equality,
+      () => latest,
+      () => undefined
     );
     return {
       ...boundary,
@@ -421,7 +602,7 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
         kind: 'value',
         set(value) {
           scheduler.assertIdle();
-          boundary.setLatest(value);
+          latest = value;
           boundary.mark();
           scheduler.run();
         },
@@ -437,7 +618,8 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
       scheduler,
       'projection collection input',
       () => mapRead(values),
-      definition.output.equality
+      definition.output.equality,
+      () => undefined
     );
     return {
       ...boundary,
@@ -509,31 +691,197 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
     };
   };
 
-  const documentValue = (definition: SourceDefinition): SourceMaterialization => {
-    if (definition.source.kind !== 'document-value')
-      throw new Error('Invalid document value source.');
+  const documentSource = (definition: SourceDefinition): SourceMaterialization => {
+    if (definition.source.kind !== 'document') throw new Error('Invalid document source.');
     const { document, selector } = definition.source;
     const state = accessOf(document);
-    const address = selector?.address ?? Object.freeze([]);
-    const schemaNode = () => nodeAt(state.schema, address, state.document);
-    const read = () => {
+    const schemaNode = () => nodeAt(state.schema, selector.address, state.document);
+    const currentValue = () => readAddress(state.document, selector.address, state.schema);
+    const disposed = () => {
       if (state.disposed) throw new Error('Document has been disposed.');
-      const node = schemaNode();
-      if (!node) return undefined;
-      const value = selector ? readAddress(state.document, address, state.schema) : state.document;
-      return copyValue(node, value);
     };
-    const initial = read();
-    const boundary = createValueBoundary(scheduler, 'document source', initial, (left, right) => {
+
+    if (selector.kind === 'value') {
+      const dirty = createDocumentDirty();
+      const read = (previous?: unknown): unknown => {
+        disposed();
+        const node = schemaNode();
+        const current = currentValue();
+        if (selector.tree?.kind === 'root')
+          return node?.kind === 'tree' && isRecord(current) && typeof current.rootId === 'string'
+            ? current.rootId
+            : undefined;
+        if (selector.tree?.kind === 'node') {
+          if (node?.kind !== 'tree' || !isRecord(current) || !isRecord(current.nodes))
+            return undefined;
+          const entry = Object.hasOwn(current.nodes, selector.tree.id)
+            ? (current.nodes[selector.tree.id] as
+                DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
+            : undefined;
+          if (
+            equalTreeNode(
+              previous as
+                DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true> | undefined,
+              entry
+            )
+          )
+            return previous;
+          return entry ? copyTreeNode(entry) : undefined;
+        }
+        if (!node) return undefined;
+        return previous === undefined
+          ? copyValue(node, current)
+          : materializeDocumentValue(node, previous, current, dirty);
+      };
+
+      const initial = read();
+      let boundary!: ValueBoundary;
+      boundary = createValueBoundary(
+        scheduler,
+        'document source',
+        initial,
+        Object.is,
+        previous => read(previous),
+        failed => {
+          if (failed) markDocumentReplace(dirty, []);
+          else clearDocumentDirty(dirty);
+        }
+      );
+      const remove = documentConnection(document).add({
+        target: selector,
+        capture: commit => {
+          try {
+            mergeValueChanges(selector, dirty, commit.changes);
+            boundary.mark({
+              reset: commit.changes.changes.some(change => change.kind === 'reset'),
+            });
+          } catch (cause) {
+            boundary.fail(cause);
+          }
+        },
+        dispose: () => boundary.fail(new Error('Document has been disposed.')),
+      });
+      boundary.detach(remove);
+      return boundary;
+    }
+
+    const pending = createCollectionPending();
+    const read = (
+      active: () => boolean,
+      previous: CollectionRead<string, unknown>
+    ): CollectionRead<string, unknown> => {
+      disposed();
       const node = schemaNode();
-      return node ? equalValue(node, left, right) : Object.is(left, right);
-    });
+      const value = currentValue();
+      const treeNodes = selector.tree?.kind === 'nodes';
+      const entryNode = !treeNodes && node ? collectionEntryNode(node) : undefined;
+      const snapshots = new Map<string, unknown>();
+      const replacement = createDocumentDirty();
+      if (pending.reset) markDocumentReplace(replacement, []);
+
+      const ids = (): readonly string[] => {
+        assertScope(active);
+        if (treeNodes)
+          return node?.kind === 'tree' && isRecord(value) && isRecord(value.nodes)
+            ? Object.freeze(Object.keys(value.nodes))
+            : Object.freeze([]);
+        if (node?.kind === 'map' && isRecord(value)) return Object.freeze(Object.keys(value));
+        if (node?.kind === 'table' && isRecord(value) && Array.isArray(value.ids))
+          return Object.freeze([...(value.ids as string[])]);
+        if (node?.kind === 'list' && Array.isArray(value))
+          return Object.freeze(anchor.toArray(anchor.indexedKeys(value, node.keyOf)));
+        return Object.freeze([]);
+      };
+
+      const has = (key: string): boolean => {
+        assertScope(active);
+        if (treeNodes)
+          return Boolean(
+            node?.kind === 'tree' &&
+            isRecord(value) &&
+            isRecord(value.nodes) &&
+            Object.hasOwn(value.nodes, key)
+          );
+        if (node?.kind === 'map' && isRecord(value)) return Object.hasOwn(value, key);
+        if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId))
+          return Object.hasOwn(value.byId, key);
+        if (node?.kind === 'list' && Array.isArray(value))
+          return anchor.indexedKeys(value, node.keyOf).index(key) >= 0;
+        return false;
+      };
+
+      const raw = (key: string): unknown => {
+        if (treeNodes) {
+          if (node?.kind !== 'tree' || !isRecord(value) || !isRecord(value.nodes)) return undefined;
+          return Object.hasOwn(value.nodes, key) ? value.nodes[key] : undefined;
+        }
+        if (node?.kind === 'map' && isRecord(value))
+          return Object.hasOwn(value, key) ? value[key] : undefined;
+        if (node?.kind === 'table' && isRecord(value) && isRecord(value.byId))
+          return Object.hasOwn(value.byId, key) ? value.byId[key] : undefined;
+        if (node?.kind === 'list' && Array.isArray(value)) {
+          const index = anchor.indexedKeys(value, node.keyOf).index(key);
+          return index < 0 ? undefined : value[index];
+        }
+        return undefined;
+      };
+
+      return Object.freeze({
+        get: (key: string) => {
+          assertScope(active);
+          if (!snapshots.has(key)) {
+            if (!has(key)) snapshots.set(key, undefined);
+            else {
+              const current = raw(key);
+              if (treeNodes) {
+                const entry = current as
+                  DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>;
+                const before = previous.has(key)
+                  ? (previous.get(key) as
+                      DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
+                  : undefined;
+                snapshots.set(key, equalTreeNode(before, entry) ? before : copyTreeNode(entry));
+              } else if (!entryNode) snapshots.set(key, current);
+              else if (!previous.has(key)) snapshots.set(key, copyValue(entryNode, current));
+              else {
+                const dirty = pending.entries.get(key) ?? (pending.reset ? replacement : undefined);
+                snapshots.set(
+                  key,
+                  dirty
+                    ? materializeDocumentValue(entryNode, previous.get(key), current, dirty)
+                    : previous.get(key)
+                );
+              }
+            }
+          }
+          return snapshots.get(key);
+        },
+        has,
+        ids,
+      });
+    };
+
+    let boundary!: CollectionBoundary;
+    boundary = createCollectionBoundary(
+      scheduler,
+      'document collection source',
+      read,
+      Object.is,
+      failed => {
+        if (failed) resetCollectionPending(pending);
+        else clearCollectionPending(pending);
+      }
+    );
     const remove = documentConnection(document).add({
-      matches: commit => !selector || affectsTarget(commit.impact, selector),
+      target: selector,
       capture: commit => {
         try {
-          boundary.setLatest(read());
-          boundary.mark({ reset: commit.impact.kind === 'reset' });
+          mergeCollectionChanges(selector, pending, commit.changes);
+          boundary.mark({
+            reset: pending.reset,
+            ...(pending.reset ? {} : { candidates: pending.entries.keys() }),
+            orderMayChange: pending.order,
+          });
         } catch (cause) {
           boundary.fail(cause);
         }
@@ -544,75 +892,22 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
     return boundary;
   };
 
-  const documentCollection = (definition: SourceDefinition): SourceMaterialization => {
-    if (definition.source.kind !== 'document-collection')
-      throw new Error('Invalid document collection source.');
-    const { document, selector } = definition.source;
-    const state = accessOf(document);
-    const read = (active: () => boolean): CollectionRead<string, unknown> => {
-      if (state.disposed) throw new Error('Document has been disposed.');
-      const raw = collectionAccess({ state, active }, selector.address) as CollectionRead<
-        string,
-        unknown
-      >;
-      const snapshots = new Map<string, unknown>();
-      return Object.freeze({
-        get: (key: string) => {
-          assertScope(active);
-          if (!snapshots.has(key)) snapshots.set(key, snapshot(raw.get(key)));
-          return snapshots.get(key);
-        },
-        has: (key: string) => {
-          assertScope(active);
-          return raw.has(key);
-        },
-        ids: () => {
-          assertScope(active);
-          return raw.ids();
-        },
-      });
-    };
-    const collectionNode = () => nodeAt(state.schema, selector.address, state.document);
-    const boundary = createCollectionBoundary(
-      scheduler,
-      'document collection source',
-      read,
-      (left, right) => {
-        const node = collectionNode();
-        const entry = node && collectionEntryNode(node);
-        return entry ? equalValue(entry, left, right) : Object.is(left, right);
-      }
-    );
-    const remove = documentConnection(document).add({
-      matches: commit => affectsTarget(commit.impact, selector),
-      capture: commit => {
-        const impact = collectionImpact(commit.impact, selector);
-        if (impact.kind === 'reset') {
-          boundary.mark({ reset: true });
-          return;
-        }
-        const candidates = new Set<string>([...impact.added, ...impact.updated, ...impact.removed]);
-        boundary.mark({
-          candidates,
-          orderMayChange: Boolean(impact.added.size || impact.removed.size || impact.orderChanged),
-        });
-      },
-      dispose: () => boundary.fail(new Error('Document has been disposed.')),
-    });
-    boundary.detach(remove);
-    return boundary;
-  };
-
   const readable = (definition: SourceDefinition): SourceMaterialization => {
     if (definition.source.kind !== 'readable') throw new Error('Invalid Readable source.');
     const { readable, equality } = definition.source;
-    let initial = readable.current();
-    const boundary = createValueBoundary(scheduler, 'external readable', initial, equality);
+    let latest = readable.current();
+    const boundary = createValueBoundary(
+      scheduler,
+      'external readable',
+      latest,
+      equality,
+      () => latest,
+      () => undefined
+    );
     const member: ValueMember = {
       boundary,
       receive(value, metadata) {
-        initial = value;
-        boundary.setLatest(value);
+        latest = value;
         boundary.mark(metadata);
       },
     };
@@ -645,7 +940,7 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
       const owner = documentReadableOwner(readable);
       if (owner) {
         detachDocument = documentConnection(owner).add({
-          matches: () => true,
+          target: documentRootTarget,
           capture: () => receive(false),
           dispose: () => {
             members.forEach(next => next.boundary.fail(new Error('Document has been disposed.')));
@@ -661,7 +956,6 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
       connection!.members.delete(member);
       if (!connection!.members.size) connection!.close();
     });
-    void initial;
     return boundary;
   };
 
@@ -669,11 +963,19 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
     if (definition.source.kind !== 'external-value')
       throw new Error('Invalid external value source.');
     const { source, equality } = definition.source;
-    const boundary = createValueBoundary(scheduler, 'external source', source.current(), equality);
+    let latest = source.current();
+    const boundary = createValueBoundary(
+      scheduler,
+      'external source',
+      latest,
+      equality,
+      () => latest,
+      () => undefined
+    );
     const member: ValueMember = {
       boundary,
       receive(value, metadata) {
-        boundary.setLatest(value);
+        latest = value;
         boundary.mark(metadata);
       },
     };
@@ -732,7 +1034,8 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
           ids: () => current.ids(),
         });
       },
-      definition.output.equality
+      definition.output.equality,
+      () => undefined
     );
     let connection = externalCollections.get(source);
     if (!connection) {
@@ -801,10 +1104,8 @@ export const createSourceRegistry = (scheduler: Scheduler) => {
           return valueInput(definition);
         case 'collection-input':
           return collectionInput(definition);
-        case 'document-value':
-          return documentValue(definition);
-        case 'document-collection':
-          return documentCollection(definition);
+        case 'document':
+          return documentSource(definition);
         case 'readable':
           return readable(definition);
         case 'external-value':
