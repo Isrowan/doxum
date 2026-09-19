@@ -9,7 +9,7 @@ import {
   type DocumentDirty,
 } from './materialization';
 
-export type DocumentCollectionPending = {
+type DocumentCollectionPending = {
   reset: boolean;
   order: boolean;
   readonly entries: Map<string, DocumentDirty>;

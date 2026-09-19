@@ -40,6 +40,7 @@ export const createDocument = <S extends ObjectNode>(input: {
     schema: input.schema,
     document: schemaValue.copyValue(input.schema, input.initial) as Infer<S>,
     disposed: false,
+    projectionLocks: 0,
   };
   let revision = 0,
     busy = false;

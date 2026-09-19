@@ -8,7 +8,7 @@ export type KeyOrder = {
 
 export type OrderedKeys = readonly string[] | KeyOrder;
 
-export type ListSequence = {
+type ListSequence = {
   readonly order: readonly string[];
   readonly values: ReadonlyMap<string, unknown>;
 };

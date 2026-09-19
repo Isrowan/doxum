@@ -1,6 +1,25 @@
-import type { Validator } from './schema/value';
 import * as schemaValue from './schema/value';
 export type DocumentAddress = readonly string[];
+
+/** Pure synchronous validation. Successful output is ignored; input is never transformed. */
+export type Validator<T> =
+  | ((value: unknown) => T)
+  | {
+      readonly '~standard': {
+        readonly version: 1;
+        readonly vendor: string;
+        readonly types?: { readonly input: unknown; readonly output: T };
+        validate(value: unknown):
+          | { readonly value: T; readonly issues?: undefined }
+          | {
+              readonly issues: readonly {
+                readonly message: string;
+                readonly path?: readonly (PropertyKey | { readonly key: PropertyKey })[];
+              }[];
+            }
+          | PromiseLike<unknown>;
+      };
+    };
 
 /** Shared payloads are immutable through every alias, including builtin methods. */
 export type ReadonlyValue<T> = T extends (...args: never[]) => unknown

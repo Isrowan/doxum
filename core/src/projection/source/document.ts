@@ -60,7 +60,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
     const index = new impactTarget.SubscriptionIndex<DocumentBinding>(state.schema);
     const candidates = new Set<DocumentBinding>();
     const guard = (locked: boolean) => {
-      state.projectionLocks = (state.projectionLocks ?? 0) + (locked ? 1 : -1);
+      state.projectionLocks += locked ? 1 : -1;
     };
     scheduler.guards.add(guard);
     let closed = false;
@@ -111,8 +111,7 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
     if (definition.source.kind !== 'document') throw new Error('Invalid document source.');
     const { document, selector } = definition.source;
     const state = contextOf(document).state;
-    const schemaNode = () => address.nodeAt(state.schema, selector.address, state.document);
-    const currentValue = () => address.read(state.document, selector.address, state.schema);
+    const current = () => address.resolveValue(state.schema, state.document, selector.address);
     const disposed = () => {
       if (state.disposed) throw new Error('Document has been disposed.');
     };
@@ -121,17 +120,17 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       const dirty = createDocumentDirty();
       const read = (previous?: unknown): unknown => {
         disposed();
-        const node = schemaNode();
-        const current = currentValue();
+        const resolved = current();
+        const node = resolved?.node;
+        const value = resolved?.value;
         if (selector.tree?.kind === 'root')
-          return node?.kind === 'tree' && isRecord(current) && typeof current.rootId === 'string'
-            ? current.rootId
+          return node?.kind === 'tree' && isRecord(value) && typeof value.rootId === 'string'
+            ? value.rootId
             : undefined;
         if (selector.tree?.kind === 'node') {
-          if (node?.kind !== 'tree' || !isRecord(current) || !isRecord(current.nodes))
-            return undefined;
-          const entry = Object.hasOwn(current.nodes, selector.tree.id)
-            ? (current.nodes[selector.tree.id] as
+          if (node?.kind !== 'tree' || !isRecord(value) || !isRecord(value.nodes)) return undefined;
+          const entry = Object.hasOwn(value.nodes, selector.tree.id)
+            ? (value.nodes[selector.tree.id] as
                 DocumentTreeNode<unknown, false> | DocumentTreeNode<unknown, true>)
             : undefined;
           if (
@@ -146,8 +145,8 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         }
         if (!node) return undefined;
         return previous === undefined
-          ? schemaValue.copyValue(node, current)
-          : materializeDocumentValue(node, previous, current, dirty);
+          ? schemaValue.copyValue(node, value)
+          : materializeDocumentValue(node, previous, value, dirty);
       };
 
       const initial = read();
@@ -187,8 +186,9 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       previous: CollectionRead<string, unknown>
     ): CollectionRead<string, unknown> => {
       disposed();
-      const node = schemaNode();
-      const value = currentValue();
+      const resolved = current();
+      const node = resolved?.node;
+      const value = resolved?.value;
       const treeNodes = selector.tree?.kind === 'nodes';
       const entryNode = !treeNodes && node ? collectionEntryNode(node) : undefined;
       const snapshots = new Map<string, unknown>();

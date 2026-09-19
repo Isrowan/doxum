@@ -2,7 +2,7 @@ import type { ObjectNode, ImpactTarget } from '../schema';
 import type { CommitListener, DocumentCommit, Unsubscribe, ObserverError } from './contract';
 import * as target from '../impact/target';
 
-export type ProjectionAttachment<TSchema extends ObjectNode> = {
+type ProjectionAttachment<TSchema extends ObjectNode> = {
   capture(commit: DocumentCommit<TSchema>): void;
   settle(): void;
   flush(): readonly ObserverError[];

@@ -1,38 +1,9 @@
 import * as sequence from '../order/sequence';
 import { profile } from '../profile';
-import type { DocumentAddress, DocumentNode, ObjectNode } from '../schema';
+import type { DocumentAddress, DocumentNode } from '../schema';
 import { compiledLayout, type MemberLayout } from '../schema/layout';
 import * as tree from '../tree/topology';
-
-/** The only resolved address representation used inside the runtime. */
-export type AddressRef = {
-  readonly path: number;
-  readonly address: DocumentAddress;
-};
-
-type RegistryNode = {
-  readonly static: Map<string, RegistryNode>;
-  dynamic?: RegistryNode;
-  path?: number;
-};
-
-type Registry = {
-  readonly root: RegistryNode;
-  nextPath: number;
-};
-
-const registries = new WeakMap<object, Registry>();
-const registryNode = (): RegistryNode => ({ static: new Map() });
-const registryFor = (schema: ObjectNode): Registry => {
-  const cached = registries.get(schema as object);
-  if (cached) return cached;
-  const registry: Registry = { root: registryNode(), nextPath: 0 };
-  registries.set(schema as object, registry);
-  return registry;
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+import { isRecord } from '../value/record';
 
 const variantNode = (
   node: Extract<DocumentNode, { kind: 'variant' }>,
@@ -59,52 +30,6 @@ const step = (
   // List items use stable keys; tree topology remains a structural unit.
   if (node.kind === 'list') return node.value;
   return undefined;
-};
-
-const pathFor = (
-  schema: ObjectNode,
-  address: DocumentAddress,
-  document?: unknown
-): number | undefined => {
-  const registry = registryFor(schema);
-  let trie = registry.root;
-  let node: DocumentNode | undefined = schema;
-  let value: unknown = document;
-  for (const segment of address) {
-    profile.address.schemaStep();
-    profile.address.documentStep();
-    const resolved = step(node, value, segment);
-    if (!resolved) return undefined;
-    const next =
-      node &&
-      (node.kind === 'table' || node.kind === 'map' || node.kind === 'list' || node.kind === 'tree')
-        ? (trie.dynamic ??= registryNode())
-        : (() => {
-            const existing = trie.static.get(segment);
-            if (existing) return existing;
-            const created = registryNode();
-            trie.static.set(segment, created);
-            return created;
-          })();
-    trie = next;
-    value = readSegment(value, segment, node);
-    node = resolved;
-  }
-  if (trie.path === undefined) trie.path = registry.nextPath++;
-  return trie.path;
-};
-
-export const resolveAddress = (
-  schema: ObjectNode,
-  address: DocumentAddress,
-  document?: unknown
-): AddressRef | undefined => {
-  if (!Array.isArray(address)) return undefined;
-  for (const segment of address) if (typeof segment !== 'string') return undefined;
-  profile.address.arrayCopied();
-  const owned = Object.freeze(address.slice()) as DocumentAddress;
-  const path = pathFor(schema, owned, document);
-  return path === undefined ? undefined : { path, address: owned };
 };
 
 export const nodeAt = (
@@ -135,19 +60,7 @@ const readSegment = (value: unknown, segment: string, node?: DocumentNode): unkn
     : undefined;
 };
 
-export const read = (root: unknown, address: DocumentAddress, schema: DocumentNode): unknown => {
-  let value = root;
-  let node: DocumentNode | undefined = schema;
-  for (const segment of address) {
-    const next = step(node, value, segment);
-    value = readSegment(value, segment, node);
-    node = next;
-    if (value === undefined) return undefined;
-  }
-  return value;
-};
-
-export type ResolvedAddress = {
+type ResolvedAddress = {
   readonly parent: Record<string, unknown> | unknown[];
   readonly key: string | number;
   readonly node: DocumentNode;

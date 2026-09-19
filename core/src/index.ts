@@ -20,9 +20,10 @@ export type {
   ReadonlyValue,
   SchemaPath,
   PathValueOf,
+  Validator,
 } from './schema';
 export { parse, ParseError } from './schema/value';
-export type { Validator, ParseIssue } from './schema/value';
+export type { ParseIssue } from './schema/value';
 export { snapshot, replace } from './access/scope';
 export type { Read, Draft } from './access/scope';
 export type { Change, ChangeSet, MemberChange, ValueTransition } from './changes';

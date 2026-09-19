@@ -29,7 +29,6 @@ const counters = () => ({
     documentSteps: 0,
     prefixComparisons: 0,
     segmentsCompared: 0,
-    arraysCopied: 0,
     listIndexes: 0,
     listItems: 0,
   },
@@ -89,9 +88,6 @@ export const profile = {
     },
     documentStep: () => {
       if (active) active.address.documentSteps++;
-    },
-    arrayCopied: () => {
-      if (active) active.address.arraysCopied++;
     },
     prefixComparison: () => {
       if (active) active.address.prefixComparisons++;

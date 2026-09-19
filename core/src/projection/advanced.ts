@@ -9,6 +9,7 @@ import type {
 } from './definition';
 import { defineProcessor, projectionRef } from './definition';
 import { assertSynchronous } from './graph/scheduler';
+import { isPlainObject } from '../value/record';
 
 type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
@@ -223,45 +224,38 @@ function createIncrementalCollection<
 }
 
 type GroupShape = number | { readonly [key: string]: GroupShape };
-const groupOutputMetadata = new WeakMap<
-  object,
-  {
-    readonly kind: OutputDefinition['kind'];
-    readonly equality: (a: unknown, b: unknown) => boolean;
-  }
->();
+type GroupOutputMetadata = {
+  readonly kind: OutputDefinition['kind'];
+  readonly equality: (a: unknown, b: unknown) => boolean;
+};
 
-const isPlainGroupNamespace = (value: unknown): value is Record<string, unknown> =>
-  value !== null &&
-  typeof value === 'object' &&
-  !groupOutputMetadata.has(value) &&
-  !Array.isArray(value) &&
-  (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+const isPlainGroupNamespace = (
+  value: unknown,
+  metadata: ReadonlyMap<object, GroupOutputMetadata>
+): value is Record<string, unknown> => isPlainObject(value) && !metadata.has(value);
 
 const compileGroupShape = (
   value: unknown,
   path: readonly string[],
-  declaredOutputs: ReadonlySet<object>,
+  metadata: ReadonlyMap<object, GroupOutputMetadata>,
   used: Set<object>,
   outputs: OutputDefinition[]
 ): GroupShape => {
   if (value !== null && typeof value === 'object') {
-    const metadata = groupOutputMetadata.get(value);
-    if (metadata) {
-      if (!declaredOutputs.has(value))
-        throw new TypeError('Incremental group outputs must be declared by this group.');
+    const output = metadata.get(value);
+    if (output) {
       if (used.has(value)) throw new TypeError('An incremental group output cannot be reused.');
       used.add(value);
       const index = outputs.length;
       outputs.push({
-        kind: metadata.kind,
-        equality: metadata.equality,
+        kind: output.kind,
+        equality: output.equality,
         path: Object.freeze([...path]),
       });
       return index;
     }
   }
-  if (!isPlainGroupNamespace(value))
+  if (!isPlainGroupNamespace(value, metadata))
     throw new TypeError('Incremental group outputs must be a static object tree.');
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string')
@@ -278,13 +272,7 @@ const compileGroupShape = (
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !('value' in descriptor))
       throw new TypeError('Incremental group namespaces cannot contain accessors.');
-    result[key] = compileGroupShape(
-      descriptor.value,
-      [...path, key],
-      declaredOutputs,
-      used,
-      outputs
-    );
+    result[key] = compileGroupShape(descriptor.value, [...path, key], metadata, used, outputs);
   }
   return Object.freeze(result);
 };
@@ -295,8 +283,6 @@ const hydrateGroupShape = <T>(shape: GroupShape, values: readonly T[]): unknown 
   for (const [key, child] of Object.entries(shape)) result[key] = hydrateGroupShape(child, values);
   return Object.freeze(result);
 };
-
-const previousOf = (output: OutputEvaluation): unknown => output.previous;
 
 const hydrateGroupReads = (
   shape: GroupShape,
@@ -335,26 +321,24 @@ function createIncrementalGroup<
     throw new TypeError('Incremental group processor must be a function.');
 
   let active = true;
-  const declaredOutputs = new Set<object>();
+  const metadata = new Map<object, GroupOutputMetadata>();
   const defineOutput: GroupOutputBuilder = {
     collection: <K extends string, V>(equality: (previous: V, next: V) => boolean = Object.is) => {
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
       const descriptor = Object.freeze({});
-      groupOutputMetadata.set(descriptor, {
+      metadata.set(descriptor, {
         kind: 'collection',
         equality: equality as (a: unknown, b: unknown) => boolean,
       });
-      declaredOutputs.add(descriptor);
       return descriptor as GroupCollectionOutput<K, V>;
     },
     value: <T>(equality: (previous: T, next: T) => boolean = Object.is) => {
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
       const descriptor = Object.freeze({});
-      groupOutputMetadata.set(descriptor, {
+      metadata.set(descriptor, {
         kind: 'value',
         equality: equality as (a: unknown, b: unknown) => boolean,
       });
-      declaredOutputs.add(descriptor);
       return descriptor as GroupValueOutput<T>;
     },
   };
@@ -363,10 +347,10 @@ function createIncrementalGroup<
   active = false;
   const outputs: OutputDefinition[] = [];
   const used = new Set<object>();
-  const shape = compileGroupShape(declared, [], declaredOutputs, used, outputs);
+  const shape = compileGroupShape(declared, [], metadata, used, outputs);
   if (typeof shape === 'number')
     throw new TypeError('Incremental group declarations must return an output namespace.');
-  if (used.size === 0 || used.size !== declaredOutputs.size)
+  if (used.size === 0 || used.size !== metadata.size)
     throw new TypeError('Every incremental group output must be returned by the declaration.');
 
   const projections = defineProcessor({
@@ -397,7 +381,6 @@ function createIncrementalGroup<
     },
     name: `processor-group:${outputs.map(output => output.path?.join('.') ?? '').join(',')}`,
   });
-  void previousOf;
   return hydrateGroupShape(shape, projections) as GroupProjections<O>;
 }
 

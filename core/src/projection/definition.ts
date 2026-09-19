@@ -42,7 +42,7 @@ type ProjectionValues<D extends readonly Projection<unknown, unknown>[]> = {
   readonly [K in keyof D]: D[K] extends Projection<infer T, unknown> ? T : never;
 };
 
-export type Equality = (a: unknown, b: unknown) => boolean;
+type Equality = (a: unknown, b: unknown) => boolean;
 type PathSelector<S extends ObjectNode> = (path: SchemaPath<S['shape']>) => unknown;
 
 export type OutputDefinition =

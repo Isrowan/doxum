@@ -27,7 +27,7 @@ export type SourceMaterialization = {
 };
 
 export type SourceMark = { readonly reset?: boolean; readonly cause?: unknown };
-export type CollectionMark = SourceMark & {
+type CollectionMark = SourceMark & {
   readonly candidates?: Iterable<string>;
   readonly fullScan?: boolean;
   readonly orderMayChange?: boolean;

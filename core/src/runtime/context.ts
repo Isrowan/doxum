@@ -7,7 +7,7 @@ export type RuntimeState<TSchema extends ObjectNode> = {
   readonly schema: TSchema;
   document: Infer<TSchema>;
   disposed: boolean;
-  projectionLocks?: number;
+  projectionLocks: number;
 };
 
 export type RuntimeContext<TSchema extends ObjectNode> = {
