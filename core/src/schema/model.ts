@@ -111,26 +111,89 @@ export type DocumentNode =
   | TreeNode<unknown, true>;
 
 declare const schemaType: unique symbol;
-declare const schemaNode: unique symbol;
 declare const objectSchema: unique symbol;
 
-export type Schema<T = unknown> = {
-  readonly [schemaType]: T;
+/** Portable public schema handle. The definition parameter carries compile-time shape only. */
+export type Schema<T = unknown, Definition = unknown> = {
+  readonly [schemaType]: {
+    readonly value: T;
+    readonly definition: Definition;
+  };
 };
 
-export type ObjectSchema<T extends object = object> = Schema<T> & {
+type PublicSchemaShape = { readonly [key: string]: Schema<unknown, unknown> };
+
+export type ObjectSchema<
+  T extends object = object,
+  Shape extends PublicSchemaShape = PublicSchemaShape,
+> = Schema<T, { readonly kind: 'object'; readonly shape: Shape }> & {
   readonly [objectSchema]: true;
 };
 
-export type SchemaNodeOf<S extends Schema<unknown>> = S extends {
-  readonly [schemaNode]: infer N extends DocumentNode;
-}
-  ? N
-  : S extends ObjectSchema<object>
-    ? ObjectNode
-    : DocumentNode;
+type SchemaDefinitionOf<S extends Schema<unknown, unknown>> =
+  S extends Schema<unknown, infer Definition> ? Definition : unknown;
 
-export const schemaNodeOf = <S extends Schema<unknown>>(schema: S): SchemaNodeOf<S> =>
+type Optionalized<N extends DocumentNode, Optional extends boolean> = Optional extends true
+  ? OptionalNode<N>
+  : N;
+type FieldNodeFor<TValue, Optional extends boolean> = Optional extends true
+  ? FieldNode<TValue, true>
+  : FieldNode<TValue, false>;
+type TreeNodeFor<TValue, ValueOptional extends boolean> = ValueOptional extends true
+  ? TreeNode<TValue, true>
+  : TreeNode<TValue, false>;
+
+type SchemaNodeFromDefinition<Definition> = Definition extends {
+  readonly kind: 'field';
+  readonly value: infer TValue;
+  readonly optional: infer Optional extends boolean;
+}
+  ? FieldNodeFor<TValue, Optional>
+  : Definition extends {
+        readonly kind: 'object';
+        readonly shape: infer Shape extends PublicSchemaShape;
+      }
+    ? ObjectNode<NodeShapeOf<Shape>>
+    : Definition extends {
+          readonly kind: 'variant';
+          readonly tag: infer Tag extends string;
+          readonly variants: infer Variants extends PublicVariantShape;
+          readonly optional: infer Optional extends boolean;
+        }
+      ? Optionalized<VariantNode<Tag, VariantNodeShapeOf<Variants>>, Optional>
+      : Definition extends {
+            readonly kind: 'table';
+            readonly value: infer Value extends Schema<unknown, unknown>;
+            readonly key: infer Key extends string;
+          }
+        ? TableNode<Extract<SchemaNodeOf<Value>, EntitySchemaNode>, Key>
+        : Definition extends {
+              readonly kind: 'map';
+              readonly value: infer Value extends Schema<unknown, unknown>;
+              readonly key: infer Key extends string;
+              readonly optional: infer Optional extends boolean;
+            }
+          ? Optionalized<MapNode<Extract<SchemaNodeOf<Value>, ValueSchemaNode>, Key>, Optional>
+          : Definition extends {
+                readonly kind: 'list';
+                readonly value: infer TValue;
+                readonly optional: infer Optional extends boolean;
+              }
+            ? Optionalized<ListNode<TValue>, Optional>
+            : Definition extends {
+                  readonly kind: 'tree';
+                  readonly value: infer TValue;
+                  readonly valueOptional: infer ValueOptional extends boolean;
+                  readonly optional: infer Optional extends boolean;
+                }
+              ? Optionalized<TreeNodeFor<TValue, ValueOptional>, Optional>
+              : DocumentNode;
+
+export type SchemaNodeOf<S extends Schema<unknown, unknown>> = SchemaNodeFromDefinition<
+  SchemaDefinitionOf<S>
+>;
+
+export const schemaNodeOf = <S extends Schema<unknown, unknown>>(schema: S): SchemaNodeOf<S> =>
   schema as unknown as SchemaNodeOf<S>;
 
 // Flatten only schema-generated objects; user-supplied field values stay opaque.
@@ -141,8 +204,8 @@ type InferNode<T extends DocumentNode> = T extends { readonly optional: true }
   ? NodeValue<T> | undefined
   : NodeValue<T>;
 
-export type Infer<T extends Schema<unknown> | DocumentNode> =
-  T extends Schema<infer TValue> ? TValue : T extends DocumentNode ? InferNode<T> : never;
+export type Infer<T extends Schema<unknown, unknown> | DocumentNode> =
+  T extends Schema<infer TValue, unknown> ? TValue : T extends DocumentNode ? InferNode<T> : never;
 
 type NodeValue<N> =
   N extends FieldNode<infer T, infer O>
@@ -184,10 +247,6 @@ export type ValueSchemaNode = EntitySchemaNode | FieldNode<unknown, boolean>;
 export type DocumentAnchor<K extends string = string> =
   { readonly at: 'start' | 'end' } | { readonly before: K } | { readonly after: K };
 
-type SchemaHandle<N extends DocumentNode> = Schema<InferNode<N>> & {
-  readonly [schemaNode]: N;
-};
-type PublicSchemaShape = { readonly [key: string]: Schema<unknown> };
 type NodeShapeOf<S extends PublicSchemaShape> = {
   readonly [K in keyof S]: SchemaNodeOf<S[K]>;
 };
@@ -200,24 +259,9 @@ type PublicShapeValue<S extends PublicSchemaShape> = SchemaObject<
     readonly [K in PublicOptionalKeys<S>]?: Infer<S[K]>;
   }
 >;
-type ObjectSchemaHandle<S extends PublicSchemaShape> = ObjectSchema<PublicShapeValue<S>> & {
-  readonly [schemaNode]: ObjectNode<NodeShapeOf<S>>;
-};
-type FieldSchemaHandle<T> = SchemaHandle<FieldNode<T, false>>;
-type OptionalFieldSchemaHandle<T> = SchemaHandle<FieldNode<T, true>>;
-type OptionalSchemaHandle = Schema<unknown> & { readonly [schemaNode]: OptionalLeaf };
-type EntitySchemaHandle = Schema<unknown> & { readonly [schemaNode]: EntitySchemaNode };
-type ValueSchemaHandle = Schema<unknown> & { readonly [schemaNode]: ValueSchemaNode };
 type PublicVariantShape = { readonly [key: string]: ObjectSchema<object> };
 type VariantNodeShapeOf<V extends PublicVariantShape> = {
   readonly [K in keyof V]: Extract<SchemaNodeOf<V[K]>, ObjectNode>;
-};
-type VariantSchemaHandle<T extends string, V extends PublicVariantShape> = Schema<
-  {
-    [K in keyof V & string]: SchemaObject<{ readonly [P in T]: K } & Infer<V[K]>>;
-  }[keyof V & string]
-> & {
-  readonly [schemaNode]: VariantNode<T, VariantNodeShapeOf<V>>;
 };
 export const collectionEntryNode = (node: DocumentNode): ValueSchemaNode | undefined =>
   node.kind === 'map' || node.kind === 'table' || node.kind === 'list' ? node.value : undefined;
@@ -230,78 +274,307 @@ type OptionalLeaf =
   | ListNode<unknown>
   | TreeNode<unknown, false>
   | TreeNode<unknown, true>;
-type OptionalResult<T extends OptionalSchemaHandle> = SchemaHandle<
-  OptionalNode<Extract<SchemaNodeOf<T>, OptionalLeaf>>
+type FieldSchema<T, Optional extends boolean = boolean> = Schema<
+  ReadonlyValue<T> | (Optional extends true ? undefined : never),
+  { readonly kind: 'field'; readonly value: T; readonly optional: Optional }
 >;
-type EntityNodeOf<V extends EntitySchemaHandle> = Extract<SchemaNodeOf<V>, EntitySchemaNode>;
-type ValueNodeOf<V extends ValueSchemaHandle> = Extract<SchemaNodeOf<V>, ValueSchemaNode>;
+type VariantSchema = Schema<
+  unknown,
+  {
+    readonly kind: 'variant';
+    readonly tag: string;
+    readonly variants: PublicVariantShape;
+    readonly optional: boolean;
+  }
+>;
+type MapSchema = Schema<
+  unknown,
+  {
+    readonly kind: 'map';
+    readonly value: Schema<unknown, unknown>;
+    readonly key: string;
+    readonly optional: boolean;
+  }
+>;
+type ListSchema = Schema<
+  unknown,
+  { readonly kind: 'list'; readonly value: unknown; readonly optional: boolean }
+>;
+type TreeSchema = Schema<
+  unknown,
+  {
+    readonly kind: 'tree';
+    readonly value: unknown;
+    readonly valueOptional: boolean;
+    readonly optional: boolean;
+  }
+>;
+type OptionalSchema = FieldSchema<unknown> | VariantSchema | MapSchema | ListSchema | TreeSchema;
+type EntitySchema = ObjectSchema<object> | VariantSchema;
+type ValueSchema = EntitySchema | FieldSchema<unknown>;
+type EntityNodeOf<V extends EntitySchema> = Extract<SchemaNodeOf<V>, EntitySchemaNode>;
+type ValueNodeOf<V extends ValueSchema> = Extract<SchemaNodeOf<V>, ValueSchemaNode>;
 
-export const field = <T>(validator?: Validator<T>): FieldSchemaHandle<T> =>
-  node({ kind: 'field', ...(validator ? { validator } : {}) }) as unknown as FieldSchemaHandle<T>;
-export const optional = <T extends OptionalSchemaHandle>(value: T): OptionalResult<T> => {
-  const concrete = schemaNodeOf(value) as Extract<SchemaNodeOf<T>, OptionalLeaf>;
+export const field = <T>(
+  validator?: Validator<T>
+): Schema<
+  ReadonlyValue<T>,
+  { readonly kind: 'field'; readonly value: T; readonly optional: false }
+> =>
+  node({ kind: 'field', ...(validator ? { validator } : {}) }) as unknown as Schema<
+    ReadonlyValue<T>,
+    { readonly kind: 'field'; readonly value: T; readonly optional: false }
+  >;
+
+export function optional<T, Optional extends boolean>(
+  value: Schema<
+    ReadonlyValue<T> | (Optional extends true ? undefined : never),
+    { readonly kind: 'field'; readonly value: T; readonly optional: Optional }
+  >
+): Schema<
+  ReadonlyValue<T> | undefined,
+  { readonly kind: 'field'; readonly value: T; readonly optional: true }
+>;
+export function optional<
+  TValue,
+  Tag extends string,
+  Variants extends PublicVariantShape,
+  Optional extends boolean,
+>(
+  value: Schema<
+    TValue,
+    {
+      readonly kind: 'variant';
+      readonly tag: Tag;
+      readonly variants: Variants;
+      readonly optional: Optional;
+    }
+  >
+): Schema<
+  TValue | undefined,
+  {
+    readonly kind: 'variant';
+    readonly tag: Tag;
+    readonly variants: Variants;
+    readonly optional: true;
+  }
+>;
+export function optional<
+  TValue,
+  Value extends Schema<unknown, unknown>,
+  Key extends string,
+  Optional extends boolean,
+>(
+  value: Schema<
+    TValue,
+    {
+      readonly kind: 'map';
+      readonly value: Value;
+      readonly key: Key;
+      readonly optional: Optional;
+    }
+  >
+): Schema<
+  TValue | undefined,
+  { readonly kind: 'map'; readonly value: Value; readonly key: Key; readonly optional: true }
+>;
+export function optional<TValue, TItem, Optional extends boolean>(
+  value: Schema<
+    TValue,
+    { readonly kind: 'list'; readonly value: TItem; readonly optional: Optional }
+  >
+): Schema<
+  TValue | undefined,
+  { readonly kind: 'list'; readonly value: TItem; readonly optional: true }
+>;
+export function optional<
+  TValue,
+  TNodeValue,
+  ValueOptional extends boolean,
+  Optional extends boolean,
+>(
+  value: Schema<
+    TValue,
+    {
+      readonly kind: 'tree';
+      readonly value: TNodeValue;
+      readonly valueOptional: ValueOptional;
+      readonly optional: Optional;
+    }
+  >
+): Schema<
+  TValue | undefined,
+  {
+    readonly kind: 'tree';
+    readonly value: TNodeValue;
+    readonly valueOptional: ValueOptional;
+    readonly optional: true;
+  }
+>;
+export function optional(value: OptionalSchema): Schema<unknown, unknown> {
+  const concrete = schemaNodeOf(value) as OptionalLeaf;
   if (!['field', 'variant', 'map', 'list', 'tree'].includes(concrete.kind))
     throw new TypeError('Only field, variant, map, list and tree nodes support optional presence.');
   return node({ ...concrete, optional: true } as OptionalNode<
     typeof concrete
-  >) as unknown as OptionalResult<T>;
-};
-export const object = <S extends PublicSchemaShape>(shape: S): ObjectSchemaHandle<S> =>
+  >) as unknown as Schema<unknown, unknown>;
+}
+
+export const object = <S extends PublicSchemaShape>(
+  shape: S
+): ObjectSchema<PublicShapeValue<S>, S> =>
   node({
     kind: 'object',
     shape: Object.freeze(
       Object.fromEntries(Object.entries(shape).map(([key, value]) => [key, schemaNodeOf(value)]))
     ) as NodeShapeOf<S>,
-  }) as unknown as ObjectSchemaHandle<S>;
+  }) as unknown as ObjectSchema<PublicShapeValue<S>, S>;
 export const variant = <T extends string, V extends PublicVariantShape>(
   tag: T,
   variants: V
-): VariantSchemaHandle<T, V> =>
+): Schema<
+  {
+    [K in keyof V & string]: SchemaObject<{ readonly [P in T]: K } & Infer<V[K]>>;
+  }[keyof V & string],
+  {
+    readonly kind: 'variant';
+    readonly tag: T;
+    readonly variants: V;
+    readonly optional: false;
+  }
+> =>
   node({
     kind: 'variant',
     tag,
     variants: Object.freeze(
       Object.fromEntries(Object.entries(variants).map(([key, value]) => [key, schemaNodeOf(value)]))
     ) as VariantNodeShapeOf<V>,
-  }) as unknown as VariantSchemaHandle<T, V>;
-export const table = <V extends EntitySchemaHandle, K extends string = string>(
+  }) as unknown as Schema<
+    {
+      [K in keyof V & string]: SchemaObject<{ readonly [P in T]: K } & Infer<V[K]>>;
+    }[keyof V & string],
+    {
+      readonly kind: 'variant';
+      readonly tag: T;
+      readonly variants: V;
+      readonly optional: false;
+    }
+  >;
+export const table = <V extends EntitySchema, K extends string = string>(
   value: V,
   options?: { readonly key: Validator<K> }
-): SchemaHandle<TableNode<EntityNodeOf<V>, K>> =>
+): Schema<
+  {
+    readonly ids: readonly K[];
+    readonly byId: Readonly<Record<K, Exclude<Infer<V>, undefined>>>;
+  },
+  { readonly kind: 'table'; readonly value: V; readonly key: K }
+> =>
   node({
     kind: 'table',
     value: schemaNodeOf(value) as EntityNodeOf<V>,
     ...options,
-  }) as unknown as SchemaHandle<TableNode<EntityNodeOf<V>, K>>;
-export const map = <V extends ValueSchemaHandle, K extends string = string>(
+  }) as unknown as Schema<
+    {
+      readonly ids: readonly K[];
+      readonly byId: Readonly<Record<K, Exclude<Infer<V>, undefined>>>;
+    },
+    { readonly kind: 'table'; readonly value: V; readonly key: K }
+  >;
+export const map = <V extends ValueSchema, K extends string = string>(
   value: V,
   options?: { readonly key: Validator<K> }
-): SchemaHandle<MapNode<ValueNodeOf<V>, K>> =>
+): Schema<
+  Readonly<
+    Record<
+      K,
+      V extends Schema<infer TValue, infer Definition>
+        ? Definition extends { readonly kind: 'field' }
+          ? TValue
+          : Exclude<TValue, undefined>
+        : never
+    >
+  >,
+  {
+    readonly kind: 'map';
+    readonly value: V;
+    readonly key: K;
+    readonly optional: false;
+  }
+> =>
   node({
     kind: 'map',
     value: schemaNodeOf(value) as ValueNodeOf<V>,
     ...options,
-  }) as unknown as SchemaHandle<MapNode<ValueNodeOf<V>, K>>;
+  }) as unknown as Schema<
+    Readonly<
+      Record<
+        K,
+        V extends Schema<infer TValue, infer Definition>
+          ? Definition extends { readonly kind: 'field' }
+            ? TValue
+            : Exclude<TValue, undefined>
+          : never
+      >
+    >,
+    {
+      readonly kind: 'map';
+      readonly value: V;
+      readonly key: K;
+      readonly optional: false;
+    }
+  >;
 export const list = <TItem>(
-  value: FieldSchemaHandle<TItem>,
+  value: Schema<
+    ReadonlyValue<TItem>,
+    { readonly kind: 'field'; readonly value: TItem; readonly optional: false }
+  >,
   config: DocumentListConfig<TItem>
-): SchemaHandle<ListNode<TItem>> =>
+): Schema<
+  readonly ReadonlyValue<TItem>[],
+  { readonly kind: 'list'; readonly value: TItem; readonly optional: false }
+> =>
   node({
     kind: 'list',
     keyOf: config.keyOf,
     value: schemaNodeOf(value),
-  }) as unknown as SchemaHandle<ListNode<TItem>>;
+  }) as unknown as Schema<
+    readonly ReadonlyValue<TItem>[],
+    { readonly kind: 'list'; readonly value: TItem; readonly optional: false }
+  >;
 export function tree<TValue>(
-  value: FieldSchemaHandle<TValue>
-): SchemaHandle<TreeNode<TValue, false>>;
+  value: Schema<
+    ReadonlyValue<TValue>,
+    { readonly kind: 'field'; readonly value: TValue; readonly optional: false }
+  >
+): Schema<
+  DocumentTreeValue<TValue, false>,
+  {
+    readonly kind: 'tree';
+    readonly value: TValue;
+    readonly valueOptional: false;
+    readonly optional: false;
+  }
+>;
 export function tree<TValue>(
-  value: OptionalFieldSchemaHandle<TValue>
-): SchemaHandle<TreeNode<TValue, true>>;
+  value: Schema<
+    ReadonlyValue<TValue> | undefined,
+    { readonly kind: 'field'; readonly value: TValue; readonly optional: true }
+  >
+): Schema<
+  DocumentTreeValue<TValue, true>,
+  {
+    readonly kind: 'tree';
+    readonly value: TValue;
+    readonly valueOptional: true;
+    readonly optional: false;
+  }
+>;
 export function tree(
-  value: FieldSchemaHandle<unknown> | OptionalFieldSchemaHandle<unknown>
-): SchemaHandle<TreeNode<unknown, false> | TreeNode<unknown, true>> {
+  value: FieldSchema<unknown>
+): Schema<DocumentTreeValue<unknown, boolean>, unknown> {
   return Object.freeze({
     kind: 'tree' as const,
     value: schemaNodeOf(value),
-  }) as unknown as SchemaHandle<TreeNode<unknown, false> | TreeNode<unknown, true>>;
+  }) as unknown as Schema<DocumentTreeValue<unknown, boolean>, unknown>;
 }

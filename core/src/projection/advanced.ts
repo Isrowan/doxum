@@ -1,11 +1,11 @@
 import { collectionView } from './collection/view';
 import type { CollectionChange, CollectionDraft, CollectionRead, SourceContext } from './contract';
 import type {
+  KeyedProjection,
   OutputDefinition,
   OutputEvaluation,
   Projection,
   ProjectionChange,
-  ProjectionWithChange,
 } from './definition';
 import { defineProcessor, isProjection, projectionRef } from './definition';
 import { assertSynchronous } from './graph/scheduler';
@@ -66,46 +66,47 @@ export type IncrementalCollectionDefinition<
 
 declare const groupOutput: unique symbol;
 
-type GroupCollectionOutput<K extends string, V> = {
-  readonly [groupOutput]: { readonly kind: 'collection'; readonly key: K; readonly value: V };
-};
-
-type GroupValueOutput<T> = {
-  readonly [groupOutput]: { readonly kind: 'value'; readonly value: T };
+/** Type-only declaration token used by incremental.group output builders. */
+export type IncrementalGroupOutput<P extends Projection<unknown>> = {
+  readonly [groupOutput]: P;
 };
 
 type GroupOutputShape = {
-  readonly [name: string]:
-    GroupCollectionOutput<string, unknown> | GroupValueOutput<unknown> | GroupOutputShape;
+  readonly [name: string]: IncrementalGroupOutput<Projection<unknown>> | GroupOutputShape;
 };
 
 type GroupOutputBuilder = {
   collection<K extends string, V>(
     equality?: (previous: V, next: V) => boolean
-  ): GroupCollectionOutput<K, V>;
-  value<T>(equality?: (previous: T, next: T) => boolean): GroupValueOutput<T>;
+  ): IncrementalGroupOutput<KeyedProjection<K, V>>;
+  value<T>(equality?: (previous: T, next: T) => boolean): IncrementalGroupOutput<Projection<T>>;
 };
 
-type GroupProjections<O> =
-  O extends GroupCollectionOutput<infer K, infer V>
-    ? ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>
-    : O extends GroupValueOutput<infer T>
-      ? Projection<T>
-      : { readonly [P in keyof O]: GroupProjections<O[P]> };
+/** Portable projection tree returned from an incremental.group declaration. */
+export type IncrementalGroupResult<O> =
+  O extends IncrementalGroupOutput<infer P>
+    ? P
+    : O extends Readonly<Record<string, unknown>>
+      ? { readonly [K in keyof O]: IncrementalGroupResult<O[K]> }
+      : never;
 
 type GroupReads<O> =
-  O extends GroupCollectionOutput<infer K, infer V>
-    ? CollectionRead<K, V>
-    : O extends GroupValueOutput<infer T>
-      ? T | undefined
-      : { readonly [P in keyof O]: GroupReads<O[P]> };
+  O extends IncrementalGroupOutput<infer P>
+    ? P extends KeyedProjection<infer K, infer V>
+      ? CollectionRead<K, V>
+      : P extends Projection<infer T>
+        ? T | undefined
+        : never
+    : { readonly [K in keyof O]: GroupReads<O[K]> };
 
 type GroupDrafts<O> =
-  O extends GroupCollectionOutput<infer K, infer V>
-    ? CollectionDraft<K, V>
-    : O extends GroupValueOutput<infer T>
-      ? { set(value: T): void }
-      : { readonly [P in keyof O]: GroupDrafts<O[P]> };
+  O extends IncrementalGroupOutput<infer P>
+    ? P extends KeyedProjection<infer K, infer V>
+      ? CollectionDraft<K, V>
+      : P extends Projection<infer T>
+        ? { set(value: T): void }
+        : never
+    : { readonly [K in keyof O]: GroupDrafts<O[K]> };
 
 export type IncrementalGroupContext<
   D extends ProjectionDependencies,
@@ -261,7 +262,7 @@ function createIncrementalValue<const D extends ProjectionDependencies, T>(
 function createIncrementalCollection<const D extends ProjectionDependencies, K extends string, V>(
   dependencies: D,
   definition: IncrementalCollectionDefinition<D, K, V>
-): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+): KeyedProjection<K, V>;
 function createIncrementalCollection<
   const D extends ProjectionDependencies,
   K extends string,
@@ -273,11 +274,11 @@ function createIncrementalCollection<
     readonly state: () => State;
     readonly process: (context: IncrementalCollectionContext<D, K, V, State>) => void;
   }
-): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+): KeyedProjection<K, V>;
 function createIncrementalCollection<const D extends ProjectionDependencies, K extends string, V>(
   dependencies: D,
   definition: RuntimeIncrementalDefinition<void>
-): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>> {
+): KeyedProjection<K, V> {
   const compiled = compileDependencies(dependencies);
   validateDefinition(definition, ['state', 'process'], 'Incremental collection');
   validateRetainedState(definition, 'Incremental collection');
@@ -309,7 +310,7 @@ function createIncrementalCollection<const D extends ProjectionDependencies, K e
       };
     },
   });
-  return projection as ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+  return projection as KeyedProjection<K, V>;
 }
 
 type GroupShape = number | { readonly [key: string]: GroupShape };
@@ -398,7 +399,7 @@ const hydrateGroupReads = (
 function createIncrementalGroup<
   const D extends ProjectionDependencies,
   const O extends GroupOutputShape,
->(dependencies: D, definition: IncrementalGroupDefinition<D, O>): GroupProjections<O>;
+>(dependencies: D, definition: IncrementalGroupDefinition<D, O>): IncrementalGroupResult<O>;
 function createIncrementalGroup<
   const D extends ProjectionDependencies,
   const O extends GroupOutputShape,
@@ -410,7 +411,7 @@ function createIncrementalGroup<
     readonly state: () => State;
     readonly process: (context: IncrementalGroupContext<D, O, State>) => void;
   }
-): GroupProjections<O>;
+): IncrementalGroupResult<O>;
 function createIncrementalGroup<
   const D extends ProjectionDependencies,
   const O extends GroupOutputShape,
@@ -419,7 +420,7 @@ function createIncrementalGroup<
   definition: RuntimeIncrementalDefinition<void> & {
     readonly output: (define: GroupOutputBuilder) => O;
   }
-): GroupProjections<O> {
+): IncrementalGroupResult<O> {
   const compiled = compileDependencies(dependencies);
   validateDefinition(definition, ['output', 'state', 'process'], 'Incremental group');
   validateRetainedState(definition, 'Incremental group');
@@ -436,7 +437,7 @@ function createIncrementalGroup<
         kind: 'collection',
         equality: equality as (a: unknown, b: unknown) => boolean,
       });
-      return descriptor as GroupCollectionOutput<K, V>;
+      return descriptor as IncrementalGroupOutput<KeyedProjection<K, V>>;
     },
     value: <T>(equality: (previous: T, next: T) => boolean = Object.is) => {
       if (!active) throw new TypeError('Incremental group output declarations are synchronous.');
@@ -445,7 +446,7 @@ function createIncrementalGroup<
         kind: 'value',
         equality: equality as (a: unknown, b: unknown) => boolean,
       });
-      return descriptor as GroupValueOutput<T>;
+      return descriptor as IncrementalGroupOutput<Projection<T>>;
     },
   };
   const declared = definition.output(defineOutput);
@@ -486,7 +487,7 @@ function createIncrementalGroup<
     },
     name: `processor-group:${outputs.map(output => output.path?.join('.') ?? '').join(',')}`,
   });
-  return hydrateGroupShape(shape, projections) as GroupProjections<O>;
+  return hydrateGroupShape(shape, projections) as IncrementalGroupResult<O>;
 }
 
 export const incremental = Object.assign(createIncrementalValue, {

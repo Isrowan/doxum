@@ -1,12 +1,12 @@
 import type { Synchronous } from '../runtime/contract';
 import { snapshotCollectionView } from './collection/view';
-import type { CollectionChange, SourceContext } from './contract';
+import type { SourceContext } from './contract';
 import {
   defineProcessor,
   isProjection,
   projectionRef,
+  type KeyedProjection,
   type Projection,
-  type ProjectionWithChange,
   type ProducerDefinition,
 } from './definition';
 import { assertSynchronous } from './graph/scheduler';
@@ -18,10 +18,6 @@ type ProjectionValues<D extends ProjectionDependencies> = {
 };
 
 type Equality<T> = (previous: T, next: T) => boolean;
-type KeyedProjection<K extends string, V> = ProjectionWithChange<
-  ReadonlyMap<K, V>,
-  CollectionChange<K, V>
->;
 
 /** A declared dynamic lookup from one driver entry to one key in another keyed projection. */
 type KeyedDependency<

@@ -12,7 +12,7 @@ import type {
 import type { Readable } from '../readable';
 
 declare const projectionDefinition: unique symbol;
-declare const projectionChanges: unique symbol;
+declare const keyedProjection: unique symbol;
 declare const writableInput: unique symbol;
 declare const writableCollectionInput: unique symbol;
 
@@ -21,13 +21,17 @@ export type Projection<T> = {
   readonly [projectionDefinition]: T;
 };
 
+/** A projection whose output is a keyed collection with per-key change semantics. */
+export type KeyedProjection<K extends string, V> = Projection<ReadonlyMap<K, V>> & {
+  readonly [keyedProjection]: { readonly key: K; readonly value: V };
+};
+
 /** A writable source projection. */
 export type Input<T> = Projection<T> & { readonly [writableInput]: true };
 
 /** A writable keyed collection source projection. */
-export type CollectionInput<K extends string, V> = Projection<ReadonlyMap<K, V>> & {
+export type CollectionInput<K extends string, V> = KeyedProjection<K, V> & {
   readonly [writableCollectionInput]: { readonly key: K; readonly value: V };
-  readonly [projectionChanges]: CollectionChange<K, V>;
 };
 
 export type CollectionInputDraft<K extends string, V> = {
@@ -37,10 +41,8 @@ export type CollectionInputDraft<K extends string, V> = {
   remove(key: K): void;
 };
 
-export type ProjectionWithChange<T, C> = Projection<T> & { readonly [projectionChanges]: C };
-export type ProjectionChange<P> = P extends { readonly [projectionChanges]: infer C }
-  ? C
-  : undefined;
+export type ProjectionChange<P> =
+  P extends KeyedProjection<infer K, infer V> ? CollectionChange<K, V> : undefined;
 
 export type Equality = (a: unknown, b: unknown) => boolean;
 
@@ -142,11 +144,8 @@ export type ProjectionRef = {
 
 const projections = new WeakMap<object, ProjectionRef>();
 
-const defineRef = <T, C = undefined>(
-  producer: ProducerDefinition,
-  output: number
-): ProjectionWithChange<T, C> => {
-  const handle = Object.freeze({}) as ProjectionWithChange<T, C>;
+const defineRef = <T>(producer: ProducerDefinition, output: number): Projection<T> => {
+  const handle = Object.freeze({}) as Projection<T>;
   projections.set(handle, Object.freeze({ producer, output }));
   return handle;
 };
@@ -207,19 +206,14 @@ export const defineProcessor = (definition: {
     create: definition.create,
     ...(definition.name ? { name: definition.name } : {}),
   };
-  return Object.freeze(
-    producer.outputs.map((_, output) => defineRef<unknown, unknown>(producer, output))
-  );
+  return Object.freeze(producer.outputs.map((_, output) => defineRef<unknown>(producer, output)));
 };
 
-export const defineSource = <T, C = undefined>(
-  source: SourceAdapter,
-  output: OutputDefinition
-): ProjectionWithChange<T, C> => {
+export const defineSource = <T>(source: SourceAdapter, output: OutputDefinition): Projection<T> => {
   const producer: SourceDefinition = {
     kind: 'source',
     source,
     output: freezeOutput(output),
   };
-  return defineRef<T, C>(producer, 0);
+  return defineRef<T>(producer, 0);
 };

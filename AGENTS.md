@@ -146,6 +146,12 @@ when a change touches addressing, mutation, impact, notifications, or views.
 - Public behavior is exported deliberately from package entry points. Keep
   internal runtime plumbing unexported unless it forms a stable external
   contract.
+- Public factory results must remain declaration-portable across package boundaries.
+  `Schema` / `ObjectSchema` are the schema naming boundary and `KeyedProjection<K,V>`
+  is the keyed projection naming boundary; do not make inferred results depend on
+  private brands or hashed declaration chunks. Keep processor-facing
+  `CollectionChange` in `doxum/advanced`. `pnpm run build` must pass the downstream
+  declaration-portability fixture.
 - Local-sync change limits govern admission of new local commits, not durable
   replay. Previously admitted records must remain readable under smaller current limits.
 - Keep package-specific dependencies in that package. Shared build and test

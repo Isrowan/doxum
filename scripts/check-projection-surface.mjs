@@ -27,6 +27,8 @@ const forbiddenText = [
   'LocalSyncDisposedError',
   'LocalSyncDataError',
   'ProjectionDefinition',
+  'ProjectionWithChange',
+  'projectionChanges',
   'CollectionDelta',
   'PublicCollection',
   'CollectionProjection',
@@ -37,6 +39,8 @@ const forbiddenText = [
   'trackProjection',
   'subscribeProjection',
   'CollectionDraft.replace',
+  'SchemaHandle',
+  'ObjectSchemaHandle',
 ];
 
 const forbiddenCalls = [

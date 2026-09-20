@@ -8,7 +8,9 @@ import {
   object,
   observe,
   optional,
+  table,
   tree,
+  variant,
   type Infer,
 } from '../src';
 
@@ -109,5 +111,31 @@ describe('projection schema inference', () => {
     expect(document.snapshot().sparse.nodes.s).toEqual({ children: [], value: undefined });
     document.dispose();
     runtime.dispose();
+  });
+
+  it('keeps container entry presence separate from optional variant member presence', () => {
+    const choice = optional(
+      variant('kind', {
+        text: object({ value: field<string>() }),
+        count: object({ value: field<number>() }),
+      })
+    );
+    const optionalNumber = optional(field<number>());
+    const model = object({
+      choices: map(choice),
+      orderedChoices: table(choice),
+      values: map(optionalNumber),
+    });
+    type Model = Infer<typeof model>;
+
+    expectTypeOf<Model['choices'][string]>().toEqualTypeOf<
+      | { readonly kind: 'text'; readonly value: string }
+      | { readonly kind: 'count'; readonly value: number }
+    >();
+    expectTypeOf<Model['orderedChoices']['byId'][string]>().toEqualTypeOf<
+      | { readonly kind: 'text'; readonly value: string }
+      | { readonly kind: 'count'; readonly value: number }
+    >();
+    expectTypeOf<Model['values'][string]>().toEqualTypeOf<number | undefined>();
   });
 });

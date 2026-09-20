@@ -11,10 +11,17 @@ import {
   replace,
   snapshot,
   type Infer,
+  type KeyedProjection,
+  type Projection,
 } from 'doxum';
 // @ts-expect-error processor-facing CollectionChange is intentionally not a root export
 import type { CollectionChange as RootCollectionChange } from 'doxum';
-import { incremental, type CollectionChange } from 'doxum/advanced';
+import {
+  incremental,
+  type CollectionChange,
+  type IncrementalGroupOutput,
+  type IncrementalGroupResult,
+} from 'doxum/advanced';
 import {
   LocalSyncError,
   attachLocalSync,
@@ -88,6 +95,15 @@ const group = incremental.group(
     },
   }
 );
+const keyedRows: KeyedProjection<string, { readonly value: number; readonly entityId: string }> =
+  rows;
+const keyedLabels: KeyedProjection<string, string | undefined> = labels;
+const keyedGroupValues: KeyedProjection<string, number> = group.values;
+type PortableGroupShape = {
+  readonly values: IncrementalGroupOutput<KeyedProjection<string, number>>;
+  readonly count: IncrementalGroupOutput<Projection<number>>;
+};
+const portableGroupResult: IncrementalGroupResult<PortableGroupShape> = group;
 
 const runtime = createProjectionRuntime();
 runtime.read(count);
@@ -115,6 +131,10 @@ void LocalSyncError;
 void defaultJsonChangeLimits;
 void (undefined as unknown as CollectionChange<string, number>);
 void (undefined as unknown as RootCollectionChange<string, number>);
+void keyedRows;
+void keyedLabels;
+void keyedGroupValues;
+void portableGroupResult;
 void ProjectionProvider;
 void useDocumentSelector;
 void useHistory;

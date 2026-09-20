@@ -49,6 +49,7 @@ export { createProjectionRuntime } from './projection/runtime';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';
 export type {
   Projection,
+  KeyedProjection,
   Input,
   CollectionInput,
   CollectionInputDraft,

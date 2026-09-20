@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {},
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "skipLibCheck": false,
+    "rootDir": "fixtures",
+    "outDir": "node_modules/.cache/doxum-declaration-portability"
+  },
+  "include": ["fixtures/declaration-portability.ts"],
+  "exclude": []
+}

@@ -11,8 +11,8 @@ import {
   type SchemaPath,
   type ValueSelector,
 } from '../schema/path';
-import type { CollectionChange, ExternalCollectionSource, ExternalValueSource } from './contract';
-import { defineSource, type Projection, type ProjectionWithChange } from './definition';
+import type { ExternalCollectionSource, ExternalValueSource } from './contract';
+import { defineSource, type KeyedProjection, type Projection } from './definition';
 
 type PathSelector<S extends ObjectSchema<object>> = (path: SchemaPath<S>) => unknown;
 
@@ -23,15 +23,12 @@ export function observe<S extends ObjectSchema<object>>(
 export function observe<T>(source: ExternalValueSource<T>): Projection<T>;
 export function observe<K extends string, V>(
   source: ExternalCollectionSource<K, V>
-): ProjectionWithChange<ReadonlyMap<K, V>, CollectionChange<K, V>>;
+): KeyedProjection<K, V>;
 export function observe<T>(readable: Readable<T>): Projection<T>;
 export function observe<S extends ObjectSchema<object>, P extends CollectionPath>(
   document: ReadonlyDocument<S>,
   selector: (path: SchemaPath<S>) => P
-): ProjectionWithChange<
-  ReadonlyMap<CollectionId<P>, ReadonlyValue<CollectionEntry<P>>>,
-  CollectionChange<CollectionId<P>, ReadonlyValue<CollectionEntry<P>>>
->;
+): KeyedProjection<CollectionId<P>, ReadonlyValue<CollectionEntry<P>>>;
 export function observe<S extends ObjectSchema<object>, P>(
   document: ReadonlyDocument<S>,
   selector: (path: SchemaPath<S>) => P

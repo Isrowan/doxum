@@ -32,6 +32,8 @@
 `ReadonlyValue<T>`、`Validator<T>`、`SchemaPath<S>`、`PathValueOf<P>`、
 `DocumentAnchor`、`DocumentListConfig<T>`、`DocumentTreeNode<T>`、
 `DocumentTreeValue<T>`。具体 node representation 属于内部实现，不是公开契约。
+`Schema` / `ObjectSchema` 是可跨 package 生成声明的 handle；下游 package 可以直接
+export 推导出的 schema 常量，不需要应用层写 `ReturnType` 包装。
 
 `Validator<T>` 只负责校验。函数 validator 是 predicate/assertion：返回 `true` 或
 `undefined` 表示成功，返回 `false` 表示拒绝，assertion 也可以 throw。
@@ -139,9 +141,11 @@ dependency object 时为 `(value, key, dependencies)`。
 tree 的 lifecycle。同一个 definition 只能属于一个 scope，并且必须在该 definition
 首次作为 root materialize 之前调用 `own`。
 
-公开 Projection 类型包括 `Projection<T>`、`Input<T>`、`CollectionInput<K,V>`、
-`CollectionInputDraft<K,V>`、`ProjectionRuntime`、`ProjectionScope` 和 external
-source/event contract。`ProjectionError` 只公开 `phase` 与 `cause`；
+公开 Projection 类型包括 `Projection<T>`、`KeyedProjection<K,V>`、`Input<T>`、
+`CollectionInput<K,V>`、`CollectionInputDraft<K,V>`、`ProjectionRuntime`、
+`ProjectionScope` 和 external source/event contract。所有 keyed producer 都返回
+`KeyedProjection<K,V>`；`CollectionInput<K,V>` 是它的 Runtime-local writable 形式。
+`ProjectionError` 只公开 `phase` 与 `cause`；
 `ProjectionDisposedError` 表达 disposed access。
 
 External value source 提供 `kind: 'value'`、`current()`、`revision()`、`subscribe()`。
@@ -187,14 +191,16 @@ const view = incremental.group(
 
 `define.collection<K,V>(equality?)`、`define.value<T>(equality?)` 只存在于
 `output` callback 内。返回值必须是非空静态 object tree，每个 descriptor 恰好返回一次；
-最终同 shape 的每个 leaf 都是普通 `Projection`。
+最终同 shape 的 collection leaf 是 `KeyedProjection<K,V>`，value leaf 是
+`Projection<T>`。
 
 普通 source reset 保留已声明的 retained state。processor fault 的 recovery 由 Runtime
 拥有：重新创建已声明的 state，再执行 reset evaluation；stateless processor 走同一恢复
 路径但没有 state object。没有公开 rebuild token 或手工恢复协议。
 
-advanced 只导出 value/collection/group 的 context/definition 类型以及
-`CollectionChange`；scheduler/output declaration plumbing 不属于公开 API。
+advanced 导出 value/collection/group 的 context/definition 类型、`CollectionChange`，
+以及声明可移植性所需的 `IncrementalGroupOutput` / `IncrementalGroupResult` 类型边界。
+普通调用方通常只依赖推导；scheduler/output runtime plumbing 不属于公开 API。
 
 ## `doxum/react`
 

@@ -8,6 +8,8 @@ ownership, invalidation and recovery.
 Projection definitions are lazy. Root definitions are reusable across runtimes;
 scope definitions belong to one `ProjectionScope`. A public `Projection<T>` contains
 no materialized value, state, subscription or disposal state.
+`KeyedProjection<K,V>` is the corresponding public keyed handle and is safe to export
+from another package's declarations.
 
 ```ts
 const tasks = observe(document, path => path.tasks);
@@ -215,7 +217,8 @@ const render = incremental.group(
 
 `define.collection<K,V>(equality?)` and `define.value<T>(equality?)` are available only
 inside `output`. The returned static object tree is mirrored by ordinary Projection
-leaves from the same producer. Value leaves must be established on initial build and
+leaves from the same producer: collections are `KeyedProjection<K,V>` and values are
+`Projection<T>`. Value leaves must be established on initial build and
 Runtime recovery; untouched value leaves keep their value on ordinary incremental runs.
 
 Normal source resets preserve retained state when declared. A processor fault is

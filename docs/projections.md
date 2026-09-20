@@ -26,6 +26,11 @@ Public declaration primitives are:
 - `derive(dependencies, compute, equality?)` — pure value derivation.
 - `derive.keyed(...)` — key-preserving per-entry derivation and keyed joins.
 
+`Projection<T>` is the scalar/value handle and `KeyedProjection<K,V>` is the public
+keyed handle. Collection `observe`, `derive.keyed`, `incremental.collection`, and
+collection group leaves all return `KeyedProjection`. `CollectionInput<K,V>` adds the
+writable Runtime-local capability to that keyed handle.
+
 Dependencies are named objects. They are part of the static processor graph; a
 processor never performs imperative Runtime reads to discover new dependencies.
 
@@ -219,7 +224,8 @@ type CollectionChange<K extends string, V> =
 ```
 
 `CollectionChange` is exported by `doxum/advanced` for processor typing; root projection
-consumers work with `Projection`, `CollectionInput` and immutable `ReadonlyMap` values.
+consumers work with `Projection`, `KeyedProjection`, `CollectionInput` and immutable
+`ReadonlyMap` values.
 
 Initial materialization and source reset report `reset` to advanced processors.
 Incremental transitions are net changes across the settled batch.
@@ -320,7 +326,12 @@ const render = incremental.group(
 define.collection<K,V>(equality?) and define.value<T>(equality?) are only available
 inside output. The declaration returns a non-empty static object tree and each
 descriptor must appear exactly once. The result has the same shape with normal
-Projection leaves backed by one producer.
+projection leaves backed by one producer: collection descriptors become
+`KeyedProjection<K,V>` and value descriptors become `Projection<T>`.
+
+The advanced entry also exports `IncrementalGroupOutput` and `IncrementalGroupResult`
+as declaration-safe type boundaries. Normal callers do not annotate them; they exist so
+inferred group results remain nameable when another package emits `.d.ts` files.
 
 On initial materialization or Runtime recovery every value leaf must be set. During
 ordinary incremental evaluation, untouched value leaves retain their published

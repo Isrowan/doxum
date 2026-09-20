@@ -6,8 +6,10 @@
 `schema/model.ts` owns opaque public `Schema` / `ObjectSchema` capabilities and
 immutable internal node definitions. `schema/path.ts` owns symbolic selectors and path
 compilation; `schema/value.ts` owns schema-aware validation/copy/equality. A public
-schema handle is the definition identity; internal consumers resolve it to its concrete
-root node. There is no internal schema barrel or model-to-path/runtime import cycle.
+schema handle is the definition identity and carries only portable compile-time shape
+metadata; internal consumers resolve that handle to the same concrete node object used
+at runtime. Concrete node representation is not part of package-level declaration
+inference. There is no internal schema barrel or model-to-path/runtime import cycle.
 The runtime is instance identity.
 `schema/layout.ts` owns compiled fixed/dynamic member layouts.
 `address/resolve.ts` owns schema-driven traversal and resolved containers,

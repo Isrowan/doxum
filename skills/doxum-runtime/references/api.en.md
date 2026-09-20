@@ -32,6 +32,8 @@ Public schema types are `Schema<T>`, `ObjectSchema<T>`, `Infer<S>`, `ReadonlyVal
 `Validator<T>`, `SchemaPath<S>`, `PathValueOf<P>`, `DocumentAnchor`,
 `DocumentListConfig<T>`, `DocumentTreeNode<T>` and `DocumentTreeValue<T>`.
 Concrete node representation types are internal.
+`Schema` / `ObjectSchema` are declaration-portable handles; downstream packages can
+export inferred schema constants directly without `ReturnType` wrappers.
 
 `Validator<T>` is validation-only. A function validator is a predicate/assertion:
 `true` or `undefined` succeeds, `false` rejects, and an assertion may throw.
@@ -142,9 +144,11 @@ applies none of that edit. `ProjectionScope` mirrors `read`, `select`, `update`,
 derives and advanced output trees. One definition can belong to only one scope; call
 `own` before that definition is first materialized as a root.
 
-Public projection types are `Projection<T>`, `Input<T>`, `CollectionInput<K,V>`,
-`CollectionInputDraft<K,V>`, `ProjectionRuntime`, `ProjectionScope`, plus the external
-source/event contracts. `ProjectionError` exposes only `phase` and `cause`;
+Public projection types are `Projection<T>`, `KeyedProjection<K,V>`, `Input<T>`,
+`CollectionInput<K,V>`, `CollectionInputDraft<K,V>`, `ProjectionRuntime`,
+`ProjectionScope`, plus the external source/event contracts. All keyed producers return
+`KeyedProjection<K,V>`; `CollectionInput<K,V>` is its writable Runtime-local form.
+`ProjectionError` exposes only `phase` and `cause`;
 `ProjectionDisposedError` represents disposed access.
 
 External value sources expose `kind: 'value'`, `current()`, `revision()`, `subscribe()`.
@@ -190,8 +194,9 @@ const view = incremental.group(
 ```
 
 `define.collection<K,V>(equality?)` and `define.value<T>(equality?)` exist only inside
-`output`. The returned static object tree is mirrored with ordinary `Projection` leaves.
-Every declared descriptor must be returned exactly once.
+`output`. The returned static object tree is mirrored with `KeyedProjection<K,V>`
+collection leaves and `Projection<T>` value leaves. Every declared descriptor must be
+returned exactly once.
 
 Normal source resets preserve retained state when declared. If a processor faults, the
 Runtime owns recovery: it recreates declared state and runs a reset evaluation. Stateless
@@ -199,8 +204,9 @@ processors use the same recovery path without a state object. There is no public
 token or manual recovery protocol.
 
 Exported advanced helper types are the value/collection/group context and definition
-types plus `CollectionChange`; internal scheduler/output declaration plumbing is not
-part of the public contract.
+types, `CollectionChange`, and the declaration-safe `IncrementalGroupOutput` /
+`IncrementalGroupResult` type boundaries. Normal callers infer the latter two; internal
+scheduler/output plumbing is not part of the public contract.
 
 ## `doxum/react`
 

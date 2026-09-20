@@ -39,8 +39,14 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   kinds, optional before/after order in the same group, and a separate root reset.
   Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
 - Paths belong in subscription, impact and collection source callbacks.
+- `Schema` / `ObjectSchema` are portable schema handles. Export inferred schemas
+  directly; application code should not need `ReturnType<typeof object>` or internal
+  node types to make declarations portable.
 - Projection definitions are lazy; one ProjectionRuntime owns all materialized
   producers, outputs, scheduling and source attachments for that Runtime.
+  `KeyedProjection<K,V>` is the single public keyed projection handle. Collection
+  `observe`, `derive.keyed`, `incremental.collection`, group collection leaves and
+  `CollectionInput<K,V>` all use that same keyed capability.
   Use named-object `derive` for pure aggregate values. Use `derive.keyed` when one keyed
   driver owns the output key domain/order: per-entry equality suppresses unchanged
   selected values. Its dependency form uses a named object: plain Projection members
@@ -60,7 +66,7 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   when retained state is actually needed. `incremental.group` declares its static
   output tree through the synchronous `output` callback. `define.value` and
   `define.collection` are callback methods, not separate imports; every returned leaf
-  is an ordinary Projection from the same producer.
+  is a `Projection<T>` or `KeyedProjection<K,V>` from the same producer.
 - Observer errors leave commits accepted. Do not retry as if they rolled back.
 - Core stays framework-neutral; adapters consume standard `Readable`,
   document `select`, and projection readables without internal target/address protocols.

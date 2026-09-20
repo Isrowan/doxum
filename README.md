@@ -33,6 +33,9 @@ document.update(draft => {
 
 The root object is the schema identity. Multiple runtimes can share its definition;
 their data, revisions and subscriptions remain independent. Definitions are immutable.
+`Schema` and `ObjectSchema` are portable public handles: a package can export an
+inferred schema directly and emit its own declarations without writing `ReturnType`
+aliases or naming Doxum's internal node representation.
 
 `object()` exposes editable structure with a closed schema: undeclared own properties,
 including symbols and non-enumerable properties, are rejected at input boundaries.
@@ -290,6 +293,12 @@ The output keeps one key per source entry. The selector runs only for affected k
 and the optional equality function suppresses `updated` output transitions when the
 derived value is equal.
 
+All keyed projection producers use the public `KeyedProjection<K,V>` handle, including
+collection `observe`, `derive.keyed`, `incremental.collection`, and collection leaves
+from `incremental.group`. `CollectionInput<K,V>` is the writable Runtime-local form of
+the same keyed projection capability. These handles can be exported from downstream
+packages without exposing processor change metadata.
+
 Dynamic joins stay explicit in the dependency graph. Declare keyed lookups and ordinary
 projection dependencies by name:
 
@@ -431,7 +440,8 @@ const render = incremental.group(
 
 `define.collection<K,V>(equality?)` and `define.value<T>(equality?)` are output
 declaration methods available only inside `output`. The returned object tree keeps the
-same shape with ordinary `Projection` leaves. Value leaves must be initialized on
+same shape with `KeyedProjection<K,V>` collection leaves and `Projection<T>` value
+leaves. Value leaves must be initialized on
 initial build or Runtime recovery; untouched value leaves retain their value during a
 normal incremental run.
 

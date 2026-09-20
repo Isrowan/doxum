@@ -1,4 +1,3 @@
-import type { CollectionChange } from './contract';
 import { defineSource, type CollectionInput, type Equality, type Input } from './definition';
 
 const valueInput = <T>(
@@ -19,7 +18,7 @@ const collectionInput = <K extends string, V>(
     if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
     entries.set(key, value);
   }
-  return defineSource<ReadonlyMap<K, V>, CollectionChange<K, V>>(
+  return defineSource<ReadonlyMap<K, V>>(
     { kind: 'collection-input', initial: entries, equality: equality as Equality },
     { kind: 'collection', equality: equality as Equality }
   ) as CollectionInput<K, V>;

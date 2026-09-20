@@ -7,6 +7,8 @@
 Projection definition 是惰性的。root definition 可跨多个 runtime 复用；scope definition
 属于一个 `ProjectionScope`。公开 `Projection<T>` 本身不保存 materialized value、
 retained state、subscription 或 disposal state。
+`KeyedProjection<K,V>` 是对应的公开 keyed handle，也可以安全出现在下游 package
+生成的声明中。
 
 ```ts
 const tasks = observe(document, path => path.tasks);
@@ -210,7 +212,8 @@ const render = incremental.group(
 ```
 
 `define.collection<K,V>(equality?)`、`define.value<T>(equality?)` 只存在于 `output`
-callback 内。返回的静态 object tree 会映射为同一 producer 的普通 Projection leaves。
+callback 内。返回的静态 object tree 会映射为同一 producer 的 projection leaves：
+collection 为 `KeyedProjection<K,V>`，value 为 `Projection<T>`。
 initial build 和 Runtime recovery 必须建立每个 value leaf；普通 incremental run 中未触碰
 value leaf 会保留已发布值。
 
