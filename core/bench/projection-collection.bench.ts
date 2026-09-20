@@ -26,7 +26,13 @@ describe('projection collection internals', () => {
     { iterations: 5, time: 100 }
   );
 
-  const output = createCollectionOutput<string, number>();
+  const output = createCollectionOutput<string, number>({
+    owner: () => {
+      throw new Error('Benchmark output has no graph owner.');
+    },
+    check: () => undefined,
+    cause: () => undefined,
+  });
   const initial = output.begin(() => true, true);
   for (const [key, value] of entries) initial.output.set(key, value);
   initial.output.order(entries.map(([key]) => key));
@@ -47,7 +53,7 @@ describe('projection collection internals', () => {
     { iterations: 10, time: 100 }
   );
 
-  const durable = output.current(() => undefined);
+  const durable = output.current();
   bench(
     'durable collection snapshot lookup in 10000',
     () => {

@@ -72,6 +72,10 @@ when a change touches addressing, mutation, impact, notifications, or views.
   never inspect selector target shapes.
 - Schema resolution is authoritative for changes and selectors. Do not add
   alternate string-path parsers or separate address models.
+  `schema/model.ts` owns node/schema identity and builders; `schema/path.ts` owns
+  symbolic selectors/path compilation; `schema/value.ts` owns schema-aware value
+  validation/copy/equality. Do not restore an internal schema barrel or a runtime
+  import cycle through those layers.
   `schema/layout.ts` owns fixed/dynamic member layouts and compiled slots;
   `address/resolve.ts` consumes those facts but does not define schema layout.
   Object/variant input is closed to undeclared own properties; use maps for dynamic
@@ -103,6 +107,16 @@ when a change touches addressing, mutation, impact, notifications, or views.
   adds lifecycle ownership only through `scope.own(...)`; it does not copy projection
   factories or create another graph/state owner. Scoped definitions may depend on root
   definitions; root and sibling scopes may not depend on scoped definitions.
+  `projection/definition.ts` owns only lazy refs/descriptions/ownership;
+  `projection/input.ts` and `projection/observe.ts` own public source declarations.
+  Value/collection output objects directly provide graph-facing capability; source
+  boundaries and processors must not build mirror output records, and only the
+  scheduler may attach/detach dependency edges. `source/dirty.ts` is the only writer
+  of document pending/dirty state; `source/materialization.ts` is a pure structural
+  sharing consumer. Collection-input callback/equality failure must install no partial
+  Runtime-local state. Disposal detaches ownership first and exhaustively attempts all
+  cleanup; failed initialization releases any already-created producer while preserving
+  the original initialization error.
 - Preserve notification ordering: materialized processors settle before
   external listeners; writes remain forbidden while notifying. Observer
   failures are returned on the committed result and must not be rethrown as a

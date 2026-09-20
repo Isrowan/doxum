@@ -16,14 +16,13 @@ import type {
   TreeNode,
   ValueSchemaNode,
   VariantNode,
-} from '../schema';
+} from '../schema/model';
 import * as address from '../address/resolve';
 import { compiledShape, type FixedMember } from '../schema/layout';
 import * as schemaValue from '../schema/value';
 import type { DependencyTracker } from './dependency';
 import type { CanonicalState } from '../mutation/state';
 import type { MutationSession } from '../mutation/session';
-import * as mapOperations from '../mutation/operations/map';
 import * as tableOperations from '../mutation/operations/table';
 import * as listOperations from '../mutation/operations/list';
 import * as treeOperations from '../mutation/operations/tree';
@@ -370,13 +369,15 @@ export const createAccess = (context: AccessContext, initial: DocumentAddress = 
       };
     if (property === 'put')
       return (id: string, value: unknown) => {
+        const session = mutable();
         const writable = writableCollection(target, node);
-        mapOperations.put(context.session!, writable, id, value);
+        session.writeMember(writable, id, value, 'set');
       };
     if (property === 'remove')
       return (id: string) => {
+        const session = mutable();
         const writable = writableCollection(target, node);
-        mapOperations.remove(context.session!, writable, id);
+        session.writeMember(writable, id, undefined, 'remove');
       };
     if (property === 'replace') return (value: unknown) => replaceCollection(target, node, value);
     return undefined;

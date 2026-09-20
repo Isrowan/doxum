@@ -1,4 +1,4 @@
-import type { DocumentAddress } from '../../schema';
+import type { DocumentAddress } from '../../schema/model';
 import type { ResolvedTreeContainer } from '../../address/resolve';
 import type { MutationSession } from '../session';
 import * as treeTopology from '../../tree/topology';

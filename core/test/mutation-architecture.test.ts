@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDocument, field, list, map, object, table, type ChangeSet } from '../src';
-import { schemaNodeOf, type ImpactTarget } from '../src/schema';
+import { schemaNodeOf } from '../src/schema/model';
+import type { ImpactTarget } from '../src/schema/path';
 import { startProfile } from '../src/profile';
 import { SubscriptionIndex } from '../src/impact/target';
 import { MutationSession } from '../src/mutation/session';

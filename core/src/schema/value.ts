@@ -10,8 +10,8 @@ import type {
   Infer,
   Schema,
   Validator,
-} from '../schema';
-import { schemaNodeOf } from '../schema';
+} from './model';
+import { schemaNodeOf } from './model';
 import { compiledShape } from './layout';
 
 export type ParseIssue = {

@@ -1,4 +1,4 @@
-import type { ObjectSchema } from '../schema';
+import type { ObjectSchema } from '../schema/model';
 import type { DocumentRuntime } from '../runtime/contract';
 import type { JsonChangeLimits } from './json';
 import type { Readable } from '../readable';

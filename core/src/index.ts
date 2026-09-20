@@ -1,4 +1,4 @@
-export { field, optional, object, variant, table, map, list, tree } from './schema';
+export { field, optional, object, variant, table, map, list, tree } from './schema/model';
 export type {
   DocumentAddress,
   DocumentAnchor,
@@ -9,10 +9,9 @@ export type {
   ObjectSchema,
   Infer,
   ReadonlyValue,
-  SchemaPath,
-  PathValueOf,
   Validator,
-} from './schema';
+} from './schema/model';
+export type { SchemaPath, PathValueOf } from './schema/path';
 export { parse, ParseError } from './schema/value';
 export type { ParseIssue } from './schema/value';
 export { snapshot, replace } from './access/scope';
@@ -43,7 +42,8 @@ export type { MutationIssue, MutationIssueCode } from './mutation/issue';
 export type { Readable } from './readable';
 export { read, select } from './runtime/select';
 export type { DocumentSelector } from './runtime/select';
-export { input, observe } from './projection/definition';
+export { input } from './projection/input';
+export { observe } from './projection/observe';
 export { derive } from './projection/derive';
 export { createProjectionRuntime } from './projection/runtime';
 export { ProjectionError, ProjectionDisposedError } from './projection/contract';

@@ -111,8 +111,9 @@ reads; equality filters the result only after a related invalidation.
 
 `CollectionInputDraft` exposes `get`, `has`, `set`, `remove` and expires with the
 synchronous edit callback. A throwing callback applies none of that edit. Collection
-input equality is per entry and defaults to `Object.is`; equal sets do not replace
-stored data or publish.
+input equality is per entry and defaults to `Object.is`; it runs before accepted local
+state is installed, so an equality failure also leaves the published value and next
+draft unchanged. Equal sets do not replace stored data or publish.
 
 ```ts
 const scope = runtime.scope();

@@ -29,7 +29,9 @@ implementation invariants that affect design and review decisions.
 6. List identity is a stable key; replacement retains it. Anchor owns ordering.
    Tree owns reciprocal, connected, acyclic, empty-or-single-root topology.
 7. Public `Schema` / `ObjectSchema` handles own schema identity while concrete nodes stay
-   internal; one RuntimeContext owns instance identity for the runtime, history and
+   internal. Schema model, path compilation, compiled layout and value validation/copy
+   have separate internal owners; foundation model/layout modules do not depend on
+   document/projection Runtime code. One RuntimeContext owns instance identity for the runtime, history and
    `document.readonly()` aliases. The shared path compiler and Core impact target
    algorithms own addressing/identity/equality/bucketing and exact matching. React sees
    only Readable/select contracts. Notification matches grouped changes directly without
@@ -45,11 +47,21 @@ implementation invariants that affect design and review decisions.
    through `scope.own`; scoped definitions may depend on root definitions, while root and
    sibling scopes cannot depend on scoped definitions. Notification failures leave commits
    accepted. Batch defers projection publication, not document commits/listeners.
+   Lazy definition metadata does not materialize sources. Input, observe and source
+   materialization remain separate boundaries. One output object owns staged/published
+   state, revision, listeners and graph-facing consumer capability; scheduler alone
+   attaches/detaches dependency edges. Collection-input callback/equality failure installs
+   no partial Runtime-local state. Cleanup is exhaustive after ownership is detached;
+   initialization failure releases already-created projection resources and preserves the
+   original error. Document dirty/pending state has one write owner; structural
+   materialization only reads it.
 10. Local sync uses Web Lock leadership and contiguous durable sequence. Writes precede
     asynchronous persistence. Version 5 / format 3 rejects old databases without editing
     them. External replace and remote apply are prohibited while attached.
 11. Core is framework-neutral. Public exports are deliberate; root dist is generated.
 12. Test malformed input, partial rollback, history, impact, disposal and bounded work.
+    Dependency de-duplication uses target-owned canonical bucketing plus exact equality;
+    do not fall back to a linear all-target scan or an ad-hoc string path grammar.
     Delete obsolete APIs and parallel protocols.
 
 Network intent, authorization, collaborative undo and persist-before-visible acceptance

@@ -8,16 +8,11 @@ describe('shared payload validation, publication and history', () => {
       { values: new Array<number>(size).fill(1) },
     ];
     const schema = object({
-      payload: field((value: unknown) => {
-        if (
-          !value ||
-          typeof value !== 'object' ||
-          !('values' in value) ||
-          !Array.isArray(value.values)
+      payload: field<(typeof values)[number]>((value): value is (typeof values)[number] =>
+        Boolean(
+          value && typeof value === 'object' && 'values' in value && Array.isArray(value.values)
         )
-          throw new Error('payload');
-        return value as (typeof values)[number];
-      }),
+      ),
     });
     const runtime = createDocument({ schema, initial: { payload: values[0] } });
     let index = 0;

@@ -1,5 +1,5 @@
 import type { ChangeSet } from '../changes';
-import type { DocumentAddress, DocumentNode } from '../schema';
+import type { DocumentAddress, DocumentNode } from '../schema/model';
 import * as address from '../address/resolve';
 import type { CompiledMember } from '../schema/layout';
 import * as schemaValue from '../schema/value';

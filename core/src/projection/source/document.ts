@@ -3,22 +3,21 @@ import * as impactTarget from '../../impact/target';
 import * as sequence from '../../order/sequence';
 import { contextOf } from '../../runtime/context';
 import type { ReadonlyDocument, Unsubscribe } from '../../runtime/contract';
-import { collectionEntryNode } from '../../schema';
-import type { DocumentTreeNode, ImpactTarget, ObjectSchema } from '../../schema';
+import { collectionEntryNode } from '../../schema/model';
+import type { DocumentTreeNode, ObjectSchema } from '../../schema/model';
+import type { ImpactTarget } from '../../schema/path';
 import type { ChangeSet } from '../../changes';
 import * as schemaValue from '../../schema/value';
 import { isRecord } from '../../value/record';
 import type { CollectionRead } from '../contract';
 import type { SourceDefinition } from '../definition';
-import {
-  clearDocumentDirty,
-  createDocumentDirty,
-  markDocumentReplace,
-  materializeDocumentValue,
-} from './materialization';
+import { materializeDocumentValue } from './materialization';
 import {
   clearCollectionPending,
+  clearDocumentDirty,
   createCollectionPending,
+  createDocumentDirty,
+  markDocumentReplace,
   mergeCollectionChanges,
   mergeValueChanges,
   resetCollectionPending,
@@ -65,14 +64,19 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
     const guard = (locked: boolean) => {
       state.projectionLocks += locked ? 1 : -1;
     };
-    scheduler.guards.add(guard);
+    let unregisterGuard = scheduler.registerGuard(guard);
     let closed = false;
-    let detach: Unsubscribe = () => undefined;
+    let detach: Unsubscribe | undefined;
     const documentConnection: DocumentConnection = {
       add(binding) {
         if (closed) throw new Error('Document projection connection is closed.');
         bindings.add(binding);
-        index.add(binding.target, binding);
+        try {
+          index.add(binding.target, binding);
+        } catch (error) {
+          bindings.delete(binding);
+          throw error;
+        }
         let active = true;
         return () => {
           if (!active) return;
@@ -85,27 +89,62 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       close() {
         if (closed) return;
         closed = true;
-        detach();
+        const stopNotifications = detach;
+        detach = undefined;
+        const stopGuard = unregisterGuard;
+        unregisterGuard = () => undefined;
         bindings.clear();
         candidates.clear();
         index.clear();
-        scheduler.guards.delete(guard);
         documents.delete(state);
+        const failures: unknown[] = [];
+        try {
+          stopNotifications?.();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          stopGuard();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length) throw failures[0];
       },
     };
-    detach = context.notifications.attachProjection({
-      capture: commit => {
-        candidates.clear();
-        index.collect(commit.changes, binding => candidates.add(binding));
-        candidates.forEach(binding => binding.capture(commit));
-      },
-      settle: scheduler.settle,
-      flush: scheduler.flush,
-      dispose: () => {
-        for (const binding of bindings) binding.dispose();
-        scheduler.run();
-      },
-    });
+    try {
+      detach = context.notifications.attachProjection({
+        capture: commit => {
+          candidates.clear();
+          index.collect(commit.changes, binding => candidates.add(binding));
+          candidates.forEach(binding => binding.capture(commit));
+        },
+        settle: scheduler.settle,
+        flush: scheduler.flush,
+        dispose: () => {
+          const failures: unknown[] = [];
+          for (const binding of [...bindings]) {
+            try {
+              binding.dispose();
+            } catch (error) {
+              failures.push(error);
+            }
+          }
+          try {
+            scheduler.run();
+          } catch (error) {
+            failures.push(error);
+          }
+          if (failures.length) throw failures[0];
+        },
+      });
+    } catch (error) {
+      try {
+        documentConnection.close();
+      } catch {
+        /* Connection initialization failure retains priority. */
+      }
+      throw error;
+    }
     documents.set(state, documentConnection);
     return documentConnection;
   };
@@ -165,20 +204,30 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
           else clearDocumentDirty(dirty);
         }
       );
-      const remove = connection(document).add({
-        target: selector,
-        capture: commit => {
-          try {
-            mergeValueChanges(selector, dirty, commit.changes);
-            boundary.mark({
-              reset: commit.changes.changes.some(change => change.kind === 'reset'),
-            });
-          } catch (cause) {
-            boundary.fail(cause);
-          }
-        },
-        dispose: () => boundary.fail(new Error('Document has been disposed.')),
-      });
+      let remove: Unsubscribe;
+      try {
+        remove = connection(document).add({
+          target: selector,
+          capture: commit => {
+            try {
+              mergeValueChanges(selector, dirty, commit.changes);
+              boundary.mark({
+                reset: commit.changes.changes.some(change => change.kind === 'reset'),
+              });
+            } catch (cause) {
+              boundary.fail(cause);
+            }
+          },
+          dispose: () => boundary.fail(new Error('Document has been disposed.')),
+        });
+      } catch (error) {
+        try {
+          scheduler.releaseProducer(boundary.producer);
+        } catch {
+          /* Connection initialization failure retains priority. */
+        }
+        throw error;
+      }
       boundary.detach(remove);
       return boundary;
     }
@@ -297,22 +346,32 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
         else clearCollectionPending(pending);
       }
     );
-    const remove = connection(document).add({
-      target: selector,
-      capture: commit => {
-        try {
-          mergeCollectionChanges(selector, pending, commit.changes);
-          boundary.mark({
-            reset: pending.reset,
-            ...(pending.reset ? {} : { candidates: pending.entries.keys() }),
-            orderMayChange: pending.order,
-          });
-        } catch (cause) {
-          boundary.fail(cause);
-        }
-      },
-      dispose: () => boundary.fail(new Error('Document has been disposed.')),
-    });
+    let remove: Unsubscribe;
+    try {
+      remove = connection(document).add({
+        target: selector,
+        capture: commit => {
+          try {
+            mergeCollectionChanges(selector, pending, commit.changes);
+            boundary.mark({
+              reset: pending.reset,
+              ...(pending.reset ? {} : { candidates: pending.entries.keys() }),
+              orderMayChange: pending.order,
+            });
+          } catch (cause) {
+            boundary.fail(cause);
+          }
+        },
+        dispose: () => boundary.fail(new Error('Document has been disposed.')),
+      });
+    } catch (error) {
+      try {
+        scheduler.releaseProducer(boundary.producer);
+      } catch {
+        /* Connection initialization failure retains priority. */
+      }
+      throw error;
+    }
     boundary.detach(remove);
     return boundary;
   };
@@ -330,8 +389,16 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       });
     },
     dispose() {
-      documents.forEach(document => document.close());
+      const failures: unknown[] = [];
+      for (const document of [...documents.values()]) {
+        try {
+          document.close();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
       documents.clear();
+      if (failures.length) throw failures[0];
     },
   };
 };

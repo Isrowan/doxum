@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { equal } from '../src/order/sequence';
 import { copyValue } from '../src/schema/value';
 import { field, object } from '../src';
-import { schemaNodeOf } from '../src/schema';
+import { schemaNodeOf } from '../src/schema/model';
 import { startProfile } from '../src/profile';
+import { createDependencyTracker } from '../src/access/dependency';
 
 describe('runtime profile', () => {
   it('collects counters only inside an explicit session', () => {
@@ -33,5 +34,28 @@ describe('runtime profile', () => {
     expect(Object.isFrozen(snapshot.copy)).toBe(true);
     expect(Object.isFrozen(snapshot.equality)).toBe(true);
     session.stop();
+  });
+
+  it('indexes distinct selector dependencies without quadratic target comparisons', () => {
+    const tracker = createDependencyTracker();
+    const session = startProfile();
+    for (let index = 0; index < 2_000; index++)
+      tracker.record({ kind: 'value', at: ['rows', String(index), 'value'] });
+    const measured = session.stop();
+    expect(tracker.snapshot()).toHaveLength(2_000);
+    expect(measured.dependency).toEqual({ comparisons: 0, segmentsCompared: 0 });
+
+    tracker.record({ kind: 'value', at: ['rows', '1999', 'value'] });
+    expect(tracker.snapshot()).toHaveLength(2_000);
+  });
+
+  it('keeps exact schema target equality inside a dependency bucket', () => {
+    const tracker = createDependencyTracker();
+    const left = schemaNodeOf(object({ value: field<number>() }));
+    const right = schemaNodeOf(object({ value: field<number>() }));
+    tracker.record({ kind: 'value', schema: left, address: [] });
+    tracker.record({ kind: 'value', schema: right, address: [] });
+    tracker.record({ kind: 'value', schema: left, address: [] });
+    expect(tracker.snapshot()).toHaveLength(2);
   });
 });

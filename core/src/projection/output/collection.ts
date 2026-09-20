@@ -7,7 +7,12 @@ import type {
   CollectionDraft,
   CollectionRead,
 } from '../contract';
-import { assertScope } from '../graph/scheduler';
+import {
+  assertScope,
+  type OutputRecord,
+  type ProcessorRecord,
+  type ProducerRecord,
+} from '../graph/scheduler';
 
 type Entry<V> = { readonly present: true; readonly value: V } | { readonly present: false };
 
@@ -81,23 +86,27 @@ export type CollectionOutputEvaluation<K extends string, V> = {
   readonly output: CollectionDraft<K, V>;
 };
 
-export type CollectionOutputState<K extends string, V> = {
+export type CollectionOutputState<K extends string, V> = Omit<
+  OutputRecord,
+  'context' | 'current'
+> & {
   begin(active: () => boolean, initialize: boolean): CollectionOutputEvaluation<K, V>;
   seal(reset: boolean, isEqual: (previous: V, next: V) => boolean): boolean;
-  context(active: () => boolean, cause: unknown): CollectionContext<K, V>;
-  current(check: () => void): CollectionRead<K, V>;
-  revision(): number;
-  reset(): boolean;
+  context(active: () => boolean): CollectionContext<K, V>;
+  current(): CollectionRead<K, V>;
   publish(): void;
-  emit(call: (listener: () => void) => void): void;
-  clear(): void;
-  release(): void;
-  subscribe(listener: (change: CollectionChange<K, V>) => void): void;
-  unsubscribe(listener: (change: CollectionChange<K, V>) => void): void;
+};
+
+type CollectionOutputBinding = {
+  owner(): ProducerRecord;
+  check(): void;
+  cause(): unknown;
 };
 
 /** Owns staged keyed intent, exact transitions and published collection state. */
-export const createCollectionOutput = <K extends string, V>(): CollectionOutputState<K, V> => {
+export const createCollectionOutput = <K extends string, V>(
+  binding: CollectionOutputBinding
+): CollectionOutputState<K, V> => {
   const published = createPublishedCollection<K, V>();
   let staged = new Map<K, Entry<V>>();
   let nextIds = published.ids();
@@ -107,7 +116,8 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
   let revision = 0;
   let explicitOrder: readonly K[] | undefined;
   let cleared = false;
-  const listeners = new Set<(change: CollectionChange<K, V>) => void>();
+  const listeners = new Set<() => void>();
+  const consumers = new Set<ProcessorRecord>();
 
   const hasNext = (key: K): boolean =>
     staged.has(key) ? staged.get(key)!.present : !cleared && published.has(key);
@@ -205,7 +215,10 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
           : Object.freeze([...order]);
     } else nextIds = ids;
 
-    const changedKeys = new Set<K>([...added, ...removed, ...updated]);
+    const changedKeys = new Set<K>();
+    added.forEach(key => changedKeys.add(key));
+    removed.forEach(key => changedKeys.add(key));
+    updated.forEach(key => changedKeys.add(key));
     profile.projection('changedKeys', changedKeys.size);
     const addedEntries: { readonly key: K; readonly after: V }[] = [];
     const updatedEntries: { readonly key: K; readonly before: V; readonly after: V }[] = [];
@@ -214,7 +227,8 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
       const beforePresent = published.has(key);
       const afterPresent = hasNext(key);
       if (beforePresent === afterPresent) {
-        if (!beforePresent || isEqual(published.get(key) as V, getNext(key) as V)) continue;
+        if (!beforePresent) continue;
+        if (isEqual !== Object.is && isEqual(published.get(key) as V, getNext(key) as V)) continue;
       }
       if (!beforePresent) addedEntries.push({ key, after: getNext(key) as V });
       else if (!afterPresent) removedEntries.push({ key, before: published.get(key) as V });
@@ -263,10 +277,14 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
     });
 
   return {
+    kind: 'collection',
+    get owner() {
+      return binding.owner();
+    },
     begin,
     seal,
-    context,
-    current: check => published.read(check),
+    context: active => context(active, binding.cause()),
+    current: () => published.read(binding.check),
     revision: () => revision,
     reset: () => reset,
     publish: () => {
@@ -275,9 +293,12 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
       initialized = true;
     },
     emit: call => {
-      const resetEvent = Object.freeze({ kind: 'reset' as const });
-      Array.from(listeners).forEach(listener => call(() => listener(change ?? resetEvent)));
+      Array.from(listeners).forEach(listener => call(listener));
     },
+    hasConsumers: () => consumers.size > 0,
+    forEachConsumer: run => consumers.forEach(run),
+    attachConsumer: consumer => consumers.add(consumer),
+    detachConsumer: consumer => consumers.delete(consumer),
     clear: () => {
       staged.clear();
       nextIds = published.ids();
@@ -290,6 +311,7 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
       published.release();
       staged.clear();
       listeners.clear();
+      consumers.clear();
       nextIds = Object.freeze([]);
       change = undefined;
       initialized = false;
@@ -298,7 +320,10 @@ export const createCollectionOutput = <K extends string, V>(): CollectionOutputS
       explicitOrder = undefined;
       cleared = false;
     },
-    subscribe: listener => listeners.add(listener),
-    unsubscribe: listener => listeners.delete(listener),
+    subscribe: listener => {
+      binding.check();
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
   };
 };

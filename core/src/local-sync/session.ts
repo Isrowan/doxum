@@ -4,7 +4,7 @@ import {
   type RuntimeWriteIntent,
 } from '../runtime/driver';
 import type { DocumentCommit } from '../runtime/contract';
-import type { Infer, ObjectSchema } from '../schema';
+import type { Infer, ObjectSchema } from '../schema/model';
 import { type AttachLocalSyncOptions, type LocalSync, type LocalSyncState } from './contract';
 import { LocalSyncError, normalizeLocalSyncError } from './error';
 import { json, jsonChanges } from './json';

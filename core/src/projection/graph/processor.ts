@@ -22,13 +22,11 @@ type BoundOutput =
       readonly kind: 'value';
       readonly definition: Extract<OutputDefinition, { readonly kind: 'value' }>;
       readonly state: ValueOutputState<unknown>;
-      readonly output: OutputRecord;
     }
   | {
       readonly kind: 'collection';
       readonly definition: Extract<OutputDefinition, { readonly kind: 'collection' }>;
       readonly state: CollectionOutputState<string, unknown>;
-      readonly output: OutputRecord;
     };
 
 /** Materializes every derive/incremental/group definition through one processor lifecycle. */
@@ -49,52 +47,19 @@ export const createProcessor = (
 
   const bound: readonly BoundOutput[] = definition.outputs.map(outputDefinition => {
     if (outputDefinition.kind === 'value') {
-      const state = createValueOutput<unknown>();
-      const output: OutputRecord = {
-        kind: 'value',
-        get owner() {
-          return processor;
-        },
-        consumers: new Set(),
-        context: active => state.context(active, cause),
-        current: () => state.current(check),
-        revision: state.revision,
-        reset: state.reset,
-        subscribe: listener => {
-          check();
-          const wrapped = () => listener();
-          state.subscribe(wrapped);
-          return () => state.unsubscribe(wrapped);
-        },
-        emit: state.emit,
-        clear: state.clear,
-        release: state.release,
-      };
-      return { kind: 'value', definition: outputDefinition, state, output };
+      const state = createValueOutput<unknown>({
+        owner: () => processor,
+        check,
+        cause: () => cause,
+      });
+      return { kind: 'value', definition: outputDefinition, state };
     }
-    const state = createCollectionOutput<string, unknown>();
-    const output: OutputRecord = {
-      kind: 'collection',
-      get owner() {
-        return processor;
-      },
-      consumers: new Set(),
-      context: active => state.context(active, cause),
-      current: () => state.current(check),
-      revision: state.revision,
-      reset: state.reset,
-      subscribe: listener => {
-        check();
-        const wrapped = (change: import('../contract').CollectionChange<string, unknown>) =>
-          listener(change);
-        state.subscribe(wrapped);
-        return () => state.unsubscribe(wrapped);
-      },
-      emit: state.emit,
-      clear: state.clear,
-      release: state.release,
-    };
-    return { kind: 'collection', definition: outputDefinition, state, output };
+    const state = createCollectionOutput<string, unknown>({
+      owner: () => processor,
+      check,
+      cause: () => cause,
+    });
+    return { kind: 'collection', definition: outputDefinition, state };
   });
 
   const begin = (active: () => boolean, initialize: boolean): readonly OutputEvaluation[] =>
@@ -116,7 +81,7 @@ export const createProcessor = (
     const changed: OutputRecord[] = [];
     for (const entry of bound) {
       const didChange = entry.state.seal(reset, entry.definition.equality);
-      if (didChange) changed.push(entry.output);
+      if (didChange) changed.push(entry.state);
     }
     return Object.freeze(changed);
   };
@@ -148,7 +113,7 @@ export const createProcessor = (
     order,
     name: definition.name ? `${definition.name} (${order})` : `projection-${order}`,
     dependencies: Object.freeze([...dependencies]),
-    outputs: Object.freeze(bound.map(entry => entry.output)),
+    outputs: Object.freeze(bound.map(entry => entry.state)),
     fault: undefined,
     disposed: false,
     evaluate: run,
@@ -158,13 +123,23 @@ export const createProcessor = (
       cause = undefined;
     },
     release: () => {
-      instance?.release?.();
+      const current = instance;
       instance = undefined;
-      bound.forEach(entry => {
-        entry.output.consumers.clear();
-        entry.state.release();
-      });
+      const failures: unknown[] = [];
+      try {
+        current?.release?.();
+      } catch (error) {
+        failures.push(error);
+      }
+      for (const entry of bound) {
+        try {
+          entry.state.release();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
       cause = undefined;
+      if (failures.length) throw failures[0];
     },
   };
 
@@ -176,10 +151,15 @@ export const createProcessor = (
       if (changed.length) processor.publish();
       processor.clear();
     });
+    scheduler.addProcessor(processor);
   } catch (error) {
-    processor.release();
+    processor.disposed = true;
+    try {
+      processor.release();
+    } catch {
+      /* Initialization failure retains priority. */
+    }
     throw error;
   }
-  scheduler.addProcessor(processor);
   return processor;
 };

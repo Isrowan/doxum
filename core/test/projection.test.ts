@@ -336,6 +336,58 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
+  it('rolls back a source producer when external subscription initialization fails', () => {
+    const failure = new Error('subscribe failed');
+    const subscribe = vi.fn(() => {
+      throw failure;
+    });
+    const source = observe({
+      kind: 'value' as const,
+      current: () => 1,
+      revision: () => 0,
+      subscribe,
+    });
+    const runtime = createProjectionRuntime();
+    expect(() => runtime.read(source)).toThrow(failure);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(runtime.read(input(2))).toBe(2);
+    expect(() => runtime.dispose()).not.toThrow();
+  });
+
+  it('exhaustively releases a scope when one external cleanup fails', () => {
+    const failure = new Error('cleanup failed');
+    const firstStop = vi.fn(() => {
+      throw failure;
+    });
+    const secondStop = vi.fn();
+    const first = observe({
+      kind: 'value' as const,
+      current: () => 1,
+      revision: () => 0,
+      subscribe: () => firstStop,
+    });
+    const second = observe({
+      kind: 'value' as const,
+      current: () => 2,
+      revision: () => 0,
+      subscribe: () => secondStop,
+    });
+    const runtime = createProjectionRuntime();
+    const scope = runtime.scope();
+    scope.own({ first, second });
+    expect(scope.read(first)).toBe(1);
+    expect(scope.read(second)).toBe(2);
+
+    expect(() => scope.dispose()).toThrow(failure);
+    expect(firstStop).toHaveBeenCalledTimes(1);
+    expect(secondStop).toHaveBeenCalledTimes(1);
+    expect(() => scope.read(first)).toThrow(ProjectionDisposedError);
+    expect(() => scope.dispose()).not.toThrow();
+    expect(() => runtime.dispose()).not.toThrow();
+    expect(firstStop).toHaveBeenCalledTimes(1);
+    expect(secondStop).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes exact net keyed input changes without touching unrelated selectors', () => {
     const rows = input.collection(
       new Map([
@@ -432,6 +484,49 @@ describe('projection runtime', () => {
       })
     ).toThrow('failed');
     expect([...runtime.read(rows)]).toEqual([]);
+    runtime.dispose();
+  });
+
+  it('keeps a keyed input edit atomic when entry equality fails', () => {
+    const failure = new Error('equality failed');
+    const rows = input.collection(
+      new Map([
+        ['a', 0],
+        ['b', 0],
+      ]),
+      (previous, next) => {
+        if (next === 99) throw failure;
+        return previous === next;
+      }
+    );
+    const runtime = createProjectionRuntime();
+    const readable = runtime.select(rows);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    const before = runtime.read(rows);
+
+    expect(() =>
+      runtime.update(rows, draft => {
+        draft.set('a', 1);
+        draft.set('b', 99);
+      })
+    ).toThrow(failure);
+
+    expect(runtime.read(rows)).toBe(before);
+    expect([...runtime.read(rows)]).toEqual([
+      ['a', 0],
+      ['b', 0],
+    ]);
+    expect(listener).not.toHaveBeenCalled();
+
+    runtime.update(rows, draft => {
+      expect(draft.get('a')).toBe(0);
+      expect(draft.get('b')).toBe(0);
+      draft.set('a', 2);
+    });
+    expect(runtime.read(rows).get('a')).toBe(2);
+    expect(runtime.read(rows).get('b')).toBe(0);
+    expect(listener).toHaveBeenCalledTimes(1);
     runtime.dispose();
   });
 
@@ -1563,6 +1658,30 @@ describe('projection runtime', () => {
     expect(runtime.read(group.initializedOnce)).toBe('ready');
     expect(readable.revision()).toBe(beforeRevision);
     expect(listener).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it('preserves custom collection equality call semantics for changed entries', () => {
+    const source = input(1);
+    const equality = vi.fn((previous: number, next: number) => previous === next);
+    const group = incremental.group(
+      { source },
+      {
+        output: define => ({ values: define.collection<string, number>(equality) }),
+        process: ({ values, output }) => output.values.set('current', values.source),
+      }
+    );
+    const runtime = createProjectionRuntime();
+    expect(runtime.read(group.values).get('current')).toBe(1);
+    equality.mockClear();
+
+    runtime.update(source, 2);
+    expect(runtime.read(group.values).get('current')).toBe(2);
+    expect(equality).toHaveBeenCalledTimes(2);
+    expect(equality.mock.calls).toEqual([
+      [1, 2],
+      [1, 2],
+    ]);
     runtime.dispose();
   });
 

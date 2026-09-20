@@ -331,7 +331,8 @@ runtime.update(selection, draft => {
 Its state is owned by the `ProjectionRuntime`, not the document, history or persistence.
 Updates are synchronous and atomic. It publishes exact keyed `CollectionChange`
 transitions and preserves order. The optional per-entry equality defaults to `Object.is`
-and suppresses equivalent `set` operations.
+and suppresses equivalent `set` operations. Callback and equality failures leave both
+the published value and the next draft unchanged.
 
 The processor-facing `CollectionChange` type is exported by `doxum/advanced`.
 

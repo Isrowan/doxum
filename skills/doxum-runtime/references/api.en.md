@@ -132,6 +132,10 @@ and `(value, key, dependencies)` when the named dependency object is present.
 - `scope()`;
 - `dispose()`.
 
+`input.collection` draft callbacks and per-entry equality run before accepted local
+state is installed. If either throws, the published collection and the next draft both
+remain at the pre-update state.
+
 `CollectionInputDraft` exposes `get`, `has`, `set`, `remove`. A throwing edit callback
 applies none of that edit. `ProjectionScope` mirrors `read`, `select`, `update`, `batch`,
 `dispose` and adds `own(projectionOrTree)` for lifecycle ownership of scalar/keyed inputs,

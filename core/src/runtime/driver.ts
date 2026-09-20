@@ -1,5 +1,5 @@
 import type { CommitSource, DocumentRuntime } from './contract';
-import type { ObjectSchema } from '../schema';
+import type { ObjectSchema } from '../schema/model';
 import { contextOf } from './context';
 
 export type RuntimeWriteIntent =

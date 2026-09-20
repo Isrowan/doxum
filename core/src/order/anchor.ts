@@ -1,4 +1,4 @@
-import type { DocumentAnchor } from '../schema';
+import type { DocumentAnchor } from '../schema/model';
 import type { KeyOrder, OrderedKeys } from './sequence';
 
 type MoveSelection =

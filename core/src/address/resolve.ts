@@ -1,17 +1,9 @@
 import * as sequence from '../order/sequence';
 import { profile } from '../profile';
-import type { DocumentAddress, DocumentNode } from '../schema';
-import { compiledLayout, type MemberLayout } from '../schema/layout';
+import type { DocumentAddress, DocumentNode } from '../schema/model';
+import { compiledLayout, variantBranch, type MemberLayout } from '../schema/layout';
 import * as tree from '../tree/topology';
 import { isRecord } from '../value/record';
-
-const variantNode = (
-  node: Extract<DocumentNode, { kind: 'variant' }>,
-  value: unknown
-): DocumentNode | undefined => {
-  const tag = isRecord(value) && typeof value[node.tag] === 'string' ? value[node.tag] : undefined;
-  return node.variants[String(tag ?? Object.keys(node.variants)[0] ?? '')];
-};
 
 const step = (
   nodeInput: DocumentNode | undefined,
@@ -21,7 +13,9 @@ const step = (
   let node = nodeInput;
   if (!node) return undefined;
   if (node.kind === 'variant') {
-    node = variantNode(node, value);
+    const rawTag = isRecord(value) ? value[node.tag] : undefined;
+    const tag = typeof rawTag === 'string' ? rawTag : undefined;
+    node = variantBranch(node, tag);
   }
   if (!node) return undefined;
   if (node.kind === 'object')

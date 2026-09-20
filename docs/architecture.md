@@ -3,9 +3,11 @@
 ## Ownership
 
 `createDocument` owns canonical state, revision, write exclusion and notification.
-`schema.ts` owns opaque public `Schema` / `ObjectSchema` capabilities, immutable
-internal node definitions and the symbolic path compiler. A public schema handle is
-the definition identity; internal consumers resolve it to its concrete root node.
+`schema/model.ts` owns opaque public `Schema` / `ObjectSchema` capabilities and
+immutable internal node definitions. `schema/path.ts` owns symbolic selectors and path
+compilation; `schema/value.ts` owns schema-aware validation/copy/equality. A public
+schema handle is the definition identity; internal consumers resolve it to its concrete
+root node. There is no internal schema barrel or model-to-path/runtime import cycle.
 The runtime is instance identity.
 `schema/layout.ts` owns compiled fixed/dynamic member layouts.
 `address/resolve.ts` owns schema-driven traversal and resolved containers,
@@ -331,6 +333,11 @@ Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
 `read`, `select`, overloaded `update`, `scope`, `batch` and `dispose`.
+`projection/definition.ts` contains only opaque references, producer descriptions and
+ownership rules. `projection/input.ts` and `projection/observe.ts` build lazy source
+definitions; materialization and document Runtime lookup stay outside the definition
+base. The scheduler exposes narrow registration operations rather than mutable guard or
+cleanup collections.
 `derive.keyed` remains an ordinary processor producer. One keyed driver owns the
 output key domain and order. Driver entry changes reevaluate only those keys and
 the existing collection output equality removes equal selected values before
@@ -357,6 +364,10 @@ depend on advanced factory implementations.
 Collection inputs are source producers: their synchronous `update` draft stages
 keyed set/remove
 commands and publishes a net `CollectionChange` at the Runtime batch boundary.
+The callback and every per-entry equality check complete against a local overlay before
+the Runtime-local keyed state is installed. Callback/equality failure therefore leaves
+both the published value and the next draft unchanged. Downstream settlement is a
+separate post-install phase rather than an input rollback boundary.
 Collection values are immutable
 map-like snapshots, while keyed storage, output revisions and transition indexes
 remain private to the runtime. A readable exposes only its own publication
@@ -380,10 +391,12 @@ document commits inside one Projection Runtime batch collapse to the exact net
 published value. All pending document sources publish before dependent processors are
 run, which makes root/node tree sources causally atomic without a multi-output source
 protocol.
-`projection/source/dirty.ts` owns the pure ChangeSet-to-dirty routing rules,
-`projection/source/materialization.ts` owns previous/current/dirty structural
-sharing, and `projection/source/document.ts` owns only document connection and
-source lifecycle.
+`projection/source/dirty.ts` owns pending/dirty state and all ChangeSet-to-dirty writes.
+`projection/source/materialization.ts` only reads that state while computing
+previous/current structural sharing. `projection/source/document.ts` owns document
+connections and document-specific source lifecycle; `source/input.ts` owns Runtime-local
+input materialization and `source/external.ts` owns shared readable/external source
+connections. `source/registry.ts` is only the source-kind router.
 External events carry only boundary cause/revision metadata and, for collections,
 a stable previous read plus an optional impact hint. The isolated advanced incremental boundary exposes
 dependency-aligned collection transitions with complete entry before/after values;
@@ -410,14 +423,25 @@ id sequence; membership or order changes create a new id sequence because order 
 observable. Older `ReadonlyMap` views therefore stay stable without copying every
 unchanged value on each revision.
 Projection implementation ownership is deliberately split by semantic layer:
-`output/collection.ts` owns only staged/published collection lifecycle;
+`output/value.ts` and `output/collection.ts` each own one output's staged/published
+state, revision, listeners and graph-facing consumer capability. Source boundaries and
+processors use that same output object rather than constructing mirror output records;
+the scheduler alone attaches and detaches processor dependency edges.
 `collection/index.ts` owns the immutable keyed lookup; `collection/change.ts` owns
 the exact added/updated/removed/common-order algebra; and `collection/view.ts` owns
 `CollectionRead`/`ReadonlyMap` boundary views. `source/boundary.ts` owns the common
 source prepare/publish/fault lifecycle, while `source/document.ts` owns document
-connections, ChangeSet-to-dirty routing and document-specific reads.
+connections and document-specific reads.
 `source/materialization.ts` remains a pure previous/current/dirty structural-sharing
 algorithm and has no mutation-session dependency.
+Producer/source/scope disposal detaches owner state before invoking external cleanup and
+attempts every owned cleanup even when one cleanup throws. Failed materialization
+initialization releases any already-created producer and preserves the original
+initialization error.
+Architecture checks parse TypeScript runtime imports, distinguish type-only edges,
+reject runtime SCCs and forbidden dependency directions, and compile a public consumer
+fixture through `doxum`, `doxum/advanced`, `doxum/local-sync` and `doxum/react`.
+The package build also smoke-tests those four ESM and CJS entry points.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already accepted commit.
 
@@ -455,6 +479,11 @@ instrumented, not hidden behind a constant-time promise.
 Projection collection profiles additionally expose `collectionIndex.nodes`,
 `collectionIndex.builds` and `collectionIndex.builtItems`, separating persistent
 index path-copy work from source mapping and ID scans.
+Selector dependency de-duplication first buckets targets by the canonical target
+address/kind identity owned by `impact/target.ts`, then applies exact target equality
+only inside a bucket. This preserves schema/tree/membership equality semantics while
+avoiding quadratic comparisons across unrelated paths. `profile.dependency` exposes
+the remaining exact comparisons and compared path segments.
 `profile.recorder.orderItems` counts first-touch baseline keys;
 `publishedOrderItems` counts detached final order keys. `core/bench/profile.ts`
 also reports generation advances for membership, value replay, sequence, tree and

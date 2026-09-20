@@ -1,5 +1,5 @@
 import type { Change, ChangeSet, MemberChange } from '../changes';
-import type { DocumentAddress, DocumentNode } from '../schema';
+import type { DocumentAddress, DocumentNode } from '../schema/model';
 import { AddressIndex } from '../address/index';
 import * as address from '../address/resolve';
 import * as relation from '../address/relation';

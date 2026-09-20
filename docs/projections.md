@@ -161,7 +161,9 @@ runtime.update(selection, draft => {
 ```
 
 The borrowed draft exposes `get`, `has`, `set` and `remove`, and expires when the
-synchronous callback returns. A throwing callback applies none of that edit.
+synchronous callback returns. A throwing callback applies none of that edit. Per-entry
+equality is evaluated against the staged edit before Runtime-local state is installed;
+if equality throws, neither the published value nor the next draft is partially updated.
 `set` preserves an existing key position and appends a new key.
 
 The optional equality is per entry and defaults to `Object.is`. Setting an existing

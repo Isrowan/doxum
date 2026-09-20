@@ -1,4 +1,5 @@
-import type { DocumentAddress, ObjectSchema, PathPick, Infer } from '../schema';
+import type { DocumentAddress, Infer, ObjectSchema } from '../schema/model';
+import type { PathPick } from '../schema/path';
 import type { ChangeSet } from '../changes';
 import type { DocumentImpact } from '../impact';
 import type { Draft } from '../access/scope';

@@ -1,33 +1,10 @@
 import * as sequence from '../../order/sequence';
 import { profile } from '../../profile';
-import type { DocumentNode, DocumentTreeNode } from '../../schema';
+import type { DocumentNode, DocumentTreeNode } from '../../schema/model';
 import { compiledShape } from '../../schema/layout';
 import * as schemaValue from '../../schema/value';
 import { installOwn, isRecord } from '../../value/record';
-
-export type DocumentDirty = {
-  replace: boolean;
-  order: boolean;
-  treeRoot: boolean;
-  readonly treeNodes: Set<string>;
-  readonly children: Map<string, DocumentDirty>;
-};
-
-export const createDocumentDirty = (): DocumentDirty => ({
-  replace: false,
-  order: false,
-  treeRoot: false,
-  treeNodes: new Set(),
-  children: new Map(),
-});
-
-export const clearDocumentDirty = (dirty: DocumentDirty): void => {
-  dirty.replace = false;
-  dirty.order = false;
-  dirty.treeRoot = false;
-  dirty.treeNodes.clear();
-  dirty.children.clear();
-};
+import type { DocumentDirty } from './dirty';
 
 const hasDocumentDirty = (dirty: DocumentDirty): boolean =>
   dirty.replace ||
@@ -35,47 +12,6 @@ const hasDocumentDirty = (dirty: DocumentDirty): boolean =>
   dirty.treeRoot ||
   dirty.treeNodes.size > 0 ||
   dirty.children.size > 0;
-
-const locate = (dirty: DocumentDirty, path: readonly string[]): DocumentDirty | undefined => {
-  let current = dirty;
-  for (const key of path) {
-    if (current.replace) return undefined;
-    let child = current.children.get(key);
-    if (!child) {
-      child = createDocumentDirty();
-      current.children.set(key, child);
-    }
-    current = child;
-  }
-  return current;
-};
-
-export const markDocumentReplace = (dirty: DocumentDirty, path: readonly string[]): void => {
-  const current = locate(dirty, path);
-  if (!current) return;
-  current.replace = true;
-  current.order = false;
-  current.treeRoot = false;
-  current.treeNodes.clear();
-  current.children.clear();
-};
-
-export const markDocumentOrder = (dirty: DocumentDirty, path: readonly string[]): void => {
-  const current = locate(dirty, path);
-  if (current && !current.replace) current.order = true;
-};
-
-export const markDocumentTree = (
-  dirty: DocumentDirty,
-  path: readonly string[],
-  root: boolean,
-  nodes: Iterable<string>
-): void => {
-  const current = locate(dirty, path);
-  if (!current || current.replace) return;
-  current.treeRoot ||= root;
-  for (const id of nodes) current.treeNodes.add(id);
-};
 
 const equivalent = (node: DocumentNode, left: unknown, right: unknown): boolean =>
   node.kind === 'field' ? Object.is(left, right) : schemaValue.equalValue(node, left, right);

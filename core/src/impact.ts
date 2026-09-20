@@ -1,14 +1,13 @@
+import type { ObjectSchema, RootNodeOf } from './schema/model';
 import type {
   CollectionId,
   CollectionPath,
   CollectionSelector,
   ImpactTarget,
-  ObjectSchema,
   PathPick,
-  RootNodeOf,
   SchemaPath,
-} from './schema';
-import { compilePath } from './schema';
+} from './schema/path';
+import { compilePath } from './schema/path';
 import type { ChangeSet } from './changes';
 import { AddressIndex } from './address/index';
 import * as relation from './address/relation';

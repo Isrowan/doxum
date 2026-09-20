@@ -1,6 +1,11 @@
 import { profile } from '../../profile';
 import type { ValueContext } from '../contract';
-import { assertScope } from '../graph/scheduler';
+import {
+  assertScope,
+  type OutputRecord,
+  type ProcessorRecord,
+  type ProducerRecord,
+} from '../graph/scheduler';
 
 const unset = Symbol('projection-value-unset');
 
@@ -10,23 +15,20 @@ export type ValueOutputEvaluation<T> = {
   readonly output: { set(value: T): void };
 };
 
-export type ValueOutputState<T> = {
+export type ValueOutputState<T> = OutputRecord & {
   begin(active: () => boolean, initialize: boolean): ValueOutputEvaluation<T>;
   seal(reset: boolean, isEqual: (previous: T, next: T) => boolean): boolean;
-  context(active: () => boolean, cause: unknown): ValueContext<T>;
-  current(check: () => void): T;
-  revision(): number;
-  reset(): boolean;
   publish(): void;
-  emit(call: (listener: () => void) => void): void;
-  clear(): void;
-  release(): void;
-  subscribe(listener: () => void): void;
-  unsubscribe(listener: () => void): void;
+};
+
+type ValueOutputBinding = {
+  owner(): ProducerRecord;
+  check(): void;
+  cause(): unknown;
 };
 
 /** Owns staged and published state for one scalar Projection output. */
-export const createValueOutput = <T>(): ValueOutputState<T> => {
+export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputState<T> => {
   let value!: T;
   let staged: T | typeof unset = unset;
   let next!: T;
@@ -35,6 +37,7 @@ export const createValueOutput = <T>(): ValueOutputState<T> => {
   let changed = false;
   let reset = false;
   const listeners = new Set<() => void>();
+  const consumers = new Set<ProcessorRecord>();
 
   const begin = (active: () => boolean, initialize: boolean): ValueOutputEvaluation<T> => {
     staged = unset;
@@ -74,20 +77,24 @@ export const createValueOutput = <T>(): ValueOutputState<T> => {
   };
 
   return {
+    kind: 'value',
+    get owner() {
+      return binding.owner();
+    },
     begin,
     seal,
-    context: (active, cause) => {
+    context: active => {
       assertScope(active);
       return Object.freeze({
         kind: 'value' as const,
         value: next,
         revision,
         reset,
-        cause,
+        cause: binding.cause(),
       });
     },
-    current: check => {
-      check();
+    current: () => {
+      binding.check();
       return value;
     },
     revision: () => revision,
@@ -101,6 +108,10 @@ export const createValueOutput = <T>(): ValueOutputState<T> => {
       profile.materialized.notification();
       Array.from(listeners).forEach(listener => call(listener));
     },
+    hasConsumers: () => consumers.size > 0,
+    forEachConsumer: run => consumers.forEach(run),
+    attachConsumer: consumer => consumers.add(consumer),
+    detachConsumer: consumer => consumers.delete(consumer),
     clear: () => {
       staged = unset;
       next = value;
@@ -109,6 +120,7 @@ export const createValueOutput = <T>(): ValueOutputState<T> => {
     },
     release: () => {
       listeners.clear();
+      consumers.clear();
       staged = unset;
       value = next = undefined as T;
       initialized = false;
@@ -116,7 +128,10 @@ export const createValueOutput = <T>(): ValueOutputState<T> => {
       changed = false;
       reset = false;
     },
-    subscribe: listener => listeners.add(listener),
-    unsubscribe: listener => listeners.delete(listener),
+    subscribe: listener => {
+      binding.check();
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
   };
 };

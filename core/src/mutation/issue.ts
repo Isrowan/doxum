@@ -1,4 +1,4 @@
-import type { DocumentAddress } from '../schema';
+import type { DocumentAddress } from '../schema/model';
 import type { ParseIssue } from '../schema/value';
 
 export type MutationIssueCode =

@@ -48,6 +48,8 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   per-output-key source bindings and reverse lookup. Selectors receive
   `(entry, key)` or `(entry, key, dependencies)`. The producer graph remains explicit and static;
   processors never perform imperative Runtime reads to discover dependencies.
+  `input.collection` edits have a strong exception boundary: callback or per-entry
+  equality failure leaves both the published value and the next draft unchanged.
   A `ProjectionScope` only adds lifecycle ownership through `scope.own(...)`; create
   definitions with the root declaration APIs, then own a projection or static output tree
   before that definition is first materialized as a root.

@@ -1,6 +1,6 @@
 import { profile } from '../../profile';
 import type { ObserverError, Unsubscribe } from '../../runtime/contract';
-import type { BatchContext, CollectionChange, SourceContext } from '../contract';
+import type { BatchContext, SourceContext } from '../contract';
 import { ProjectionDisposedError, ProjectionError } from '../contract';
 
 type BatchOptions = { readonly cause?: unknown };
@@ -17,13 +17,16 @@ type ProducerBase = {
 export type OutputRecord = {
   readonly kind: 'value' | 'collection';
   readonly owner: ProducerRecord;
-  readonly consumers: Set<ProcessorRecord>;
   context(active: () => boolean): SourceContext;
   current(): unknown;
   revision(): number;
   reset(): boolean;
-  subscribe(listener: (change?: CollectionChange<string, unknown>) => void): Unsubscribe;
+  subscribe(listener: () => void): Unsubscribe;
   emit(call: (listener: () => void) => void): void;
+  hasConsumers(): boolean;
+  forEachConsumer(run: (consumer: ProcessorRecord) => void): void;
+  attachConsumer(consumer: ProcessorRecord): void;
+  detachConsumer(consumer: ProcessorRecord): void;
   clear(): void;
   release(): void;
 };
@@ -64,7 +67,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   const errors: ProjectionError[] = [];
   let reportingFailures: unknown[] = [];
   const guards = new Set<(locked: boolean) => void>();
-  const cleanups = new Set<() => void>();
 
   const assertActive = () => {
     if (disposed) throw new ProjectionDisposedError();
@@ -166,7 +168,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         if (source.fault || changed || force || recovered) {
           const output = source.outputs[0];
           emissions.add(output);
-          output.consumers.forEach(enqueue);
+          output.forEachConsumer(enqueue);
         }
       }
 
@@ -216,7 +218,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
         if (processor.fault) {
           processor.outputs.forEach(output => {
             emissions.add(output);
-            output.consumers.forEach(enqueue);
+            output.forEachConsumer(enqueue);
           });
         } else {
           if (changedOutputs.length) {
@@ -224,7 +226,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
             changedOutputs.forEach(output => emissions.add(output));
           }
           const propagated = recovered ? processor.outputs : changedOutputs;
-          propagated.forEach(output => output.consumers.forEach(enqueue));
+          propagated.forEach(output => output.forEachConsumer(enqueue));
         }
         if (processor.fault || changedOutputs.length) {
           profile.projection('publishedNodes');
@@ -291,11 +293,8 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     return result;
   };
 
-  const batch = <T>(optionsOrCallback: BatchOptions | (() => T), maybeCallback?: () => T): T => {
+  const batch = <T>(callback: () => T, options?: BatchOptions): T => {
     assertIdle();
-    const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
-    const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
-    if (!callback) throw new TypeError('Projection batch requires a callback.');
     const outer = depth === 0;
     if (outer)
       activeBatch = Object.freeze({
@@ -331,11 +330,11 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
 
   const releaseProducer = (producer: ProducerRecord) => {
     assertIdle();
-    if (producer.outputs.some(output => output.consumers.size))
+    if (producer.outputs.some(output => output.hasConsumers()))
       throw new Error('Projection producer is still used by another processor.');
     producer.disposed = true;
     if (producer.kind === 'processor') {
-      producer.dependencies.forEach(output => output.consumers.delete(producer));
+      producer.dependencies.forEach(output => output.detachConsumer(producer));
       processors.delete(producer);
       queued.delete(producer);
       completed.delete(producer);
@@ -343,9 +342,19 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       sources.delete(producer);
       pendingSources.delete(producer);
     }
-    producer.release();
-    producer.clear();
+    const failures: unknown[] = [];
+    try {
+      producer.release();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      producer.clear();
+    } catch (error) {
+      failures.push(error);
+    }
     producer.outputs.forEach(output => emissions.delete(output));
+    if (failures.length) throw failures[0];
   };
 
   return {
@@ -355,8 +364,16 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     settle,
     flush,
     run,
-    guards,
-    cleanups,
+    registerGuard(guard: (locked: boolean) => void): Unsubscribe {
+      assertActive();
+      guards.add(guard);
+      let registered = true;
+      return () => {
+        if (!registered) return;
+        registered = false;
+        guards.delete(guard);
+      };
+    },
     get active() {
       return !disposed;
     },
@@ -367,7 +384,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     addProcessor(processor: ProcessorRecord) {
       assertIdle();
       processors.add(processor);
-      processor.dependencies.forEach(output => output.consumers.add(processor));
+      processor.dependencies.forEach(output => output.attachConsumer(processor));
     },
     releaseProducer,
     order: () => sequence++,
@@ -389,14 +406,6 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
       assertIdle();
       disposed = true;
       const failures: unknown[] = [];
-      cleanups.forEach(cleanup => {
-        try {
-          cleanup();
-        } catch (error) {
-          failures.push(error);
-        }
-      });
-      cleanups.clear();
       processors.forEach(processor => {
         processor.disposed = true;
         try {

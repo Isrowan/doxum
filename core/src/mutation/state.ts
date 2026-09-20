@@ -1,4 +1,4 @@
-import type { DocumentNode, ObjectNode } from '../schema';
+import type { DocumentNode, ObjectNode } from '../schema/model';
 import * as sequence from '../order/sequence';
 import { installOwn } from '../value/record';
 

@@ -109,7 +109,8 @@ runtime.batch(run, { cause });
 
 `CollectionInputDraft` 提供 `get`、`has`、`set`、`remove`，同步 edit callback 返回后
 失效。callback throw 时该次 edit 不应用。collection input equality 按 entry 比较，
-默认 `Object.is`；equal set 不替换存储值，也不发布。
+默认 `Object.is`，并在接受的本地状态安装前完成；equality 抛错时，published value 与
+下一次 draft 同样保持更新前状态。equal set 不替换存储值，也不发布。
 
 ```ts
 const scope = runtime.scope();

@@ -1,7 +1,7 @@
 import { profile } from '../../profile';
 import type { Unsubscribe } from '../../runtime/contract';
 import { createCollectionOutput, type CollectionOutputState } from '../output/collection';
-import type { CollectionChange, CollectionRead } from '../contract';
+import type { CollectionRead } from '../contract';
 import { ProjectionDisposedError, ProjectionError } from '../contract';
 import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '../graph/scheduler';
 import { createValueOutput, type ValueOutputState } from '../output/value';
@@ -49,7 +49,6 @@ export const createValueBoundary = (
   prepare: (previous: unknown) => unknown,
   clearSource: (failed: boolean) => void
 ): ValueBoundary => {
-  const state: ValueOutputState<unknown> = createValueOutput();
   let boundary!: SourceBoundaryRecord;
   let pendingReset = false;
   let pendingCause: unknown;
@@ -61,27 +60,12 @@ export const createValueBoundary = (
     if (!scheduler.active || boundary.disposed) throw new ProjectionDisposedError();
     if (boundary.fault) throw boundary.fault;
   };
-
-  const output: OutputRecord = {
-    kind: 'value',
-    get owner() {
-      return boundary;
-    },
-    consumers: new Set(),
-    context: active => state.context(active, contextCause),
-    current: () => state.current(check),
-    revision: state.revision,
-    reset: state.reset,
-    subscribe: listener => {
-      check();
-      const wrapped = () => listener();
-      state.subscribe(wrapped);
-      return () => state.unsubscribe(wrapped);
-    },
-    emit: state.emit,
-    clear: state.clear,
-    release: state.release,
-  };
+  const state: ValueOutputState<unknown> = createValueOutput({
+    owner: () => boundary,
+    check,
+    cause: () => contextCause,
+  });
+  const output: OutputRecord = state;
 
   boundary = {
     kind: 'source',
@@ -115,26 +99,46 @@ export const createValueBoundary = (
       clearSource(failed);
     },
     release: () => {
-      cleanup?.();
+      const detach = cleanup;
       cleanup = undefined;
-      state.release();
-      output.consumers.clear();
+      const failures: unknown[] = [];
+      try {
+        detach?.();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        state.release();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length) throw failures[0];
     },
   };
 
-  scheduler.initialize(() => {
-    let active = true;
+  try {
+    scheduler.initialize(() => {
+      let active = true;
+      try {
+        const evaluation = state.begin(() => active, true);
+        evaluation.output.set(initial);
+        state.seal(true, equality);
+        state.publish();
+        state.clear();
+      } finally {
+        active = false;
+      }
+    });
+    scheduler.addSource(boundary);
+  } catch (error) {
+    boundary.disposed = true;
     try {
-      const evaluation = state.begin(() => active, true);
-      evaluation.output.set(initial);
-      state.seal(true, equality);
-      state.publish();
-      state.clear();
-    } finally {
-      active = false;
+      boundary.release();
+    } catch {
+      /* Initialization failure retains priority. */
     }
-  });
-  scheduler.addSource(boundary);
+    throw error;
+  }
 
   const mark = (metadata: SourceMark = {}) => {
     scheduler.assertIdle();
@@ -183,7 +187,7 @@ const stageCollectionRead = <K extends string, V>(
     }
     evaluation.output.order(ids);
   } else {
-    const previous = state.current(() => undefined);
+    const previous = state.current();
     const keys = options.candidates
       ? [...new Set(options.candidates)]
       : [...new Set([...previous.ids(), ...read.ids()])];
@@ -213,7 +217,6 @@ export const createCollectionBoundary = (
   equality: (previous: unknown, next: unknown) => boolean,
   clearSource: (failed: boolean) => void
 ): CollectionBoundary => {
-  const state: CollectionOutputState<string, unknown> = createCollectionOutput();
   let boundary!: SourceBoundaryRecord;
   let pendingReset = false;
   let pendingCause: unknown;
@@ -228,27 +231,12 @@ export const createCollectionBoundary = (
     if (!scheduler.active || boundary.disposed) throw new ProjectionDisposedError();
     if (boundary.fault) throw boundary.fault;
   };
-
-  const output: OutputRecord = {
-    kind: 'collection',
-    get owner() {
-      return boundary;
-    },
-    consumers: new Set(),
-    context: active => state.context(active, contextCause),
-    current: () => state.current(check),
-    revision: state.revision,
-    reset: state.reset,
-    subscribe: listener => {
-      check();
-      const wrapped = (change: CollectionChange<string, unknown>) => listener(change);
-      state.subscribe(wrapped);
-      return () => state.unsubscribe(wrapped);
-    },
-    emit: state.emit,
-    clear: state.clear,
-    release: state.release,
-  };
+  const state: CollectionOutputState<string, unknown> = createCollectionOutput({
+    owner: () => boundary,
+    check,
+    cause: () => contextCause,
+  });
+  const output: OutputRecord = state;
 
   boundary = {
     kind: 'source',
@@ -264,10 +252,7 @@ export const createCollectionBoundary = (
       try {
         const changed = stageCollectionRead(
           state,
-          readLatest(
-            () => active,
-            state.current(() => undefined)
-          ),
+          readLatest(() => active, state.current()),
           () => active,
           {
             reset: pendingReset,
@@ -296,32 +281,49 @@ export const createCollectionBoundary = (
       clearSource(failed);
     },
     release: () => {
-      cleanup?.();
+      const detach = cleanup;
       cleanup = undefined;
-      state.release();
-      output.consumers.clear();
+      const failures: unknown[] = [];
+      try {
+        detach?.();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        state.release();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length) throw failures[0];
     },
   };
 
-  scheduler.initialize(() => {
-    let active = true;
-    try {
-      stageCollectionRead(
-        state,
-        readLatest(
+  try {
+    scheduler.initialize(() => {
+      let active = true;
+      try {
+        stageCollectionRead(
+          state,
+          readLatest(() => active, state.current()),
           () => active,
-          state.current(() => undefined)
-        ),
-        () => active,
-        { reset: true, isEqual: equality }
-      );
-      state.publish();
-      state.clear();
-    } finally {
-      active = false;
+          { reset: true, isEqual: equality }
+        );
+        state.publish();
+        state.clear();
+      } finally {
+        active = false;
+      }
+    });
+    scheduler.addSource(boundary);
+  } catch (error) {
+    boundary.disposed = true;
+    try {
+      boundary.release();
+    } catch {
+      /* Initialization failure retains priority. */
     }
-  });
-  scheduler.addSource(boundary);
+    throw error;
+  }
 
   const mark = (metadata: CollectionMark = {}) => {
     scheduler.assertIdle();

@@ -1,4 +1,5 @@
-import type { ImpactTarget, ObjectSchema, RootNodeOf } from '../schema';
+import type { ObjectSchema, RootNodeOf } from '../schema/model';
+import type { ImpactTarget } from '../schema/path';
 import type { CommitListener, DocumentCommit, Unsubscribe, ObserverError } from './contract';
 import * as target from '../impact/target';
 

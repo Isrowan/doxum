@@ -1,5 +1,7 @@
-import type { Infer, ObjectSchema, PathPick, RootNodeOf } from './schema';
-import { compilePath, schemaNodeOf } from './schema';
+import type { Infer, ObjectSchema, RootNodeOf } from './schema/model';
+import { schemaNodeOf } from './schema/model';
+import type { PathPick } from './schema/path';
+import { compilePath } from './schema/path';
 import { createImpact } from './impact';
 import { createHistory } from './history';
 import { createAccess, type Draft } from './access/scope';

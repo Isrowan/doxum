@@ -1,4 +1,4 @@
-import type { ObjectSchema } from '../schema';
+import type { ObjectSchema } from '../schema/model';
 import { createAccess, type Read } from '../access/scope';
 import type { DependencyTracker } from '../access/dependency';
 import { DocumentDisposedError } from './contract';

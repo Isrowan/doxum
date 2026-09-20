@@ -1,5 +1,5 @@
 import { profile } from '../profile';
-import type { DocumentNode, ObjectShape } from '../schema';
+import type { DocumentNode, ObjectNode, ObjectShape, VariantNode, VariantShape } from './model';
 
 type MemberDefinition = {
   readonly node: DocumentNode;
@@ -31,10 +31,13 @@ export type MemberLayout = FixedLayout | DynamicLayout;
 const compiledObjects = new WeakMap<object, FixedLayout>();
 const compiledEntries = new WeakMap<DocumentNode, DynamicLayout>();
 
-const objectBranch = (
-  node: DocumentNode,
-  value: unknown
-): Extract<DocumentNode, { readonly kind: 'object' }> | undefined => {
+export const variantBranch = (
+  node: VariantNode<string, VariantShape>,
+  discriminator: string | undefined
+): ObjectNode<ObjectShape> | undefined =>
+  node.variants[discriminator ?? Object.keys(node.variants)[0] ?? ''];
+
+const objectBranch = (node: DocumentNode, value: unknown): ObjectNode<ObjectShape> | undefined => {
   if (node.kind === 'object') return node;
   if (
     node.kind !== 'variant' ||
@@ -44,8 +47,9 @@ const objectBranch = (
   )
     return undefined;
   const record = value as Record<string, unknown>;
-  const tag = typeof record[node.tag] === 'string' ? record[node.tag] : undefined;
-  return node.variants[String(tag ?? Object.keys(node.variants)[0] ?? '')];
+  const rawTag = record[node.tag];
+  const tag = typeof rawTag === 'string' ? rawTag : undefined;
+  return variantBranch(node, tag);
 };
 
 export const compiledShape = (node: DocumentNode, value: unknown): FixedLayout | undefined => {

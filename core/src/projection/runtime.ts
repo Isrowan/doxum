@@ -238,13 +238,12 @@ export const createProjectionRuntime = (options?: {
     return write;
   };
 
-  function update<T>(target: Input<T>, value: T): void;
-  function update<K extends string, V>(
-    target: CollectionInput<K, V>,
-    run: (draft: CollectionInputDraft<K, V>) => void
-  ): void;
-  function update(target: Projection<unknown>, valueOrRun: unknown): void {
-    const write = inputWrite(target);
+  const updateInput = (
+    target: Projection<unknown>,
+    valueOrRun: unknown,
+    requester?: ScopeState
+  ): void => {
+    const write = inputWrite(target, requester);
     if (write.kind === 'value') {
       write.set(valueOrRun);
       return;
@@ -252,26 +251,49 @@ export const createProjectionRuntime = (options?: {
     if (typeof valueOrRun !== 'function')
       throw new TypeError('Collection input update requires a draft callback.');
     write.update(valueOrRun as (draft: CollectionInputDraft<string, unknown>) => void);
+  };
+
+  function update<T>(target: Input<T>, value: T): void;
+  function update<K extends string, V>(
+    target: CollectionInput<K, V>,
+    run: (draft: CollectionInputDraft<K, V>) => void
+  ): void;
+  function update(target: Projection<unknown>, valueOrRun: unknown): void {
+    updateInput(target, valueOrRun);
   }
 
   const batch = <T>(run: () => T, options?: { readonly cause?: unknown }): T =>
-    options === undefined ? scheduler.batch(run) : scheduler.batch(options, run);
+    scheduler.batch(run, options);
 
   const disposeScope = (state: ScopeState): void => {
     if (!state.active) return;
     scheduler.assertIdle();
     state.active = false;
-    state.subscriptions.forEach(unsubscribe => unsubscribe());
+    const failures: unknown[] = [];
+    const subscriptions = [...state.subscriptions];
     state.subscriptions.clear();
+    for (const unsubscribe of subscriptions) {
+      try {
+        unsubscribe();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     for (let index = state.materialized.length - 1; index >= 0; index--) {
       const definition = state.materialized[index];
       const current = materialized.get(definition);
       if (!current) continue;
-      scheduler.releaseProducer(current.record);
-      materialized.delete(definition);
+      try {
+        scheduler.releaseProducer(current.record);
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        materialized.delete(definition);
+      }
     }
     state.materialized.length = 0;
     scopes.delete(state);
+    if (failures.length) throw failures[0];
   };
 
   const createScope = (): ProjectionScope => {
@@ -363,14 +385,7 @@ export const createProjectionRuntime = (options?: {
     ): void;
     function scopeUpdate(target: Projection<unknown>, valueOrRun: unknown): void {
       assertActive();
-      const write = inputWrite(target, state);
-      if (write.kind === 'value') {
-        write.set(valueOrRun);
-        return;
-      }
-      if (typeof valueOrRun !== 'function')
-        throw new TypeError('Collection input update requires a draft callback.');
-      write.update(valueOrRun as (draft: CollectionInputDraft<string, unknown>) => void);
+      updateInput(target, valueOrRun, state);
     }
 
     function scopeBatch<T>(run: () => T, options?: { readonly cause?: unknown }): T {
@@ -400,15 +415,33 @@ export const createProjectionRuntime = (options?: {
     dispose: () => {
       if (!scheduler.active) return;
       scheduler.assertIdle();
+      const failures: unknown[] = [];
       for (const scope of scopes) {
         scope.active = false;
-        scope.subscriptions.forEach(unsubscribe => unsubscribe());
+        const subscriptions = [...scope.subscriptions];
         scope.subscriptions.clear();
+        for (const unsubscribe of subscriptions) {
+          try {
+            unsubscribe();
+          } catch (error) {
+            failures.push(error);
+          }
+        }
         scope.materialized.length = 0;
       }
       scopes.clear();
-      sources.dispose();
-      scheduler.dispose();
+      try {
+        sources.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        scheduler.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, 'Projection cleanup failed.');
     },
   });
 };

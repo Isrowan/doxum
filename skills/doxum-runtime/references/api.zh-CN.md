@@ -130,6 +130,9 @@ dependency object 时为 `(value, key, dependencies)`。
 - `scope()`；
 - `dispose()`。
 
+`input.collection` 的 draft callback 与逐 entry equality 都在本地状态正式安装前完成；
+任一环节抛错时，已发布 collection 与下一次 draft 都保持更新前状态。
+
 `CollectionInputDraft` 提供 `get`、`has`、`set`、`remove`。edit callback throw 时该次 edit
 整体不应用。`ProjectionScope` 镜像 `read`、`select`、`update`、`batch`、`dispose`，
 并增加 `own(projectionOrTree)`，统一拥有 scalar/keyed input、derive 与 advanced output

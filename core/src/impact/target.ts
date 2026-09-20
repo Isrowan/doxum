@@ -1,6 +1,8 @@
 import type { ChangeSet } from '../changes';
-import type { DocumentAddress, ImpactTarget, ObjectNode, TreeTarget } from '../schema';
+import type { DocumentAddress, ObjectNode } from '../schema/model';
+import type { ImpactTarget, TreeTarget } from '../schema/path';
 import { AddressIndex } from '../address/index';
+import { profile } from '../profile';
 
 const treeRootSegment = 'rootId';
 const treeNodesSegment = 'nodes';
@@ -31,14 +33,17 @@ const sameTreeTarget = (left: TreeTarget | undefined, right: TreeTarget | undefi
 };
 
 export const same = (left: ImpactTarget<unknown>, right: ImpactTarget<unknown>): boolean => {
+  profile.dependency.comparison();
   if ('schema' in left && 'schema' in right && left.schema !== right.schema) return false;
   if (!sameTreeTarget(treeTarget(left), treeTarget(right))) return false;
   if (left.kind !== right.kind) return false;
   const leftAddress = address(left);
   const rightAddress = address(right);
   if (leftAddress.length !== rightAddress.length) return false;
-  for (let index = 0; index < leftAddress.length; index += 1)
+  for (let index = 0; index < leftAddress.length; index += 1) {
+    profile.dependency.segmentCompared();
     if (leftAddress[index] !== rightAddress[index]) return false;
+  }
   return left.kind !== 'collection' || id(left) === id(right);
 };
 
@@ -52,6 +57,14 @@ export const indexedAddress = (target: ImpactTarget<unknown>): DocumentAddress =
     ? [ordinaryNamespace, ...address(target)]
     : [ordinaryNamespace, ...address(target), key];
 };
+
+/**
+ * Coarse identity for dependency de-duplication. Schema is intentionally excluded because
+ * schema-bound and schema-free targets may compare equal; callers must still use same()
+ * inside a bucket for the final equality decision.
+ */
+export const dependencyBucket = (target: ImpactTarget<unknown>): string =>
+  JSON.stringify([target.kind, indexedAddress(target)]);
 
 export const visitChangedLocations = (
   changes: ChangeSet,

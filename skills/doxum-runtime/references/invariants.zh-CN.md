@@ -22,7 +22,9 @@
 6. list 以稳定键标记身份，替换值必须保留键。anchor 拥有排序语义；
    tree 拥有双向一致、连通、无环、空树或单根的拓扑约束。
 7. 公开 `Schema` / `ObjectSchema` handle 拥有定义身份，concrete node 留在内部；
-   runtime、history 和 `document.readonly()` alias 共享唯一 RuntimeContext 实例身份。
+   schema model、path compiler、compiled layout、value validation/copy 各有唯一内部 owner，
+   foundation model/layout 不依赖 document/projection Runtime。runtime、history 和
+   `document.readonly()` alias 共享唯一 RuntimeContext 实例身份。
    共享路径 compiler 与 Core impact target 算法拥有寻址、身份、相等、
    分桶和精确匹配；React 只消费 Readable/select 契约。通知直接匹配分组变化，
    不构建 commit impact 索引。
@@ -35,10 +37,17 @@
    不通过 imperative Runtime read 创建图依赖。scope 只通过 `scope.own` 增加 lifecycle
    ownership；scoped definition 可以依赖 root definition，root 与 sibling scope 不能依赖
    scoped definition。通知失败不撤销提交；batch 推迟投影发布，不推迟文档提交与文档监听。
+   lazy definition metadata 不负责物化 source；input、observe、source materialization 分层。
+   一个 output object 同时拥有 staged/published state、revision、listener 和 graph-facing
+   consumer capability，只有 scheduler 连接/断开 dependency edge。collection input 的 callback
+   或 entry equality 抛错时不得安装部分 Runtime-local state。cleanup 先摘除 ownership，再穷尽
+   释放；初始化失败释放已创建的 projection resource，同时保留原始异常。document dirty/pending
+   state 只有一个写 owner，structural materialization 只读该状态。
 10. local-sync 使用 Web Lock 领导权和连续 durable seq，先可见后异步持久化。
     版本 5 / 格式 3 拒绝旧数据库并保留原数据，附着期间禁止外部 replace 和 remote apply。
 11. core 框架无关，公开导出需明确用途；根 dist 为构建产物。
 12. 测试 malformed 输入、部分失败回滚、history、impact、dispose 和大集合工作量。
-    删除旧 API 和平行协议。
+    dependency 去重使用 impact target owner 提供的 canonical bucket，再做精确 equality；
+    不得退回全量线性扫描或新增字符串 path grammar。删除旧 API 和平行协议。
 
 网络意图、鉴权、协作撤销、先持久化后可见属于独立需求，不是隐藏 runtime 能力。

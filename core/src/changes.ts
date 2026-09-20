@@ -1,4 +1,4 @@
-import type { DocumentAddress, DocumentTreeNode } from './schema';
+import type { DocumentAddress, DocumentTreeNode } from './schema/model';
 
 export type ValueTransition<T = unknown> =
   | { readonly kind: 'added'; readonly after: T }
