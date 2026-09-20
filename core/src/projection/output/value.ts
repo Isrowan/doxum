@@ -9,7 +9,7 @@ import {
 
 const unset = Symbol('projection-value-unset');
 
-export type ValueOutputEvaluation<T> = {
+type ValueOutputEvaluation<T> = {
   readonly previous: T | undefined;
   readonly next: () => T | undefined;
   readonly output: { set(value: T): void };

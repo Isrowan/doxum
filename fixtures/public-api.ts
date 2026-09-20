@@ -17,6 +17,7 @@ import {
 // @ts-expect-error processor-facing CollectionChange is intentionally not a root export
 import type { CollectionChange as RootCollectionChange } from 'doxum';
 import {
+  collectionChange,
   incremental,
   type CollectionChange,
   type IncrementalGroupOutput,
@@ -80,6 +81,13 @@ const labels = derive.keyed(
       ? dependencies.entity?.label
       : `${dependencies.entity?.label ?? ''}:${row.value}`
 );
+const rowKeys = derive.keyed.keys(rows);
+const rowValues = derive.keyed.values(rows);
+const positiveRows = derive.keyed.filter(rows, row => row.value > 0);
+const selectedRows = derive.keyed.subset(rows, rowKeys);
+const optionalLabels = derive.keyed.compact(rows, row =>
+  row.value > 0 ? row.entityId : undefined
+);
 const count = derive({ rows }, ({ rows }) => rows.size);
 const group = incremental.group(
   { rows },
@@ -108,6 +116,11 @@ const portableGroupResult: IncrementalGroupResult<PortableGroupShape> = group;
 const runtime = createProjectionRuntime();
 runtime.read(count);
 runtime.read(labels);
+runtime.read(rowKeys);
+runtime.read(rowValues);
+runtime.read(positiveRows);
+runtime.read(selectedRows);
+runtime.read(optionalLabels);
 runtime.read(group.count);
 runtime.update(mode, 'full');
 runtime.update(entities, draft => draft.set('e3', { label: 'Three' }));
@@ -130,6 +143,11 @@ void syncOptions;
 void LocalSyncError;
 void defaultJsonChangeLimits;
 void (undefined as unknown as CollectionChange<string, number>);
+const incrementalChange = undefined as unknown as Extract<
+  CollectionChange<string, number>,
+  { kind: 'incremental' }
+>;
+void collectionChange.keys(incrementalChange);
 void (undefined as unknown as RootCollectionChange<string, number>);
 void keyedRows;
 void keyedLabels;

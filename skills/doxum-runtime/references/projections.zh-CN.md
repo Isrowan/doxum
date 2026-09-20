@@ -68,6 +68,31 @@ const fieldValues = derive.keyed(records, record => record.values[fieldId]);
 只有受影响 driver entry 会执行 selector。per-entry equality 判定 selected value 相等时，
 该 key 不发布 `updated`；added、removed、order 语义保持不变。
 
+标准 keyed structure read 仍属于同一个 family：
+
+```ts
+const ids = derive.keyed.keys(records);
+const all = derive.keyed.values(records);
+```
+
+`keys` 只在 add/remove/order/reset 时变化，value-only update 保持已发布 array 的引用与
+revision；`values` 始终遵循 keyed collection 的正式顺序。
+
+membership-changing derive 也作为正式 primitive，而不是让应用手写 incremental
+collection patch：
+
+```ts
+const visible = derive.keyed.filter(fields, field => field.visible);
+const ordered = derive.keyed.subset(fields, visibleFieldIds);
+const content = derive.keyed.compact(cards, card => card.content);
+```
+
+`filter` 保留 source value 与 source-relative order。`subset` 使用
+`orderedKeys ∩ source.keys`，顺序由 orderedKeys 决定；当前缺失的 requested key 保持
+latent，后续 source add 时自动出现，duplicate ordered keys 非法。`compact` 将 selected
+`undefined` 解释为 output absence，对 present value 使用可选 per-entry equality。
+`filter` / `compact` 与普通 `derive.keyed` 共用 named global/dynamic keyed dependencies。
+
 Dynamic keyed lookup 仍使用同一个 API：
 
 ```ts
@@ -152,13 +177,17 @@ type CollectionChange<K extends string, V> =
 advanced processor 需要显式标注该 transport type 时，从 `doxum/advanced` 导入
 `CollectionChange`；root projection consumer 不需要从 package root 导入它。
 
+`doxum/advanced` 的 `collectionChange.keys(change)` 接受 incremental change，按
+added → updated → removed 惰性遍历 entry-transition keys。它不解释 reset，也不会把
+order change 转成 entry change；这些语义由调用方显式决定。
+
 initial materialization 和 source reset 对 advanced processor 报告 `reset`。
 incremental transition 是 settle 后 batch 边界上的 exact net change。
 
 ## Advanced processor
 
 只有 retained state、cross-key index 或直接 incremental output patch 无法用
-`derive` / `derive.keyed` 清晰表达时，才从 `doxum/advanced` 引入 `incremental`。
+`derive` / `derive.keyed` family 清晰表达时，才从 `doxum/advanced` 引入 `incremental`。
 
 所有 advanced processor 都使用 named dependencies，并且 `process` 必需。只有确实需要
 retained state 时才声明 `state()`：

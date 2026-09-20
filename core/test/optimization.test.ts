@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   createDocument,
   createProjectionRuntime,
+  derive,
   field,
+  input,
   list,
   map,
   object,
@@ -12,6 +14,33 @@ import {
 import { measureProfile } from '../src/profile';
 
 describe('projection optimization boundaries', () => {
+  it('reorders a keyed subset without restaging unchanged values', () => {
+    const rows = input.collection(
+      new Map(
+        Array.from({ length: 1_000 }, (_, index) => [`row-${index}`, { value: index }] as const)
+      )
+    );
+    const selected = input<readonly string[]>(
+      Array.from({ length: 500 }, (_, index) => `row-${index}`)
+    );
+    const subset = derive.keyed.subset(rows, selected);
+    const runtime = createProjectionRuntime();
+    runtime.read(subset);
+
+    const reordered = Array.from({ length: 500 }, (_, index) => `row-${499 - index}`);
+    const reorder = measureProfile(() => runtime.update(selected, reordered)).profile;
+    expect(reorder.projection.touchedKeys).toBe(0);
+    expect(reorder.projection.changedKeys).toBe(0);
+    expect([...runtime.read(subset).keys()]).toEqual(reordered);
+
+    const changedMembership = ['row-500', ...reordered.slice(0, -1)];
+    const membership = measureProfile(() => runtime.update(selected, changedMembership)).profile;
+    expect(membership.projection.touchedKeys).toBe(2);
+    expect(membership.projection.changedKeys).toBe(2);
+    expect([...runtime.read(subset).keys()]).toEqual(changedMembership);
+    runtime.dispose();
+  });
+
   it('preserves stable references for unchanged collection entries', () => {
     const row = object({ value: field<number>() });
     const model = object({ rows: map(row) });

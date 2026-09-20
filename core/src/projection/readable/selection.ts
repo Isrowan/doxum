@@ -1,7 +1,6 @@
 import type { Unsubscribe } from '../../runtime/contract';
 import {
-  collectionChangedKeys,
-  collectionHasAnyChange,
+  collectionChange,
   collectionHasStructuralChange,
   diffCollection,
 } from '../collection/change';
@@ -92,10 +91,9 @@ const selectionAffects = (
   change: CollectionChange<string, unknown> | undefined
 ): boolean => {
   if (!change || change.kind === 'reset') return true;
-  if (selection.all && collectionHasAnyChange(change)) return true;
+  if (selection.all) return true;
   if (selection.structure && collectionHasStructuralChange(change)) return true;
-  const changedKeys = collectionChangedKeys(change);
-  for (const key of selection.keys) if (changedKeys.has(key)) return true;
+  for (const key of collectionChange.keys(change)) if (selection.keys.has(key)) return true;
   return false;
 };
 

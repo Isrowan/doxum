@@ -159,6 +159,15 @@ export const projectionRef = (projection: Projection<unknown>): ProjectionRef =>
 export const producerOf = (projection: Projection<unknown>): ProducerDefinition =>
   projectionRef(projection).producer;
 
+/** Resolves the immutable output description owned by a projection definition. */
+export const outputDefinitionOf = (projection: Projection<unknown>): OutputDefinition => {
+  const ref = projectionRef(projection);
+  const producer = ref.producer;
+  const output = producer.kind === 'source' ? producer.output : producer.outputs[ref.output];
+  if (!output) throw new TypeError('Projection output does not exist.');
+  return output;
+};
+
 export const isProjection = (value: unknown): value is Projection<unknown> =>
   value !== null && typeof value === 'object' && projections.has(value);
 

@@ -165,7 +165,7 @@ export const createValueBoundary = (
 
 type CollectionStageOptions<K extends string, V> = {
   readonly reset: boolean;
-  readonly candidates?: Iterable<K>;
+  readonly candidates?: ReadonlySet<K>;
   readonly orderMayChange?: boolean;
   readonly isEqual?: (previous: V, next: V) => boolean;
 };
@@ -189,7 +189,7 @@ const stageCollectionRead = <K extends string, V>(
   } else {
     const previous = state.current();
     const keys = options.candidates
-      ? [...new Set(options.candidates)]
+      ? [...options.candidates]
       : [...new Set([...previous.ids(), ...read.ids()])];
     if (!options.candidates) profile.collectionView.idsScanned(keys.length);
     for (const key of keys) {

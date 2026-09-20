@@ -7,7 +7,8 @@ import type {
   Projection,
   ProjectionChange,
 } from './definition';
-import { defineProcessor, isProjection, projectionRef } from './definition';
+import { defineProcessor } from './definition';
+import { compileProjectionDependencies } from './dependency';
 import { assertSynchronous } from './graph/scheduler';
 import { isPlainObject } from '../value/record';
 
@@ -136,24 +137,6 @@ const resetCollectionChange = Object.freeze({ kind: 'reset' as const });
 const publicValue = (source: SourceContext): unknown =>
   source.kind === 'value' ? source.value : collectionView(source.read);
 
-const compileDependencies = <D extends ProjectionDependencies>(dependencies: D) => {
-  if (!isPlainObject(dependencies) || isProjection(dependencies))
-    throw new TypeError('Incremental dependencies must be a plain object.');
-  const names: string[] = [];
-  const projections: Projection<unknown>[] = [];
-  for (const key of Reflect.ownKeys(dependencies)) {
-    if (typeof key !== 'string')
-      throw new TypeError('Incremental dependency names must be strings.');
-    const descriptor = Object.getOwnPropertyDescriptor(dependencies, key);
-    if (!descriptor?.enumerable || !('value' in descriptor))
-      throw new TypeError('Incremental dependencies must be enumerable data properties.');
-    projectionRef(descriptor.value as Projection<unknown>);
-    names.push(key);
-    projections.push(descriptor.value as Projection<unknown>);
-  }
-  return Object.freeze({ names: Object.freeze(names), projections: Object.freeze(projections) });
-};
-
 const publicInputs = (
   sources: readonly SourceContext[],
   names: readonly string[],
@@ -227,7 +210,7 @@ function createIncrementalValue<const D extends ProjectionDependencies, T>(
   dependencies: D,
   definition: RuntimeIncrementalDefinition<T>
 ): Projection<T> {
-  const compiled = compileDependencies(dependencies);
+  const compiled = compileProjectionDependencies(dependencies, 'Incremental');
   validateDefinition(definition, ['state', 'process'], 'Incremental value');
   validateRetainedState(definition, 'Incremental value');
   if (typeof definition.process !== 'function')
@@ -279,7 +262,7 @@ function createIncrementalCollection<const D extends ProjectionDependencies, K e
   dependencies: D,
   definition: RuntimeIncrementalDefinition<void>
 ): KeyedProjection<K, V> {
-  const compiled = compileDependencies(dependencies);
+  const compiled = compileProjectionDependencies(dependencies, 'Incremental');
   validateDefinition(definition, ['state', 'process'], 'Incremental collection');
   validateRetainedState(definition, 'Incremental collection');
   if (typeof definition.process !== 'function')
@@ -421,7 +404,7 @@ function createIncrementalGroup<
     readonly output: (define: GroupOutputBuilder) => O;
   }
 ): IncrementalGroupResult<O> {
-  const compiled = compileDependencies(dependencies);
+  const compiled = compileProjectionDependencies(dependencies, 'Incremental');
   validateDefinition(definition, ['output', 'state', 'process'], 'Incremental group');
   validateRetainedState(definition, 'Incremental group');
   if (typeof definition.output !== 'function' || typeof definition.process !== 'function')
@@ -495,4 +478,5 @@ export const incremental = Object.assign(createIncrementalValue, {
   group: createIncrementalGroup,
 });
 
+export { collectionChange } from './collection/change';
 export type { CollectionChange } from './contract';

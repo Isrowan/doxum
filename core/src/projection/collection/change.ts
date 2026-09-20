@@ -76,24 +76,23 @@ export const diffCollection = <K extends string, V>(
   });
 };
 
-export const collectionChangedKeys = <K extends string, V>(
-  change: CollectionChange<K, V>
-): ReadonlySet<K> =>
-  change.kind === 'reset'
-    ? new Set<K>()
-    : new Set([
-        ...change.added.map(entry => entry.key),
-        ...change.updated.map(entry => entry.key),
-        ...change.removed.map(entry => entry.key),
-      ]);
+const changedKeys = function* <K extends string, V>(
+  change: Extract<CollectionChange<K, V>, { readonly kind: 'incremental' }>
+): IterableIterator<K> {
+  if ((change as CollectionChange<K, V>).kind !== 'incremental')
+    throw new TypeError('collectionChange.keys requires an incremental CollectionChange.');
+  for (const entry of change.added) yield entry.key;
+  for (const entry of change.updated) yield entry.key;
+  for (const entry of change.removed) yield entry.key;
+};
+
+export const collectionChange: {
+  readonly keys: <K extends string, V>(
+    change: Extract<CollectionChange<K, V>, { readonly kind: 'incremental' }>
+  ) => Iterable<K>;
+} = Object.freeze({ keys: changedKeys });
 
 export const collectionHasStructuralChange = <K extends string, V>(
   change: CollectionChange<K, V>
 ): boolean =>
   change.kind === 'reset' || Boolean(change.added.length || change.removed.length || change.order);
-
-export const collectionHasAnyChange = <K extends string, V>(
-  change: CollectionChange<K, V>
-): boolean =>
-  change.kind === 'reset' ||
-  Boolean(change.added.length || change.updated.length || change.removed.length || change.order);

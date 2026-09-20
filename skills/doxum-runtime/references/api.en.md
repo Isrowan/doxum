@@ -105,17 +105,24 @@ const rows = observe(document, path => path.rows);
 const count = derive({ rows }, ({ rows }) => rows.size);
 ```
 
-| API                                             | Contract                                                            |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| `input(initial, equality?)`                     | Runtime-local writable scalar `Input<T>`.                           |
-| `input.collection<K,V>(initial?, equality?)`    | Runtime-local keyed `CollectionInput<K,V>` with per-entry equality. |
-| `observe(document)`                             | Whole-document Projection source.                                   |
-| `observe(document, path => ...)`                | Schema-path scalar or keyed Projection source.                      |
-| `observe(readable)`                             | Adapt a Doxum `Readable`.                                           |
-| `observe(externalSource)`                       | Adapt exported external value/collection source contracts.          |
-| `derive(dependencies, compute, equality?)`      | Pure value Projection with named dependencies.                      |
-| `derive.keyed(driver, select, equality?)`       | Preserve driver keys/order and project each entry.                  |
-| `derive.keyed(driver, deps, select, equality?)` | Keyed projection with named global/dynamic keyed dependencies.      |
+| API                                                     | Contract                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `input(initial, equality?)`                             | Runtime-local writable scalar `Input<T>`.                           |
+| `input.collection<K,V>(initial?, equality?)`            | Runtime-local keyed `CollectionInput<K,V>` with per-entry equality. |
+| `observe(document)`                                     | Whole-document Projection source.                                   |
+| `observe(document, path => ...)`                        | Schema-path scalar or keyed Projection source.                      |
+| `observe(readable)`                                     | Adapt a Doxum `Readable`.                                           |
+| `observe(externalSource)`                               | Adapt exported external value/collection source contracts.          |
+| `derive(dependencies, compute, equality?)`              | Pure value Projection with named dependencies.                      |
+| `derive.keyed(driver, select, equality?)`               | Preserve driver keys/order and project each entry.                  |
+| `derive.keyed(driver, deps, select, equality?)`         | Keyed projection with named global/dynamic keyed dependencies.      |
+| `derive.keyed.keys(source)`                             | Ordered key array; value-only updates do not publish.               |
+| `derive.keyed.values(source)`                           | Ordered value array following keyed collection order.               |
+| `derive.keyed.subset(source, orderedKeys)`              | Keyed subset whose membership/order come from ordered keys.         |
+| `derive.keyed.filter(source, predicate)`                | Keyed subset preserving source values and source-relative order.    |
+| `derive.keyed.filter(source, deps, predicate)`          | Filter with the standard keyed dependency protocol.                 |
+| `derive.keyed.compact(source, select, equality?)`       | Map entries and omit keys whose selected value is `undefined`.      |
+| `derive.keyed.compact(source, deps, select, equality?)` | Compact with standard keyed dependencies.                           |
 
 Dynamic keyed dependency syntax is
 `{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }`.
@@ -151,6 +158,10 @@ Public projection types are `Projection<T>`, `KeyedProjection<K,V>`, `Input<T>`,
 `ProjectionError` exposes only `phase` and `cause`;
 `ProjectionDisposedError` represents disposed access.
 
+`filter` and `subset` reuse source values and therefore do not take a second equality.
+`compact` owns membership through `undefined` while ordinary `derive.keyed` continues
+to preserve every driver key, including when its selected value is `undefined`.
+
 External value sources expose `kind: 'value'`, `current()`, `revision()`, `subscribe()`.
 External collection sources expose `kind: 'collection'` plus `get/has/ids` reads and
 optional `CollectionImpact` invalidation hints; the adapter derives exact
@@ -160,6 +171,10 @@ optional `CollectionImpact` invalidation hints; the adapter derives exact
 
 Use advanced processors only when `derive` / `derive.keyed` cannot express retained
 state, cross-key indexes, or direct incremental output patching.
+
+`collectionChange.keys(change)` iterates the added, updated and removed keys of an
+incremental `CollectionChange` in that order. It does not interpret reset or order
+changes; handle `reset` before calling it.
 
 All advanced functions use named dependencies and a closed definition object.
 
@@ -203,8 +218,8 @@ Runtime owns recovery: it recreates declared state and runs a reset evaluation. 
 processors use the same recovery path without a state object. There is no public rebuild
 token or manual recovery protocol.
 
-Exported advanced helper types are the value/collection/group context and definition
-types, `CollectionChange`, and the declaration-safe `IncrementalGroupOutput` /
+Exported advanced APIs include `collectionChange`, the value/collection/group context
+and definition types, `CollectionChange`, and the declaration-safe `IncrementalGroupOutput` /
 `IncrementalGroupResult` type boundaries. Normal callers infer the latter two; internal
 scheduler/output plumbing is not part of the public contract.
 

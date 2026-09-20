@@ -70,6 +70,31 @@ Only affected driver entries execute the selector. Per-entry equality suppresses
 `updated` output transition when the selected value is unchanged. Added, removed and
 order transitions retain their normal collection meaning.
 
+Standard keyed structure reads use the same family:
+
+```ts
+const ids = derive.keyed.keys(records);
+const all = derive.keyed.values(records);
+```
+
+`keys` changes only for add/remove/order/reset and keeps its published array reference
+on value-only updates. `values` follows the keyed collection's formal order.
+
+Membership-changing derives are first-class rather than application-side incremental
+collection patch loops:
+
+```ts
+const visible = derive.keyed.filter(fields, field => field.visible);
+const ordered = derive.keyed.subset(fields, visibleFieldIds);
+const content = derive.keyed.compact(cards, card => card.content);
+```
+
+`filter` preserves source values and source-relative order. `subset` uses
+`orderedKeys ∩ source.keys` with orderedKeys order; missing requested keys remain latent,
+and duplicate ordered keys are invalid. `compact` treats selected `undefined` as output
+absence and uses optional per-entry equality for present values. `filter` and `compact`
+accept the same named global/dynamic keyed dependencies as ordinary `derive.keyed`.
+
 Dynamic keyed lookups stay in the same API:
 
 ```ts
@@ -155,14 +180,18 @@ type CollectionChange<K extends string, V> =
 Import `CollectionChange` from `doxum/advanced` when an advanced processor signature
 needs it. Root projection consumers do not import this transport type.
 
+`collectionChange.keys(change)` from `doxum/advanced` accepts an incremental change and
+lazily yields added, updated and removed keys in that order. It does not interpret reset
+or turn order changes into entry changes; callers decide those semantics explicitly.
+
 Initial materialization and source reset report `reset` to advanced processors.
 Incremental transitions are exact net changes across the settled Runtime batch.
 
 ## Advanced processors
 
 Import `incremental` from `doxum/advanced` only when retained state, cross-key indexes,
-or direct incremental output patching cannot be expressed cleanly with `derive` or
-`derive.keyed`.
+or direct incremental output patching cannot be expressed cleanly with `derive` or the
+`derive.keyed` family.
 
 All advanced processors use named dependencies plus a required `process`. Add `state()`
 only when the processor needs retained state:

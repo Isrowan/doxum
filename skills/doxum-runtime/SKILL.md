@@ -47,9 +47,11 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   `KeyedProjection<K,V>` is the single public keyed projection handle. Collection
   `observe`, `derive.keyed`, `incremental.collection`, group collection leaves and
   `CollectionInput<K,V>` all use that same keyed capability.
-  Use named-object `derive` for pure aggregate values. Use `derive.keyed` when one keyed
-  driver owns the output key domain/order: per-entry equality suppresses unchanged
-  selected values. Its dependency form uses a named object: plain Projection members
+  Use named-object `derive` for pure aggregate values. The `derive.keyed` family owns
+  keyed derivation: ordinary `derive.keyed` preserves driver membership/order;
+  `keys`/`values` expose standard ordered read shapes; `subset`/`filter`/`compact` own
+  membership-changing derivation without application-side collection patch loops.
+  Per-entry equality suppresses unchanged generated values. Its dependency form uses a named object: plain Projection members
   invalidate the driver key set, while `{ source, key }` members let the Runtime own
   per-output-key source bindings and reverse lookup. Selectors receive
   `(entry, key)` or `(entry, key, dependencies)`. The producer graph remains explicit and static;
@@ -60,7 +62,9 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   definitions with the root declaration APIs, then own a projection or static output tree
   before that definition is first materialized as a root.
   Use advanced `incremental` only for retained state or cross-key coordination that
-  cannot be expressed by `derive.keyed`. React selector tracking remains a consumer
+  cannot be expressed by the `derive.keyed` family. `collectionChange.keys` is the
+  transport-level iterable for incremental added/updated/removed keys; callers handle
+  reset and order semantics themselves. React selector tracking remains a consumer
   concern through `ProjectionProvider` and `useProjection(projection, selector)`.
 - Advanced incremental definitions always declare `process`; `state()` is present only
   when retained state is actually needed. `incremental.group` declares its static

@@ -37,6 +37,29 @@ describe('projection runtime', () => {
     right.dispose();
   });
 
+  it('uses one named dependency declaration contract for derive and incremental processors', () => {
+    const source = input(1);
+    const factories = [
+      (dependencies: { readonly source: typeof source }) =>
+        derive(dependencies, ({ source }) => source),
+      (dependencies: { readonly source: typeof source }) =>
+        incremental(dependencies, {
+          process: ({ values }) => values.source,
+        }),
+    ];
+
+    const hidden = {} as { readonly source: typeof source };
+    Object.defineProperty(hidden, 'source', { value: source, enumerable: false });
+    for (const create of factories)
+      expect(() => create(hidden)).toThrow('dependencies must be enumerable data properties');
+
+    const symbolic = { [Symbol('source')]: source } as unknown as {
+      readonly source: typeof source;
+    };
+    for (const create of factories)
+      expect(() => create(symbolic)).toThrow('dependency names must be strings');
+  });
+
   it('retains state in the advanced value processor', () => {
     const source = input(1);
     const calls = incremental(
@@ -527,6 +550,69 @@ describe('projection runtime', () => {
     expect(runtime.read(rows).get('a')).toBe(2);
     expect(runtime.read(rows).get('b')).toBe(0);
     expect(listener).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
+  it('preflights the final keyed input equality before installing local state', () => {
+    const failure = new Error('final equality failed');
+    const rows = input.collection(new Map([['a', 0]]), (previous, next) => {
+      if (previous === 0 && next === 2) throw failure;
+      return previous === next;
+    });
+    const runtime = createProjectionRuntime();
+    const before = runtime.read(rows);
+
+    expect(() =>
+      runtime.update(rows, draft => {
+        draft.set('a', 1);
+        draft.set('a', 2);
+      })
+    ).toThrow(failure);
+
+    expect(runtime.read(rows)).toBe(before);
+    expect(runtime.read(rows).get('a')).toBe(0);
+    runtime.dispose();
+  });
+
+  it('preserves retained keyed input values while honoring remove-readd order', () => {
+    const original = { value: 1, label: 'original' };
+    const rows = input.collection(
+      new Map([
+        ['a', original],
+        ['b', { value: 2, label: 'B' }],
+      ]),
+      (previous, next) => previous.value === next.value
+    );
+    const changes: unknown[] = [];
+    const observed = incremental(
+      { rows },
+      {
+        process: ({ changes: next }) => {
+          changes.push(next.rows);
+          return 0;
+        },
+      }
+    );
+    const runtime = createProjectionRuntime();
+    runtime.read(observed);
+
+    runtime.update(rows, draft => {
+      draft.remove('a');
+      draft.set('a', { value: 1, label: 'replacement' });
+    });
+
+    expect([...runtime.read(rows).keys()]).toEqual(['b', 'a']);
+    expect(runtime.read(rows).get('a')).toBe(original);
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [],
+      order: { before: ['a', 'b'], after: ['b', 'a'] },
+    });
+    runtime.update(rows, draft => {
+      expect(draft.get('a')).toBe(original);
+    });
     runtime.dispose();
   });
 
@@ -1182,6 +1268,331 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
+  it('projects keyed keys without publishing value-only updates', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { value: 1 }],
+        ['b', { value: 2 }],
+      ])
+    );
+    const keys = derive.keyed.keys(rows);
+    const runtime = createProjectionRuntime();
+    const readable = runtime.select(keys);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    const initial = readable.current();
+    const revision = readable.revision();
+
+    runtime.update(rows, draft => draft.set('a', { value: 10 }));
+    expect(runtime.read(keys)).toBe(initial);
+    expect(readable.revision()).toBe(revision);
+    expect(listener).not.toHaveBeenCalled();
+
+    runtime.update(rows, draft => draft.set('c', { value: 3 }));
+    expect(runtime.read(keys)).toEqual(['a', 'b', 'c']);
+    expect(runtime.read(keys)).not.toBe(initial);
+    expect(listener).toHaveBeenCalledTimes(1);
+    runtime.dispose();
+  });
+
+  it('projects keyed values in formal order and preserves unchanged entry references', () => {
+    const a = { value: 1 };
+    const b = { value: 2 };
+    const rows = input.collection(
+      new Map([
+        ['a', a],
+        ['b', b],
+      ])
+    );
+    const values = derive.keyed.values(rows);
+    const runtime = createProjectionRuntime();
+    const initial = runtime.read(values);
+    expect(initial).toEqual([a, b]);
+
+    const nextA = { value: 10 };
+    runtime.update(rows, draft => draft.set('a', nextA));
+    const updated = runtime.read(values);
+    expect(updated).toEqual([nextA, b]);
+    expect(updated).not.toBe(initial);
+    expect(updated[1]).toBe(initial[1]);
+
+    runtime.update(rows, draft => draft.set('c', { value: 3 }));
+    expect(runtime.read(values).map(entry => entry.value)).toEqual([10, 2, 3]);
+    runtime.dispose();
+  });
+
+  it('keeps keyed keys and values aligned with ordered document collections', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: {},
+        ordered: {
+          ids: ['a', 'b'],
+          byId: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        },
+      },
+    });
+    const ordered = observe(document, path => path.ordered);
+    const keys = derive.keyed.keys(ordered);
+    const values = derive.keyed.values(ordered);
+    const runtime = createProjectionRuntime();
+    expect(runtime.read(keys)).toEqual(['a', 'b']);
+    expect(runtime.read(values).map(entry => entry.value)).toEqual([1, 2]);
+
+    document.update(draft => draft.ordered.move('b', { at: 'start' }));
+    expect(runtime.read(keys)).toEqual(['b', 'a']);
+    expect(runtime.read(values).map(entry => entry.value)).toEqual([2, 1]);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('rebuilds keyed structure and membership primitives after a document reset', () => {
+    const document = createDocument({
+      schema: model,
+      initial: {
+        rows: { a: { value: 1, label: 'A' }, b: { value: 2, label: 'B' } },
+        ordered: { ids: [], byId: {} },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const keys = derive.keyed.keys(rows);
+    const values = derive.keyed.values(rows);
+    const filtered = derive.keyed.filter(rows, row => row.value > 1);
+    const compacted = derive.keyed.compact(rows, row =>
+      row.label.startsWith('A') ? row.label : undefined
+    );
+    const subset = derive.keyed.subset(rows, ['c', 'a']);
+    const runtime = createProjectionRuntime();
+
+    expect(runtime.read(keys)).toEqual(['a', 'b']);
+    expect(runtime.read(values).map(row => row.value)).toEqual([1, 2]);
+    expect([...runtime.read(filtered).keys()]).toEqual(['b']);
+    expect([...runtime.read(compacted)]).toEqual([['a', 'A']]);
+    expect([...runtime.read(subset).keys()]).toEqual(['a']);
+
+    document.replace({
+      rows: { a: { value: 10, label: 'A2' }, c: { value: 3, label: 'C' } },
+      ordered: { ids: [], byId: {} },
+    });
+
+    expect(runtime.read(keys)).toEqual(['a', 'c']);
+    expect(runtime.read(values).map(row => row.value)).toEqual([10, 3]);
+    expect([...runtime.read(filtered).keys()]).toEqual(['a', 'c']);
+    expect([...runtime.read(compacted)]).toEqual([['a', 'A2']]);
+    expect([...runtime.read(subset).keys()]).toEqual(['c', 'a']);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('filters keyed membership and publishes exact entry transitions', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { visible: true, value: 1 }],
+        ['b', { visible: false, value: 2 }],
+      ])
+    );
+    const visible = derive.keyed.filter(rows, row => row.visible);
+    const changes: unknown[] = [];
+    const probe = incremental(
+      { visible },
+      {
+        process: ({ changes: next }) => {
+          if (next.visible) changes.push(next.visible);
+          return 0;
+        },
+      }
+    );
+    const runtime = createProjectionRuntime();
+    runtime.read(probe);
+    changes.length = 0;
+    expect([...runtime.read(visible).keys()]).toEqual(['a']);
+
+    runtime.update(rows, draft => draft.set('b', { visible: true, value: 2 }));
+    expect([...runtime.read(visible).keys()]).toEqual(['a', 'b']);
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [{ key: 'b', after: { visible: true, value: 2 } }],
+      updated: [],
+      removed: [],
+    });
+
+    runtime.update(rows, draft => draft.set('a', { visible: false, value: 1 }));
+    expect([...runtime.read(visible).keys()]).toEqual(['b']);
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [{ key: 'a', before: { visible: true, value: 1 } }],
+    });
+    runtime.dispose();
+  });
+
+  it('uses dynamic keyed dependencies to incrementally filter membership', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { permissionId: 'p1' }],
+        ['b', { permissionId: 'p2' }],
+      ])
+    );
+    const permissions = input.collection(
+      new Map([
+        ['p1', true],
+        ['p2', false],
+        ['unused', true],
+      ])
+    );
+    const enabled = input(true);
+    const predicate = vi.fn(
+      (
+        _row: { readonly permissionId: string },
+        _key: string,
+        dependencies: { readonly permission: boolean | undefined; readonly enabled: boolean }
+      ) => dependencies.enabled && dependencies.permission === true
+    );
+    const visible = derive.keyed.filter(
+      rows,
+      {
+        permission: { source: permissions, key: row => row.permissionId },
+        enabled,
+      },
+      predicate
+    );
+    const runtime = createProjectionRuntime();
+    expect([...runtime.read(visible).keys()]).toEqual(['a']);
+    predicate.mockClear();
+
+    runtime.update(permissions, draft => draft.set('unused', false));
+    expect(predicate).not.toHaveBeenCalled();
+    runtime.update(permissions, draft => draft.set('p2', true));
+    expect(predicate).toHaveBeenCalledTimes(1);
+    expect([...runtime.read(visible).keys()]).toEqual(['a', 'b']);
+    predicate.mockClear();
+
+    runtime.update(enabled, false);
+    expect(predicate).toHaveBeenCalledTimes(2);
+    expect([...runtime.read(visible).keys()]).toEqual([]);
+    runtime.dispose();
+  });
+
+  it('compacts keyed values with membership transitions and per-entry equality', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { value: 1, enabled: true, label: 'A' }],
+        ['b', { value: 2, enabled: false, label: 'B' }],
+      ])
+    );
+    const compacted = derive.keyed.compact(rows, row => (row.enabled ? row.value : undefined));
+    const changes: unknown[] = [];
+    const probe = incremental(
+      { compacted },
+      {
+        process: ({ changes: next }) => {
+          if (next.compacted) changes.push(next.compacted);
+          return 0;
+        },
+      }
+    );
+    const runtime = createProjectionRuntime();
+    runtime.read(probe);
+    changes.length = 0;
+    expect([...runtime.read(compacted)]).toEqual([['a', 1]]);
+
+    runtime.update(rows, draft => draft.set('a', { value: 1, enabled: true, label: 'renamed' }));
+    expect(changes).toEqual([]);
+
+    runtime.update(rows, draft => draft.set('b', { value: 2, enabled: true, label: 'B' }));
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [{ key: 'b', after: 2 }],
+      updated: [],
+      removed: [],
+    });
+    runtime.update(rows, draft => draft.set('a', { value: 3, enabled: true, label: 'A' }));
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [{ key: 'a', before: 1, after: 3 }],
+      removed: [],
+    });
+    runtime.update(rows, draft => draft.set('b', { value: 2, enabled: false, label: 'B' }));
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [{ key: 'b', before: 2 }],
+    });
+    runtime.dispose();
+  });
+
+  it('subsets keyed collections by ordered keys with latent missing membership', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { value: 1 }],
+        ['b', { value: 2 }],
+        ['c', { value: 3 }],
+      ])
+    );
+    const selected = input<readonly string[]>(['c', 'a', 'missing']);
+    const subset = derive.keyed.subset(rows, selected);
+    const changes: unknown[] = [];
+    const probe = incremental(
+      { subset },
+      {
+        process: ({ changes: next }) => {
+          if (next.subset) changes.push(next.subset);
+          return 0;
+        },
+      }
+    );
+    const runtime = createProjectionRuntime();
+    runtime.read(probe);
+    changes.length = 0;
+    expect([...runtime.read(subset).keys()]).toEqual(['c', 'a']);
+
+    runtime.update(rows, draft => draft.set('missing', { value: 4 }));
+    expect([...runtime.read(subset).keys()]).toEqual(['c', 'a', 'missing']);
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [{ key: 'missing', after: { value: 4 } }],
+      updated: [],
+      removed: [],
+    });
+
+    runtime.update(selected, ['a', 'c', 'missing']);
+    expect([...runtime.read(subset).keys()]).toEqual(['a', 'c', 'missing']);
+    expect(changes.at(-1)).toEqual({
+      kind: 'incremental',
+      added: [],
+      updated: [],
+      removed: [],
+      order: { before: ['c', 'a', 'missing'], after: ['a', 'c', 'missing'] },
+    });
+
+    runtime.update(rows, draft => draft.set('b', { value: 20 }));
+    expect(changes).toHaveLength(2);
+    expect(() => derive.keyed.subset(rows, ['a', 'a'])).toThrow(/duplicate/i);
+    runtime.dispose();
+  });
+
+  it('nets transient membership changes inside one projection batch', () => {
+    const rows = input.collection(new Map([['a', { enabled: true }]]));
+    const visible = derive.keyed.filter(rows, row => row.enabled);
+    const runtime = createProjectionRuntime();
+    const readable = runtime.select(visible);
+    const listener = vi.fn();
+    readable.subscribe(listener);
+    expect([...readable.current().keys()]).toEqual(['a']);
+
+    runtime.batch(() => {
+      runtime.update(rows, draft => draft.set('temp', { enabled: true }));
+      runtime.update(rows, draft => draft.remove('temp'));
+    });
+
+    expect([...runtime.read(visible).keys()]).toEqual(['a']);
+    expect(listener).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
   it('can observe and derive external readables through the same graph', () => {
     let value = 1;
     const listeners = new Set<() => void>();
@@ -1661,7 +2072,7 @@ describe('projection runtime', () => {
     runtime.dispose();
   });
 
-  it('preserves custom collection equality call semantics for changed entries', () => {
+  it('evaluates custom collection equality once per staged existing entry', () => {
     const source = input(1);
     const equality = vi.fn((previous: number, next: number) => previous === next);
     const group = incremental.group(
@@ -1677,11 +2088,8 @@ describe('projection runtime', () => {
 
     runtime.update(source, 2);
     expect(runtime.read(group.values).get('current')).toBe(2);
-    expect(equality).toHaveBeenCalledTimes(2);
-    expect(equality.mock.calls).toEqual([
-      [1, 2],
-      [1, 2],
-    ]);
+    expect(equality).toHaveBeenCalledTimes(1);
+    expect(equality).toHaveBeenCalledWith(1, 2);
     runtime.dispose();
   });
 

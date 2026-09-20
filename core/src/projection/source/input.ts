@@ -59,6 +59,7 @@ export const materializeInputSource = (
           | { readonly kind: 'set'; readonly key: string; readonly value: unknown }
           | { readonly kind: 'remove'; readonly key: string }
         )[] = [];
+        let structural = false;
         let active = true;
         const draft: CollectionInputDraft<string, unknown> = Object.freeze({
           get: key => {
@@ -74,14 +75,19 @@ export const materializeInputSource = (
           set: (key, value) => {
             assertScope(() => active);
             if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+            const previous = staged.get(key);
+            structural ||= previous ? !previous.present : !values.has(key);
             staged.set(key, { present: true, value });
             operations.push({ kind: 'set', key, value });
           },
           remove: key => {
             assertScope(() => active);
             if (typeof key !== 'string') throw new TypeError('Projection keys must be strings.');
+            const previous = staged.get(key);
+            const present = previous ? previous.present : values.has(key);
+            structural ||= present;
             staged.set(key, { present: false });
-            operations.push({ kind: 'remove', key });
+            if (present) operations.push({ kind: 'remove', key });
           },
         });
         try {
@@ -90,38 +96,29 @@ export const materializeInputSource = (
           active = false;
         }
 
+        if (!operations.length) return;
+
         const candidates = new Set<string>();
-        let structural = false;
-        const accepted: typeof operations = [];
-        const overlay = new Map<
-          string,
-          { readonly present: true; readonly value: unknown } | { readonly present: false }
-        >();
-        for (const operation of operations) {
-          const overlayValue = overlay.get(operation.key);
-          const present = overlayValue ? overlayValue.present : values.has(operation.key);
-          if (operation.kind === 'set') {
-            const previous = overlayValue
-              ? overlayValue.present
-                ? overlayValue.value
-                : undefined
-              : values.get(operation.key);
-            if (present && source.equality(previous, operation.value)) continue;
-            structural ||= !present;
-            overlay.set(operation.key, { present: true, value: operation.value });
-          } else {
-            if (!present) continue;
-            structural = true;
-            overlay.set(operation.key, { present: false });
-          }
-          accepted.push(operation);
-          candidates.add(operation.key);
+        const retained = new Map<string, unknown>();
+        for (const [key, entry] of staged) {
+          const existed = values.has(key);
+          if (entry.present) {
+            if (!existed) {
+              candidates.add(key);
+              continue;
+            }
+            const previous = values.get(key);
+            if (source.equality(previous, entry.value)) retained.set(key, previous);
+            else candidates.add(key);
+          } else if (existed) candidates.add(key);
         }
-        if (!accepted.length) return;
-        for (const operation of accepted) {
+        if (!candidates.size && !structural) return;
+
+        for (const operation of operations) {
           if (operation.kind === 'set') values.set(operation.key, operation.value);
           else values.delete(operation.key);
         }
+        for (const [key, value] of retained) if (values.has(key)) values.set(key, value);
         boundary.mark({ candidates, orderMayChange: structural });
         scheduler.run();
       },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  collectionChangedKeys,
+  collectionChange,
   collectionHasStructuralChange,
   createCollectionChange,
   diffCollection,
@@ -88,7 +88,23 @@ describe('projection collection algorithms', () => {
       order: { before: ['a', 'b', 'c'], after: ['c', 'a', 'b'] },
     });
     expect(collectionHasStructuralChange(reordered!)).toBe(true);
-    expect([...collectionChangedKeys(reordered!)]).toEqual([]);
+    expect(reordered?.kind).toBe('incremental');
+    if (reordered?.kind !== 'incremental') throw new Error('Expected incremental change.');
+    expect([...collectionChange.keys(reordered)]).toEqual([]);
+  });
+
+  it('iterates incremental entry-transition keys without interpreting order or reset', () => {
+    const change = createCollectionChange({
+      added: [{ key: 'added', after: 1 }],
+      updated: [{ key: 'updated', before: 1, after: 2 }],
+      removed: [{ key: 'removed', before: 3 }],
+      beforeOrder: ['removed', 'updated'],
+      afterOrder: ['updated', 'added'],
+    });
+    expect(change?.kind).toBe('incremental');
+    if (change?.kind !== 'incremental') throw new Error('Expected incremental change.');
+    expect([...collectionChange.keys(change)]).toEqual(['added', 'updated', 'removed']);
+    expect(() => [...collectionChange.keys({ kind: 'reset' } as never)]).toThrow(/incremental/i);
   });
 
   it('diffs random map snapshots against a direct transition oracle', () => {

@@ -1,5 +1,5 @@
 import { derive, field, input, list, map, object, optional, table, tree, variant } from 'doxum';
-import { incremental } from 'doxum/advanced';
+import { collectionChange, incremental } from 'doxum/advanced';
 
 const entity = object({
   label: field<string>(),
@@ -31,6 +31,13 @@ export const portableRows = input.collection<
 export const portableEntities = input.collection<string, { readonly label: string }>();
 
 export const portableSelected = derive.keyed(portableRows, row => row.value);
+export const portableKeys = derive.keyed.keys(portableRows);
+export const portableValues = derive.keyed.values(portableRows);
+export const portableSubset = derive.keyed.subset(portableRows, ['row-a', 'row-b'] as const);
+export const portableFiltered = derive.keyed.filter(portableRows, row => row.value > 0);
+export const portableCompacted = derive.keyed.compact(portableRows, row =>
+  row.value > 0 ? row.value : undefined
+);
 export const portableJoined = derive.keyed(
   portableRows,
   {
@@ -69,3 +76,4 @@ export const portableGroup = incremental.group(
 
 export const portableGroupValues = portableGroup.values;
 export const portableGroupCount = portableGroup.summary.count;
+export const portableChangeKeys = collectionChange.keys;

@@ -28,6 +28,8 @@ type PublishedCollection<K extends string, V> = {
 };
 
 const createPublishedCollection = <K extends string, V>(): PublishedCollection<K, V> => {
+  // Hot current-generation lookups stay O(1); the persistent index keeps borrowed
+  // reads durable across later publications without copying the whole collection.
   const values = new Map<K, V>();
   let ids: readonly K[] = Object.freeze([]);
   let index = PersistentKeyedIndex.empty<K, V>();
@@ -80,7 +82,7 @@ const createPublishedCollection = <K extends string, V>(): PublishedCollection<K
   };
 };
 
-export type CollectionOutputEvaluation<K extends string, V> = {
+type CollectionOutputEvaluation<K extends string, V> = {
   readonly previous: CollectionRead<K, V>;
   readonly next: CollectionRead<K, V>;
   readonly output: CollectionDraft<K, V>;
@@ -188,15 +190,26 @@ export const createCollectionOutput = <K extends string, V>(
     profile.projection('touchedKeys', staged.size);
     const added = new Set<K>();
     const removed = new Set<K>();
-    const updated = new Set<K>();
+    const addedEntries: { readonly key: K; readonly after: V }[] = [];
+    const updatedEntries: { readonly key: K; readonly before: V; readonly after: V }[] = [];
+    const removedEntries: { readonly key: K; readonly before: V }[] = [];
     for (const [key, entry] of staged) {
       const existed = published.has(key);
       if (entry.present) {
-        if (!existed) added.add(key);
-        else if (!isEqual(published.get(key) as V, entry.value)) updated.add(key);
+        if (!existed) {
+          added.add(key);
+          addedEntries.push({ key, after: entry.value });
+          continue;
+        }
+        const before = published.get(key) as V;
+        if (!isEqual(before, entry.value)) updatedEntries.push({ key, before, after: entry.value });
         else if (!nextReset) staged.delete(key);
-      } else if (existed) removed.add(key);
-      else staged.delete(key);
+        continue;
+      }
+      if (existed) {
+        removed.add(key);
+        removedEntries.push({ key, before: published.get(key) as V });
+      } else staged.delete(key);
     }
 
     const ids = published.ids();
@@ -215,30 +228,10 @@ export const createCollectionOutput = <K extends string, V>(
           : Object.freeze([...order]);
     } else nextIds = ids;
 
-    const changedKeys = new Set<K>();
-    added.forEach(key => changedKeys.add(key));
-    removed.forEach(key => changedKeys.add(key));
-    updated.forEach(key => changedKeys.add(key));
-    profile.projection('changedKeys', changedKeys.size);
-    const addedEntries: { readonly key: K; readonly after: V }[] = [];
-    const updatedEntries: { readonly key: K; readonly before: V; readonly after: V }[] = [];
-    const removedEntries: { readonly key: K; readonly before: V }[] = [];
-    for (const key of changedKeys) {
-      const beforePresent = published.has(key);
-      const afterPresent = hasNext(key);
-      if (beforePresent === afterPresent) {
-        if (!beforePresent) continue;
-        if (isEqual !== Object.is && isEqual(published.get(key) as V, getNext(key) as V)) continue;
-      }
-      if (!beforePresent) addedEntries.push({ key, after: getNext(key) as V });
-      else if (!afterPresent) removedEntries.push({ key, before: published.get(key) as V });
-      else
-        updatedEntries.push({
-          key,
-          before: published.get(key) as V,
-          after: getNext(key) as V,
-        });
-    }
+    profile.projection(
+      'changedKeys',
+      addedEntries.length + updatedEntries.length + removedEntries.length
+    );
 
     change = nextReset
       ? Object.freeze({ kind: 'reset' as const })

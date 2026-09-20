@@ -293,6 +293,24 @@ The output keeps one key per source entry. The selector runs only for affected k
 and the optional equality function suppresses `updated` output transitions when the
 derived value is equal.
 
+The same family covers standard keyed structure reads and membership-changing derives:
+
+```ts
+const ids = derive.keyed.keys(records);
+const all = derive.keyed.values(records);
+const visible = derive.keyed.filter(records, record => record.visible);
+const orderedVisible = derive.keyed.subset(records, visibleIds);
+const definedContent = derive.keyed.compact(records, record => record.content);
+```
+
+`keys` publishes only for membership/order/reset changes; value-only updates keep the
+same array reference and revision. `values` follows the formal keyed order. `subset`
+uses the supplied ordered keys as both membership selection and output order, ignoring
+currently missing source keys until they appear. `filter` preserves source values and
+source-relative order. `compact` omits keys whose selected value is `undefined` and
+uses its optional equality for present values. `filter` and `compact` support the same
+named global/dynamic keyed dependency object as ordinary `derive.keyed`.
+
 All keyed projection producers use the public `KeyedProjection<K,V>` handle, including
 collection `observe`, `derive.keyed`, `incremental.collection`, and collection leaves
 from `incremental.group`. `CollectionInput<K,V>` is the writable Runtime-local form of
@@ -343,7 +361,9 @@ transitions and preserves order. The optional per-entry equality defaults to `Ob
 and suppresses equivalent `set` operations. Callback and equality failures leave both
 the published value and the next draft unchanged.
 
-The processor-facing `CollectionChange` type is exported by `doxum/advanced`.
+The processor-facing `CollectionChange` type and `collectionChange.keys(...)` utility
+are exported by `doxum/advanced`. The utility lazily iterates incremental added,
+updated, then removed keys; it does not interpret reset or order changes.
 
 A root input definition can be materialized independently by several runtimes. Wrap any
 definition in `scope.own(...)` when its lifecycle belongs to one scope; scalar inputs,

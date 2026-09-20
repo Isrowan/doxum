@@ -103,17 +103,24 @@ const rows = observe(document, path => path.rows);
 const count = derive({ rows }, ({ rows }) => rows.size);
 ```
 
-| API                                             | 契约                                                                 |
-| ----------------------------------------------- | -------------------------------------------------------------------- |
-| `input(initial, equality?)`                     | Runtime-local writable scalar `Input<T>`。                           |
-| `input.collection<K,V>(initial?, equality?)`    | Runtime-local keyed `CollectionInput<K,V>`，equality 按 entry 比较。 |
-| `observe(document)`                             | whole-document Projection source。                                   |
-| `observe(document, path => ...)`                | schema-path scalar 或 keyed Projection source。                      |
-| `observe(readable)`                             | 接入 Doxum `Readable`。                                              |
-| `observe(externalSource)`                       | 接入公开 external value/collection source contract。                 |
-| `derive(dependencies, compute, equality?)`      | named dependencies 的 pure value Projection。                        |
-| `derive.keyed(driver, select, equality?)`       | 保留 driver key/order，逐 entry projection。                         |
-| `derive.keyed(driver, deps, select, equality?)` | 带 named global/dynamic keyed dependencies 的 keyed projection。     |
+| API                                                     | 契约                                                                 |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| `input(initial, equality?)`                             | Runtime-local writable scalar `Input<T>`。                           |
+| `input.collection<K,V>(initial?, equality?)`            | Runtime-local keyed `CollectionInput<K,V>`，equality 按 entry 比较。 |
+| `observe(document)`                                     | whole-document Projection source。                                   |
+| `observe(document, path => ...)`                        | schema-path scalar 或 keyed Projection source。                      |
+| `observe(readable)`                                     | 接入 Doxum `Readable`。                                              |
+| `observe(externalSource)`                               | 接入公开 external value/collection source contract。                 |
+| `derive(dependencies, compute, equality?)`              | named dependencies 的 pure value Projection。                        |
+| `derive.keyed(driver, select, equality?)`               | 保留 driver key/order，逐 entry projection。                         |
+| `derive.keyed(driver, deps, select, equality?)`         | 带 named global/dynamic keyed dependencies 的 keyed projection。     |
+| `derive.keyed.keys(source)`                             | 正式顺序的 key array；value-only update 不发布。                     |
+| `derive.keyed.values(source)`                           | 按 keyed collection 正式顺序排列的 value array。                     |
+| `derive.keyed.subset(source, orderedKeys)`              | membership/order 由 ordered keys 决定的 keyed subset。               |
+| `derive.keyed.filter(source, predicate)`                | 保留 source value 与 source-relative order 的 keyed filter。         |
+| `derive.keyed.filter(source, deps, predicate)`          | 使用标准 keyed dependency protocol 的 filter。                       |
+| `derive.keyed.compact(source, select, equality?)`       | map entry，并省略 selected value 为 `undefined` 的 key。             |
+| `derive.keyed.compact(source, deps, select, equality?)` | 使用标准 keyed dependencies 的 compact。                             |
 
 动态 keyed dependency 写法为
 `{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }`。
@@ -148,6 +155,10 @@ tree 的 lifecycle。同一个 definition 只能属于一个 scope，并且必�
 `ProjectionError` 只公开 `phase` 与 `cause`；
 `ProjectionDisposedError` 表达 disposed access。
 
+`filter` / `subset` 直接复用 source value，因此没有第二个 equality 参数。
+`compact` 用 `undefined` 表达 membership 缺失；普通 `derive.keyed` 仍保留所有 driver key，
+即使 selected value 本身为 `undefined`。
+
 External value source 提供 `kind: 'value'`、`current()`、`revision()`、`subscribe()`。
 External collection source 提供 `kind: 'collection'` 和 `get/has/ids` read，可给
 `CollectionImpact` invalidation hint；adapter 会导出精确 `CollectionChange`。
@@ -156,6 +167,10 @@ External collection source 提供 `kind: 'collection'` 和 `get/has/ids` read，
 
 只有 retained state、cross-key index 或直接 incremental patch 无法用
 `derive` / `derive.keyed` 清晰表达时才使用 advanced processor。
+
+`collectionChange.keys(change)` 按 added → updated → removed 遍历 incremental
+`CollectionChange` 的 entry-transition keys。它不解释 reset，也不会把 order change
+扩展成所有 keys；调用前由业务代码先处理 `reset`。
 
 所有 advanced API 都使用 named dependencies + closed definition object。
 
@@ -198,7 +213,7 @@ const view = incremental.group(
 拥有：重新创建已声明的 state，再执行 reset evaluation；stateless processor 走同一恢复
 路径但没有 state object。没有公开 rebuild token 或手工恢复协议。
 
-advanced 导出 value/collection/group 的 context/definition 类型、`CollectionChange`，
+advanced 导出 `collectionChange`、value/collection/group 的 context/definition 类型、`CollectionChange`，
 以及声明可移植性所需的 `IncrementalGroupOutput` / `IncrementalGroupResult` 类型边界。
 普通调用方通常只依赖推导；scheduler/output runtime plumbing 不属于公开 API。
 

@@ -340,18 +340,23 @@ ownership rules. `projection/input.ts` and `projection/observe.ts` build lazy so
 definitions; materialization and document Runtime lookup stay outside the definition
 base. The scheduler exposes narrow registration operations rather than mutable guard or
 cleanup collections.
-`derive.keyed` remains an ordinary processor producer. One keyed driver owns the
-output key domain and order. Driver entry changes reevaluate only those keys and
-the existing collection output equality removes equal selected values before
-publication. Dynamic keyed dependencies are declared with their source projection
-and a driver-entry-to-source-key mapping. The producer DAG therefore remains static;
-the materialized processor owns only the per-output-key bindings and their reverse
-index. Source entry changes use that reverse index to identify affected output keys,
-while ordinary scalar or whole-value dependencies invalidate the full driver key
-set. Missing source entries keep their binding so later membership adds invalidate
-the correct output keys. Reset, recovery, output sealing and disposal remain owned
-by the existing processor lifecycle; there is no join runtime, dependency event bus
-or processor-side imperative dependency-discovery protocol.
+The `derive.keyed` family remains ordinary processor producers over the same collection
+output spine. Plain `derive.keyed` preserves driver membership/order; `filter` and
+`compact` share one membership-transform kernel; `subset` derives membership/order from
+an explicit ordered-key projection or static key list; `keys` and `values` expose the
+standard ordered scalar read shapes. None introduces a second keyed handle or change
+protocol. Driver entry changes reevaluate only affected keys, and the existing
+collection output remains the sole owner of membership, order, per-entry equality,
+exact `CollectionChange`, reset publication and stable published references.
+Dynamic keyed dependencies are declared with their source projection and a
+driver-entry-to-source-key mapping. The producer DAG therefore remains static; the
+materialized processor owns only per-driver-key bindings and their reverse index.
+Source entry changes use that reverse index to identify affected driver keys, while
+ordinary scalar or whole-value dependencies invalidate the driver key set. Missing
+source entries keep their binding so later membership adds invalidate the correct keys.
+Reset, recovery, output sealing and disposal remain owned by the existing processor
+lifecycle; there is no join runtime, dependency event bus or processor-side imperative
+dependency-discovery protocol.
 `runtime.scope()` creates a local definition and subscription lifetime inside
 that same Runtime, not a child Runtime. `scope.own(...)` is the only scope-specific
 declaration capability: it assigns lifecycle ownership to one lazy projection definition

@@ -48,6 +48,32 @@ compares the previous and next selected value for one key. Equal results do not
 publish an `updated` transition. Added, removed and order transitions keep their
 normal `CollectionChange` meaning.
 
+Standard keyed structure reads stay in the same family:
+
+```ts
+const ids = derive.keyed.keys(records); // Projection<readonly RecordId[]>
+const all = derive.keyed.values(records); // Projection<readonly Record[]>
+```
+
+`keys` republishes only for add/remove/order/reset. A value-only update keeps its
+published array reference and revision. `values` follows formal keyed order and updates
+for entry or structural changes.
+
+Membership-changing keyed derives are also first-class:
+
+```ts
+const visible = derive.keyed.filter(fields, field => field.visible);
+const ordered = derive.keyed.subset(fields, visibleFieldIds);
+const content = derive.keyed.compact(cards, card => card.content);
+```
+
+`filter` preserves source values and source-relative order. `subset` uses
+`orderedKeys ∩ source.keys` with orderedKeys order; missing requested keys are latent
+and appear if the source later adds them, while duplicate ordered keys are invalid.
+`compact` treats selected `undefined` as absence and applies optional per-entry equality
+to present values. `filter` and `compact` reuse the normal named dependency and dynamic
+keyed lookup protocol.
+
 Dynamic keyed dependencies declare how one output key selects a key from another
 keyed projection:
 
@@ -227,6 +253,10 @@ type CollectionChange<K extends string, V> =
 consumers work with `Projection`, `KeyedProjection`, `CollectionInput` and immutable
 `ReadonlyMap` values.
 
+`collectionChange.keys(change)` accepts an incremental change and lazily yields added,
+updated and removed keys in that order. It does not interpret reset, does not expand an
+order change into all keys, and does not define business-level "touched" semantics.
+
 Initial materialization and source reset report `reset` to advanced processors.
 Incremental transitions are net changes across the settled batch.
 
@@ -237,7 +267,7 @@ It is not the projection change protocol.
 
 Import advanced processors from `doxum/advanced`. Use them only when retained state,
 cross-key indexes, or direct incremental patching cannot be expressed cleanly by
-`derive` / `derive.keyed`.
+`derive` / the `derive.keyed` family.
 
 All advanced processors take named dependencies plus a closed definition object.
 `process()` is required and synchronous. `state()` is optional and creates Runtime-owned
