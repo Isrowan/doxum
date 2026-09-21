@@ -105,7 +105,8 @@ lazy and materialized by one `createProjectionRuntime({ onError })` owner. When 
 keyed source determines output keys/order, map entries independently with
 `derive.keyed(entries, entry => entry.label)`. Dynamic keyed lookup stays in that
 same derivation through a named dependency object; plain Projection members are
-global dependencies and `{ source, key }` members are per-output-key lookups. The
+global dependencies, `{ source, key }` members are singular per-output-key lookups,
+and `{ source, keys }` members are ordered plural lookups. The
 selector receives `(entry, key, dependencies)`, while the Runtime owns the
 binding/reverse index and the producer DAG remains explicit. Use isolated
 `doxum/advanced` incremental entry points only for retained state, custom cross-key

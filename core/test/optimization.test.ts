@@ -11,6 +11,7 @@ import {
   observe,
   tree,
 } from '../src';
+import { incremental } from '../src/projection/advanced';
 import { measureProfile } from '../src/profile';
 
 describe('projection optimization boundaries', () => {
@@ -247,5 +248,85 @@ describe('projection optimization boundaries', () => {
     nativeRuntime.dispose();
     aggregateDocument.dispose();
     aggregateRuntime.dispose();
+  });
+
+  it('routes plural keyed invalidation in proportion to affected bindings', () => {
+    const count = 1_000;
+    const drivers = input.collection(
+      new Map(
+        Array.from({ length: count }, (_, index) => [
+          `driver-${index}`,
+          { sourceIds: [`source-${index}`] as readonly string[] },
+        ])
+      )
+    );
+    const sources = input.collection(
+      new Map(Array.from({ length: count }, (_, index) => [`source-${index}`, index]))
+    );
+    let deriveCalls = 0;
+    let incrementalCalls = 0;
+    const pure = derive.keyed(
+      drivers,
+      { sources: { source: sources, keys: driver => driver.sourceIds } },
+      (_driver, _key, dependencies) => {
+        deriveCalls++;
+        return [...dependencies.sources.values()][0];
+      }
+    );
+    const retained = incremental.keyed(
+      drivers,
+      { sources: { source: sources, keys: driver => driver.sourceIds } },
+      {
+        process: ({ dependencies }) => {
+          incrementalCalls++;
+          return [...dependencies.sources.values()][0];
+        },
+      }
+    );
+    const runtime = createProjectionRuntime();
+    runtime.read(pure);
+    runtime.read(retained);
+    deriveCalls = 0;
+    incrementalCalls = 0;
+
+    runtime.update(sources, draft => draft.set('source-500', 5_000));
+    expect(deriveCalls).toBe(1);
+    expect(incrementalCalls).toBe(1);
+    expect(runtime.read(pure).get('driver-500')).toBe(5_000);
+    expect(runtime.read(retained).get('driver-500')).toBe(5_000);
+    runtime.dispose();
+  });
+
+  it('fans one keyed item update only to that cached readable', () => {
+    const count = 1_000;
+    const rows = input.collection(
+      new Map(Array.from({ length: count }, (_, index) => [`row-${index}`, index]))
+    );
+    const runtime = createProjectionRuntime();
+    const items = runtime.items(rows);
+    const notifications = Array.from({ length: count }, () => 0);
+    for (let index = 0; index < count; index++)
+      items.get(`row-${index}`).subscribe(() => notifications[index]++);
+
+    runtime.update(rows, draft => draft.set('row-500', 5_000));
+    expect(notifications.reduce((sum, value) => sum + value, 0)).toBe(1);
+    expect(notifications[500]).toBe(1);
+    runtime.dispose();
+  });
+
+  it('reuses all unrelated entry tuples on a value-only keyed update', () => {
+    const count = 1_000;
+    const rows = input.collection(
+      new Map(Array.from({ length: count }, (_, index) => [`row-${index}`, { value: index }]))
+    );
+    const entries = derive.keyed.entries(rows);
+    const runtime = createProjectionRuntime();
+    const before = runtime.read(entries);
+    runtime.update(rows, draft => draft.set('row-500', { value: 5_000 }));
+    const after = runtime.read(entries);
+    for (let index = 0; index < count; index++)
+      if (index === 500) expect(after[index]).not.toBe(before[index]);
+      else expect(after[index]).toBe(before[index]);
+    runtime.dispose();
   });
 });

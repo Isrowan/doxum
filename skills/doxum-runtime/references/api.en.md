@@ -105,29 +105,38 @@ const rows = observe(document, path => path.rows);
 const count = derive({ rows }, ({ rows }) => rows.size);
 ```
 
-| API                                                     | Contract                                                            |
-| ------------------------------------------------------- | ------------------------------------------------------------------- |
-| `input(initial, equality?)`                             | Runtime-local writable scalar `Input<T>`.                           |
-| `input.collection<K,V>(initial?, equality?)`            | Runtime-local keyed `CollectionInput<K,V>` with per-entry equality. |
-| `observe(document)`                                     | Whole-document Projection source.                                   |
-| `observe(document, path => ...)`                        | Schema-path scalar or keyed Projection source.                      |
-| `observe(readable)`                                     | Adapt a Doxum `Readable`.                                           |
-| `observe(externalSource)`                               | Adapt exported external value/collection source contracts.          |
-| `derive(dependencies, compute, equality?)`              | Pure value Projection with named dependencies.                      |
-| `derive.keyed(driver, select, equality?)`               | Preserve driver keys/order and project each entry.                  |
-| `derive.keyed(driver, deps, select, equality?)`         | Keyed projection with named global/dynamic keyed dependencies.      |
-| `derive.keyed.keys(source)`                             | Ordered key array; value-only updates do not publish.               |
-| `derive.keyed.values(source)`                           | Ordered value array following keyed collection order.               |
-| `derive.keyed.subset(source, orderedKeys)`              | Keyed subset whose membership/order come from ordered keys.         |
-| `derive.keyed.filter(source, predicate)`                | Keyed subset preserving source values and source-relative order.    |
-| `derive.keyed.filter(source, deps, predicate)`          | Filter with the standard keyed dependency protocol.                 |
-| `derive.keyed.compact(source, select, equality?)`       | Map entries and omit keys whose selected value is `undefined`.      |
-| `derive.keyed.compact(source, deps, select, equality?)` | Compact with standard keyed dependencies.                           |
+| API                                                     | Contract                                                             |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| `input(initial, equality?)`                             | Runtime-local writable scalar `Input<T>`.                            |
+| `input.collection<K,V>(initial?, equality?)`            | Runtime-local keyed `CollectionInput<K,V>` with per-entry equality.  |
+| `observe(document)`                                     | Whole-document Projection source.                                    |
+| `observe(document, path => ...)`                        | Schema-path scalar or keyed Projection source.                       |
+| `observe(readable)`                                     | Adapt a Doxum `Readable`.                                            |
+| `observe(externalSource)`                               | Adapt exported external value/collection source contracts.           |
+| `derive(dependencies, compute, equality?)`              | Pure value Projection with named dependencies.                       |
+| `derive.keyed(driver, select, equality?)`               | Preserve driver keys/order and project each entry.                   |
+| `derive.keyed(driver, deps, select, equality?)`         | Keyed projection with named global/dynamic keyed dependencies.       |
+| `derive.keyed.keys(source)`                             | Ordered key array; value-only updates do not publish.                |
+| `derive.keyed.values(source)`                           | Ordered value array following keyed collection order.                |
+| `derive.keyed.entries(source)`                          | Ordered readonly `[key, value]` tuples with stable unchanged tuples. |
+| `derive.keyed.get(source, key, equality?)`              | Scalar lookup bound precisely to the selected keyed entry.           |
+| `derive.keyed.subset(source, orderedKeys)`              | Keyed subset whose membership/order come from ordered keys.          |
+| `derive.keyed.filter(source, predicate)`                | Keyed subset preserving source values and source-relative order.     |
+| `derive.keyed.filter(source, deps, predicate)`          | Filter with the standard keyed dependency protocol.                  |
+| `derive.keyed.compact(source, select, equality?)`       | Map entries and omit keys whose selected value is `undefined`.       |
+| `derive.keyed.compact(source, deps, select, equality?)` | Compact with standard keyed dependencies.                            |
+| `derive.keyed.groupBy(source, selector)`                | Reverse index from group key to source keys in formal source order.  |
+| `derive.keyed.groupBy(source, deps, selector)`          | Reverse index with the standard keyed dependency protocol.           |
+| `derive.keyed.singleton(source, keyOf, equality?)`      | Convert an optional scalar to a zero-or-one keyed projection.        |
 
 Dynamic keyed dependency syntax is
 `{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }`.
 The Runtime owns output-key to source-key bindings and reverse invalidation. This helper
 shape is inferred at the call site; no dedicated public helper type is required.
+Plural lookup uses
+`{ source: keyedProjection, keys: (driverValue, driverKey) => readonly sourceKey[] }`.
+The array must be duplicate-free and ordered. The dependency value is a readonly map of
+currently present selected entries in that order; missing selected keys remain bound.
 Keyed selectors keep stable leading arguments: `(value, key)` without extra dependencies
 and `(value, key, dependencies)` when the named dependency object is present.
 
@@ -135,6 +144,7 @@ and `(value, key, dependencies)` when the named dependency object is present.
 
 - `read(projection)`;
 - `select(projection)` and `select(projection, selector, equality?)`;
+- `items(keyedProjection)` for ordered keys plus stable per-membership item Readables;
 - `update(input, nextValue)` for scalar `Input<T>`;
 - `update(collectionInput, draft => ...)` for `CollectionInput<K,V>`;
 - `batch(run, { cause? }?)`;
@@ -146,8 +156,8 @@ state is installed. If either throws, the published collection and the next draf
 remain at the pre-update state.
 
 `CollectionInputDraft` exposes `get`, `has`, `set`, `remove`. A throwing edit callback
-applies none of that edit. `ProjectionScope` mirrors `read`, `select`, `update`, `batch`,
-`dispose` and adds `own(projectionOrTree)` for lifecycle ownership of scalar/keyed inputs,
+applies none of that edit. `ProjectionScope` mirrors `read`, `select`, `items`, `update`,
+`batch`, `dispose` and adds `own(projectionOrTree)` for lifecycle ownership of scalar/keyed inputs,
 derives and advanced output trees. One definition can belong to only one scope; call
 `own` before that definition is first materialized as a root.
 
@@ -192,6 +202,15 @@ const total = incremental(
 `next`, and borrowed `output` with `set`, `remove`, `order`. `state()` is declared only
 when retained state is needed; stateless process contexts do not contain `state`.
 
+`incremental.keyed(driver, dependencies, { process, state?, equality? })` preserves the
+driver's membership/order and owns independent retained state per current driver key.
+Ordinary dependencies invalidate all driver keys; singular/plural keyed dependencies use
+reverse routing. Order-only driver changes do not run `process`. Removal releases one
+key's state, re-add starts a new membership lifecycle, reset intersections retain state,
+and processor recovery recreates all per-key state. The process context contains `key`,
+`value`, named `dependencies`, `reset`, `cause`, and optional `state`; it returns only the
+value for its own output key and receives no collection draft.
+
 `incremental.group(dependencies, { output, process, state? })` declares several leaves:
 
 ```ts
@@ -218,7 +237,7 @@ Runtime owns recovery: it recreates declared state and runs a reset evaluation. 
 processors use the same recovery path without a state object. There is no public rebuild
 token or manual recovery protocol.
 
-Exported advanced APIs include `collectionChange`, the value/collection/group context
+Exported advanced APIs include `collectionChange`, the value/collection/keyed/group context
 and definition types, `CollectionChange`, and the declaration-safe `IncrementalGroupOutput` /
 `IncrementalGroupResult` type boundaries. Normal callers infer the latter two; internal
 scheduler/output plumbing is not part of the public contract.

@@ -40,8 +40,8 @@ implementation invariants that affect design and review decisions.
    reversible; remote commits invalidate history. Groups travel in one session.
 9. Projections declare producer sources and settle before listeners. The producer DAG
    remains static. `derive.keyed` declares extra sources in one named dependency object;
-   `{ source, key }` members may bind each output key to a key in an explicitly declared
-   keyed source. The materialized Runtime owns those bindings and reverse indexes,
+   `{ source, key }` members bind one source key and `{ source, keys }` members bind an
+   ordered duplicate-free set of source keys for each output key. The materialized Runtime owns those bindings and reverse indexes,
    including bindings to currently missing source entries. Processors do not create graph
    dependencies through imperative Runtime reads. A scope adds lifecycle ownership only
    through `scope.own`; scoped definitions may depend on root definitions, while root and

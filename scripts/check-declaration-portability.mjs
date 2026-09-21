@@ -24,6 +24,22 @@ const required = [
   ['keyed derive result', 'portableSelected: import("doxum").KeyedProjection<string, number>;'],
   ['keyed join result', 'portableJoined: import("doxum").KeyedProjection<string, string>;'],
   [
+    'plural keyed dependency result',
+    'portablePluralJoined: import("doxum").KeyedProjection<string, string | undefined>;',
+  ],
+  [
+    'driver-owned keyed value inference',
+    'portableFilteredValue: import("doxum").KeyedProjection<string, number>;',
+  ],
+  [
+    'keyed reverse index result',
+    'portableGrouped: import("doxum").KeyedProjection<string, readonly string[]>;',
+  ],
+  [
+    'incremental keyed result',
+    'portableIncrementalKeyed: import("doxum").KeyedProjection<string, string>;',
+  ],
+  [
     'group collection leaf',
     'portableGroupValues: import("doxum").KeyedProjection<string, number>;',
   ],

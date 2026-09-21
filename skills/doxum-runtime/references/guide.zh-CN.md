@@ -91,7 +91,8 @@ observerErrors 属于已提交结果。
 `createProjectionRuntime({ onError })` owner 物化和管理。当一个 keyed source 决定
 output key/order 时，用 `derive.keyed(entries, entry => entry.label)` 独立映射每个
 entry；跨 collection 的动态 key lookup 继续在同一个 derivation 中用命名依赖对象声明：
-普通 Projection 成员是全局依赖，`{ source, key }` 成员是逐 output key lookup，selector
+普通 Projection 成员是全局依赖，`{ source, key }` 是 singular lookup，`{ source, keys }`
+是有序 plural lookup，selector
 接收 `(entry, key, dependencies)`。Runtime 拥有 binding/reverse index，producer DAG
 仍保持显式。只有 `derive.keyed` 无法表达的 retained state、自定义跨 key index 或
 keyed patch 才放到隔离的 `doxum/advanced` incremental 入口。生命周期、draft、

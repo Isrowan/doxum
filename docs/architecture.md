@@ -334,26 +334,48 @@ Local root reset is reversible. Remote commits invalidate local history.
 Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
-`read`, `select`, overloaded `update`, `scope`, `batch` and `dispose`.
+`read`, `select`, `items`, overloaded `update`, `scope`, `batch` and `dispose`.
 `projection/definition.ts` contains only opaque references, producer descriptions and
 ownership rules. `projection/input.ts` and `projection/observe.ts` build lazy source
 definitions; materialization and document Runtime lookup stay outside the definition
 base. The scheduler exposes narrow registration operations rather than mutable guard or
 cleanup collections.
 The `derive.keyed` family remains ordinary processor producers over the same collection
-output spine. Plain `derive.keyed` preserves driver membership/order; `filter` and
-`compact` share one membership-transform kernel; `subset` derives membership/order from
-an explicit ordered-key projection or static key list; `keys` and `values` expose the
-standard ordered scalar read shapes. None introduces a second keyed handle or change
-protocol. Driver entry changes reevaluate only affected keys, and the existing
-collection output remains the sole owner of membership, order, per-entry equality,
-exact `CollectionChange`, reset publication and stable published references.
-Dynamic keyed dependencies are declared with their source projection and a
-driver-entry-to-source-key mapping. The producer DAG therefore remains static; the
-materialized processor owns only per-driver-key bindings and their reverse index.
-Source entry changes use that reverse index to identify affected driver keys, while
-ordinary scalar or whole-value dependencies invalidate the driver key set. Missing
-source entries keep their binding so later membership adds invalidate the correct keys.
+output spine. `projection/keyed/relation.ts` owns the Runtime-local domain-neutral
+many-to-many relation shared by keyed dependency routing and `groupBy` membership.
+`projection/keyed/dependency.ts` owns keyed
+dependency declaration validation/compilation, singular `{ source, key }` and plural
+`{ source, keys }` binding resolution, and reverse dirty routing. The producer DAG stays
+static; missing selected keys remain bound and source order-only changes do not invalidate
+lookup dependencies.
+
+`projection/keyed/transform.ts` owns the shared driver-keyed evaluation lifecycle:
+driver membership/order reconciliation, dirty-key planning, dependency routing and
+optional per-membership retained state. Plain `derive.keyed`, `filter`, `compact` and
+advanced `incremental.keyed` reuse that owner instead of maintaining parallel binding or
+dirty protocols. `incremental.keyed` specializes the transform to driver-preserving
+membership/order; removal drops per-key state, reset intersections retain it, and
+processor recovery recreates the transform-local state through the normal scheduler
+lifecycle.
+
+`projection/derive/keyed.ts` owns keyed algorithm semantics that are not generic runtime
+plumbing: ordered `keys` / `values` / `entries` snapshots, precise scalar `get`, `subset`,
+reverse-index `groupBy`, and scalar-to-keyed `singleton`. `groupBy` reuses the shared
+dependency runtime but owns its own grouping/order algorithm. None of these introduces a
+second keyed handle or publication protocol. `projection/output/collection.ts` remains
+the sole owner of published membership, order, per-entry equality, revision, exact
+`CollectionChange`, reset publication and stable collection references.
+
+`projection/readable/keyed.ts` owns the consumer-side `runtime.items` family. It consumes
+the exact published `CollectionChange` from one materialized collection output, fans one
+source subscription out to ordered keys and per-key Readables, and owns membership
+generation identity/eviction only. `ProjectionRuntime` / `ProjectionScope` own family
+registries and disposal. This cache is intentionally separate from producer-side keyed
+dependency routing and owns no canonical or derived collection state.
+`projection/readable/listeners.ts` owns projection-readable listener snapshot fan-out and
+error isolation, shared by selector Readables and keyed item Readables; the scheduler
+remains the single owner that reports those failures as projection listener errors.
+
 Reset, recovery, output sealing and disposal remain owned by the existing processor
 lifecycle; there is no join runtime, dependency event bus or processor-side imperative
 dependency-discovery protocol.

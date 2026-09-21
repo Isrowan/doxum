@@ -75,10 +75,14 @@ Standard keyed structure reads use the same family:
 ```ts
 const ids = derive.keyed.keys(records);
 const all = derive.keyed.values(records);
+const entries = derive.keyed.entries(records);
+const active = derive.keyed.get(records, activeRecordId);
 ```
 
 `keys` changes only for add/remove/order/reset and keeps its published array reference
-on value-only updates. `values` follows the keyed collection's formal order.
+on value-only updates. `values` and `entries` follow the keyed collection's formal order;
+`entries` reuses unchanged tuple references. `get` binds exactly to the selected key,
+including a currently missing key so a later add invalidates the scalar result.
 
 Membership-changing derives are first-class rather than application-side incremental
 collection patch loops:
@@ -87,6 +91,8 @@ collection patch loops:
 const visible = derive.keyed.filter(fields, field => field.visible);
 const ordered = derive.keyed.subset(fields, visibleFieldIds);
 const content = derive.keyed.compact(cards, card => card.content);
+const bySection = derive.keyed.groupBy(records, record => record.sectionId);
+const activeCollection = derive.keyed.singleton(activeRecord, record => record.id);
 ```
 
 `filter` preserves source values and source-relative order. `subset` uses
@@ -94,6 +100,8 @@ const content = derive.keyed.compact(cards, card => card.content);
 and duplicate ordered keys are invalid. `compact` treats selected `undefined` as output
 absence and uses optional per-entry equality for present values. `filter` and `compact`
 accept the same named global/dynamic keyed dependencies as ordinary `derive.keyed`.
+`groupBy` is the one-to-many reverse-index primitive and preserves source order inside
+each bucket; `singleton` converts an optional scalar to a zero-or-one keyed projection.
 
 Dynamic keyed lookups stay in the same API:
 
@@ -102,17 +110,22 @@ const cardContent = derive.keyed(
   items,
   {
     record: { source: records, key: item => item.recordId },
+    related: { source: records, keys: item => item.relatedRecordIds },
     view: activeView,
     fields: visibleFields,
   },
-  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
+  (item, itemId, { record, related, view, fields }) =>
+    renderCard(itemId, item, record, related, view, fields)
 );
 ```
 
 A plain Projection dependency invalidates the driver key set when it changes.
 `{ source, key }` declares an output-key → dynamic source-key dependency. The Runtime
 owns forward bindings and reverse invalidation. Missing selected entries remain bound,
-so adding that source key later invalidates its dependents.
+so adding that source key later invalidates its dependents. `{ source, keys }` binds one
+driver key to an ordered duplicate-free set of source keys and resolves to a readonly map
+of currently present selected entries. Source order-only changes do not invalidate keyed
+lookup dependencies.
 
 This is the keyed join protocol. Do not add a second join abstraction, wildcard
 document-path grammar, or processor-side imperative dependency discovery.
@@ -123,6 +136,8 @@ document-path grammar, or processor-side imperative dependency discovery.
 const value = runtime.read(visible);
 const selected = runtime.select(visible, rows => rows.get(rowId), equality);
 const stop = selected.subscribe(listener);
+const itemFamily = runtime.items(records);
+const record = itemFamily.get(rowId);
 
 runtime.update(filter, 'open');
 runtime.update(selection, draft => {
@@ -135,6 +150,12 @@ runtime.batch(run, { cause });
 
 `select` returns the standard `Readable`. Keyed selectors track relevant key/structure
 reads; equality filters the result only after a related invalidation.
+
+`runtime.items(keyedProjection)` returns one Runtime-owned keyed Readable family with
+ordered `keys` and `get(key)`. An item's Readable identity is stable for one published
+membership generation. Remove retires that generation; a later re-add creates a new
+identity. Subscribed missing items remain latent and can activate on a future add. The
+same API exists on `ProjectionScope` and follows that scope's disposal lifetime.
 
 `CollectionInputDraft` exposes `get`, `has`, `set`, `remove` and expires with the
 synchronous edit callback. A throwing callback applies none of that edit. Collection
@@ -223,6 +244,29 @@ const weights = incremental.collection(
 `values` and `changes` are keyed by dependency name. Scalar dependencies have no
 collection change metadata. Collection processors additionally expose keyed
 `previous`, `next`, and a borrowed `output` draft.
+
+For independent retained state per driver key, use `incremental.keyed`:
+
+```ts
+const totals = incremental.keyed(
+  sections,
+  { records: { source: records, keys: section => section.recordIds } },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ dependencies, state }) => {
+      state.runs++;
+      return [...dependencies.records.values()].reduce((sum, record) => sum + record.score, 0);
+    },
+  }
+);
+```
+
+The driver owns output membership/order. Ordinary dependencies invalidate every current
+driver key; singular/plural keyed dependencies reverse-route only affected keys. Order-only
+driver changes do not execute `process`. Remove releases that key's state, re-add creates
+a new membership lifecycle, reset intersections retain state, and processor recovery
+recreates all per-key state. The process returns only its own output value and does not
+receive a collection draft.
 
 Multi-output processors use one closed group definition:
 

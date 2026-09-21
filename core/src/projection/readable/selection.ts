@@ -6,6 +6,7 @@ import {
 } from '../collection/change';
 import type { CollectionChange } from '../contract';
 import type { Readable } from '../../readable';
+import { notifyProjectionListeners } from './listeners';
 
 export type ProjectionReadableSource<T> = {
   readonly kind: 'value' | 'collection';
@@ -182,7 +183,7 @@ export const createSelectorReadable = <T, R>(
       updateCollectionSnapshot();
       return;
     }
-    if (evaluate()) Array.from(listeners).forEach(listener => listener());
+    if (evaluate()) notifyProjectionListeners(listeners, 'Projection selector listeners failed.');
   };
 
   const installSource = () => {

@@ -116,16 +116,25 @@ const count = derive({ rows }, ({ rows }) => rows.size);
 | `derive.keyed(driver, deps, select, equality?)`         | 带 named global/dynamic keyed dependencies 的 keyed projection。     |
 | `derive.keyed.keys(source)`                             | 正式顺序的 key array；value-only update 不发布。                     |
 | `derive.keyed.values(source)`                           | 按 keyed collection 正式顺序排列的 value array。                     |
+| `derive.keyed.entries(source)`                          | 正式顺序的 readonly `[key, value]` tuple，未变化 tuple 保持引用。    |
+| `derive.keyed.get(source, key, equality?)`              | 精确绑定当前 selected key 的 scalar lookup。                         |
 | `derive.keyed.subset(source, orderedKeys)`              | membership/order 由 ordered keys 决定的 keyed subset。               |
 | `derive.keyed.filter(source, predicate)`                | 保留 source value 与 source-relative order 的 keyed filter。         |
 | `derive.keyed.filter(source, deps, predicate)`          | 使用标准 keyed dependency protocol 的 filter。                       |
 | `derive.keyed.compact(source, select, equality?)`       | map entry，并省略 selected value 为 `undefined` 的 key。             |
 | `derive.keyed.compact(source, deps, select, equality?)` | 使用标准 keyed dependencies 的 compact。                             |
+| `derive.keyed.groupBy(source, selector)`                | group key → source keys 的 reverse index，成员遵循 source 正式顺序。 |
+| `derive.keyed.groupBy(source, deps, selector)`          | 使用标准 keyed dependency protocol 的 reverse index。                |
+| `derive.keyed.singleton(source, keyOf, equality?)`      | optional scalar → 0/1 keyed projection。                             |
 
 动态 keyed dependency 写法为
 `{ source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }`。
 Runtime 拥有 output-key → source-key binding 和 reverse invalidation。这个 helper shape
 在调用点自动推断，不暴露独立 public helper type。
+plural lookup 使用
+`{ source: keyedProjection, keys: (driverValue, driverKey) => readonly sourceKey[] }`。
+返回数组必须有序且无重复；dependency value 是按该顺序包含当前存在 selected entry 的
+readonly map。缺失 key 仍保留 reverse binding，后续 add 会使 dependent driver key 失效。
 keyed selector 的前置参数固定：无额外 dependency 时为 `(value, key)`；存在 named
 dependency object 时为 `(value, key, dependencies)`。
 
@@ -133,6 +142,7 @@ dependency object 时为 `(value, key, dependencies)`。
 
 - `read(projection)`；
 - `select(projection)`、`select(projection, selector, equality?)`；
+- `items(keyedProjection)`：有序 keys + membership 生命周期稳定的逐 key Readable；
 - `update(input, nextValue)`：写 scalar `Input<T>`；
 - `update(collectionInput, draft => ...)`：写 `CollectionInput<K,V>`；
 - `batch(run, { cause? }?)`；
@@ -143,7 +153,7 @@ dependency object 时为 `(value, key, dependencies)`。
 任一环节抛错时，已发布 collection 与下一次 draft 都保持更新前状态。
 
 `CollectionInputDraft` 提供 `get`、`has`、`set`、`remove`。edit callback throw 时该次 edit
-整体不应用。`ProjectionScope` 镜像 `read`、`select`、`update`、`batch`、`dispose`，
+整体不应用。`ProjectionScope` 镜像 `read`、`select`、`items`、`update`、`batch`、`dispose`，
 并增加 `own(projectionOrTree)`，统一拥有 scalar/keyed input、derive 与 advanced output
 tree 的 lifecycle。同一个 definition 只能属于一个 scope，并且必须在该 definition
 首次作为 root materialize 之前调用 `own`。
@@ -188,6 +198,15 @@ const total = incremental(
 `previous`、`next` 和 borrowed `output`；output 有 `set`、`remove`、`order`。只有确实
 需要 retained state 时才声明 `state()`；无状态 process context 不包含 `state`。
 
+`incremental.keyed(driver, dependencies, { process, state?, equality? })` 保留 driver
+membership/order，并为每个当前 driver key 独立拥有 retained state。普通 dependency
+变化使所有当前 driver key 失效；singular/plural keyed dependency 通过 reverse routing
+只运行真正依赖的 key。driver 仅 order 变化不会执行 `process`。remove 释放该 key state，
+同 key re-add 进入新的 membership lifecycle；reset intersection 保留 state，processor
+fault recovery 会重建全部 per-key state。process context 包含 `key`、`value`、named
+`dependencies`、`reset`、`cause` 和可选 `state`，返回当前 output key 的值，不暴露
+collection draft。
+
 `incremental.group(dependencies, { output, process, state? })` 声明多个 leaf：
 
 ```ts
@@ -213,7 +232,7 @@ const view = incremental.group(
 拥有：重新创建已声明的 state，再执行 reset evaluation；stateless processor 走同一恢复
 路径但没有 state object。没有公开 rebuild token 或手工恢复协议。
 
-advanced 导出 `collectionChange`、value/collection/group 的 context/definition 类型、`CollectionChange`，
+advanced 导出 `collectionChange`、value/collection/keyed/group 的 context/definition 类型、`CollectionChange`，
 以及声明可移植性所需的 `IncrementalGroupOutput` / `IncrementalGroupResult` 类型边界。
 普通调用方通常只依赖推导；scheduler/output runtime plumbing 不属于公开 API。
 

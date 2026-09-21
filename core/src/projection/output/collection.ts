@@ -9,6 +9,7 @@ import type {
 } from '../contract';
 import {
   assertScope,
+  type OutputListener,
   type OutputRecord,
   type ProcessorRecord,
   type ProducerRecord,
@@ -118,7 +119,7 @@ export const createCollectionOutput = <K extends string, V>(
   let revision = 0;
   let explicitOrder: readonly K[] | undefined;
   let cleared = false;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<OutputListener>();
   const consumers = new Set<ProcessorRecord>();
 
   const hasNext = (key: K): boolean =>
@@ -286,7 +287,9 @@ export const createCollectionOutput = <K extends string, V>(
       initialized = true;
     },
     emit: call => {
-      Array.from(listeners).forEach(listener => call(listener));
+      Array.from(listeners).forEach(listener =>
+        call(listener, change as CollectionChange<string, unknown> | undefined)
+      );
     },
     hasConsumers: () => consumers.size > 0,
     forEachConsumer: run => consumers.forEach(run),

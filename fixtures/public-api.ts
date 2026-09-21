@@ -12,6 +12,7 @@ import {
   snapshot,
   type Infer,
   type KeyedProjection,
+  type ProjectionItems,
   type Projection,
 } from 'doxum';
 // @ts-expect-error processor-facing CollectionChange is intentionally not a root export
@@ -83,10 +84,26 @@ const labels = derive.keyed(
 );
 const rowKeys = derive.keyed.keys(rows);
 const rowValues = derive.keyed.values(rows);
+const rowEntries = derive.keyed.entries(rows);
+const activeRowId = input<string | undefined>('a');
+const activeRow = derive.keyed.get(rows, activeRowId);
 const positiveRows = derive.keyed.filter(rows, row => row.value > 0);
 const selectedRows = derive.keyed.subset(rows, rowKeys);
 const optionalLabels = derive.keyed.compact(rows, row =>
   row.value > 0 ? row.entityId : undefined
+);
+const rowsByEntity = derive.keyed.groupBy(rows, row => row.entityId);
+const optionalRow = input<{ readonly id: string; readonly value: number } | undefined>(undefined);
+const singletonRow = derive.keyed.singleton(optionalRow, row => row.id);
+const pluralLabels = derive.keyed(
+  rows,
+  {
+    entities: {
+      source: entities,
+      keys: (row: { readonly entityId: string }) => [row.entityId],
+    },
+  },
+  (row, _rowId, dependencies) => dependencies.entities.get(row.entityId)?.label
 );
 const count = derive({ rows }, ({ rows }) => rows.size);
 const group = incremental.group(
@@ -100,6 +117,22 @@ const group = incremental.group(
       output.count.set(values.rows.size);
       for (const [key, row] of values.rows) output.values.set(key, row.value);
       output.values.order([...values.rows.keys()]);
+    },
+  }
+);
+const statefulRows = incremental.keyed(
+  rows,
+  {
+    entities: {
+      source: entities,
+      keys: (row: { readonly entityId: string }) => [row.entityId],
+    },
+  },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ value, dependencies, state }) => {
+      state.runs++;
+      return `${state.runs}:${dependencies.entities.get(value.entityId)?.label ?? ''}`;
     },
   }
 );
@@ -118,10 +151,20 @@ runtime.read(count);
 runtime.read(labels);
 runtime.read(rowKeys);
 runtime.read(rowValues);
+runtime.read(rowEntries);
+runtime.read(activeRow);
 runtime.read(positiveRows);
 runtime.read(selectedRows);
 runtime.read(optionalLabels);
+runtime.read(rowsByEntity);
+runtime.read(singletonRow);
+runtime.read(pluralLabels);
+runtime.read(statefulRows);
 runtime.read(group.count);
+const rowItems: ProjectionItems<string, { readonly value: number; readonly entityId: string }> =
+  runtime.items(rows);
+void rowItems.keys.current();
+void rowItems.get('a').current();
 runtime.update(mode, 'full');
 runtime.update(entities, draft => draft.set('e3', { label: 'Three' }));
 runtime.batch(() => runtime.update(mode, 'compact'), { cause: 'fixture' });
@@ -132,6 +175,7 @@ runtime.get(count);
 const scope = runtime.scope();
 const scoped = scope.own(derive({ count }, ({ count }) => count + 1));
 scope.read(scoped);
+void scope.items(rows).get('a').current();
 // @ts-expect-error scopes own definitions but do not copy derive factories
 scope.derive({ count }, ({ count }: { count: number }) => count);
 scope.dispose();
@@ -152,6 +196,13 @@ void (undefined as unknown as RootCollectionChange<string, number>);
 void keyedRows;
 void keyedLabels;
 void keyedGroupValues;
+void rowEntries;
+void activeRow;
+void rowsByEntity;
+void singletonRow;
+void pluralLabels;
+void statefulRows;
+void rowItems;
 void portableGroupResult;
 void ProjectionProvider;
 void useDocumentSelector;

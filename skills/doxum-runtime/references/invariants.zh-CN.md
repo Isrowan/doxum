@@ -31,8 +31,8 @@
 8. apply 要求 expectedRevision，记录本地真实旧状态。本地 reset 可撤销，
    remote commit 使 history 失效；group 在单个 session 中旅行。
 9. projection 显式声明 producer source，先于监听结算，producer DAG 保持静态。
-   `derive.keyed` 用一个命名依赖对象声明额外 source；其中 `{ source, key }` 成员可以
-   把每个 output key 绑定到已显式声明 keyed source 的某个 key。物化后的 Runtime
+   `derive.keyed` 用一个命名依赖对象声明额外 source；`{ source, key }` 为每个 output key
+   绑定一个 source key，`{ source, keys }` 绑定有序且无重复的 source-key 集合。物化后的 Runtime
    拥有这些 binding 和 reverse index，包括当前尚不存在的 source entry。processor
    不通过 imperative Runtime read 创建图依赖。scope 只通过 `scope.own` 增加 lifecycle
    ownership；scoped definition 可以依赖 root definition，root 与 sibling scope 不能依赖

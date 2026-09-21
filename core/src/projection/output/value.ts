@@ -2,6 +2,7 @@ import { profile } from '../../profile';
 import type { ValueContext } from '../contract';
 import {
   assertScope,
+  type OutputListener,
   type OutputRecord,
   type ProcessorRecord,
   type ProducerRecord,
@@ -36,7 +37,7 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
   let revision = 0;
   let changed = false;
   let reset = false;
-  const listeners = new Set<() => void>();
+  const listeners = new Set<OutputListener>();
   const consumers = new Set<ProcessorRecord>();
 
   const begin = (active: () => boolean, initialize: boolean): ValueOutputEvaluation<T> => {
@@ -106,7 +107,7 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
     },
     emit: call => {
       profile.materialized.notification();
-      Array.from(listeners).forEach(listener => call(listener));
+      Array.from(listeners).forEach(listener => call(listener, undefined));
     },
     hasConsumers: () => consumers.size > 0,
     forEachConsumer: run => consumers.forEach(run),

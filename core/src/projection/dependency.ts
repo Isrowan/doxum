@@ -8,6 +8,29 @@ export type CompiledProjectionDependencies = {
   readonly projections: readonly Projection<unknown>[];
 };
 
+export type NamedDependencyEntry = {
+  readonly name: string;
+  readonly value: unknown;
+};
+
+/** Owns validation of the shared named dependency object shape. */
+export const readNamedDependencyEntries = (
+  dependencies: unknown,
+  label: string
+): readonly NamedDependencyEntry[] => {
+  if (!isPlainObject(dependencies) || isProjection(dependencies))
+    throw new TypeError(`${label} dependencies must be a plain object.`);
+  const entries: NamedDependencyEntry[] = [];
+  for (const name of Reflect.ownKeys(dependencies)) {
+    if (typeof name !== 'string') throw new TypeError(`${label} dependency names must be strings.`);
+    const descriptor = Object.getOwnPropertyDescriptor(dependencies, name);
+    if (!descriptor?.enumerable || !('value' in descriptor))
+      throw new TypeError(`${label} dependencies must be enumerable data properties.`);
+    entries.push(Object.freeze({ name, value: descriptor.value }));
+  }
+  return Object.freeze(entries);
+};
+
 /** Creates the durable dependency value exposed to pure derive callbacks. */
 export const snapshotDependencyValue = (source: SourceContext): unknown =>
   source.kind === 'value' ? source.value : snapshotCollectionView(source.read);
@@ -17,18 +40,12 @@ export const compileProjectionDependencies = (
   dependencies: unknown,
   label: string
 ): CompiledProjectionDependencies => {
-  if (!isPlainObject(dependencies) || isProjection(dependencies))
-    throw new TypeError(`${label} dependencies must be a plain object.`);
   const names: string[] = [];
   const projections: Projection<unknown>[] = [];
-  for (const key of Reflect.ownKeys(dependencies)) {
-    if (typeof key !== 'string') throw new TypeError(`${label} dependency names must be strings.`);
-    const descriptor = Object.getOwnPropertyDescriptor(dependencies, key);
-    if (!descriptor?.enumerable || !('value' in descriptor))
-      throw new TypeError(`${label} dependencies must be enumerable data properties.`);
-    const projection = descriptor.value as Projection<unknown>;
+  for (const { name, value } of readNamedDependencyEntries(dependencies, label)) {
+    const projection = value as Projection<unknown>;
     projectionRef(projection);
-    names.push(key);
+    names.push(name);
     projections.push(projection);
   }
   return Object.freeze({

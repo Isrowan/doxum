@@ -276,8 +276,8 @@ runtime.dispose();
 
 The stable vocabulary is `read` for a synchronous current value, `select` for a
 `Readable`, and `observe` for declaring a lazy source boundary. `ProjectionRuntime`
-exposes `read`, `select`, `update`, `batch`, `scope` and `dispose`.
-`ProjectionScope` mirrors `read`, `select`, `update`, `batch` and `dispose`, plus
+exposes `read`, `select`, `items`, `update`, `batch`, `scope` and `dispose`.
+`ProjectionScope` mirrors `read`, `select`, `items`, `update`, `batch` and `dispose`, plus
 `own(definitionOrTree)` for lifecycle ownership of lazy projection definitions.
 
 ### Keyed projection
@@ -298,18 +298,30 @@ The same family covers standard keyed structure reads and membership-changing de
 ```ts
 const ids = derive.keyed.keys(records);
 const all = derive.keyed.values(records);
+const entries = derive.keyed.entries(records);
+const active = derive.keyed.get(records, activeRecordId);
 const visible = derive.keyed.filter(records, record => record.visible);
 const orderedVisible = derive.keyed.subset(records, visibleIds);
 const definedContent = derive.keyed.compact(records, record => record.content);
+const recordsBySection = derive.keyed.groupBy(records, record => record.sectionId);
+const activeAsCollection = derive.keyed.singleton(activeRecord, record => record.id);
 ```
 
 `keys` publishes only for membership/order/reset changes; value-only updates keep the
-same array reference and revision. `values` follows the formal keyed order. `subset`
+same array reference and revision. `values` and `entries` follow the formal keyed order;
+`entries` publishes readonly `[key, value]` tuples and reuses unchanged tuple references.
+`get` is a scalar dynamic lookup: it depends only on the selected key, keeps a missing
+key bound for later adds, and accepts optional result equality. `subset`
 uses the supplied ordered keys as both membership selection and output order, ignoring
 currently missing source keys until they appear. `filter` preserves source values and
 source-relative order. `compact` omits keys whose selected value is `undefined` and
 uses its optional equality for present values. `filter` and `compact` support the same
 named global/dynamic keyed dependency object as ordinary `derive.keyed`.
+
+`groupBy` is the general reverse-index primitive. A source entry may return one group
+key or several; each output bucket contains source keys in the source's formal order,
+and group order follows first appearance in that same order. `singleton` converts an
+optional scalar projection into a zero-or-one keyed projection.
 
 All keyed projection producers use the public `KeyedProjection<K,V>` handle, including
 collection `observe`, `derive.keyed`, `incremental.collection`, and collection leaves
@@ -337,6 +349,30 @@ and reverse invalidation. A missing source entry resolves to `undefined` but rem
 bound, so adding it later invalidates the dependent output keys. An ordinary projection
 dependency invalidates the driver key set when its value changes. Processor code never
 performs imperative Runtime reads to discover dependencies.
+
+Use `{ source, keys }` when one driver key depends on several keys from another keyed
+projection. The callback returns a duplicate-free ordered key array; the dependency
+value is a readonly map containing the currently present selected entries in that order.
+Source-key changes invalidate only the driver keys reverse-bound to that key.
+
+### Keyed Readables
+
+Use `runtime.items(projection)` when a consumer needs stable per-key `Readable`
+identities instead of a whole-collection selector:
+
+```ts
+const recordItems = runtime.items(records);
+const orderedIds = recordItems.keys;
+const record = recordItems.get(recordId); // Readable<Record | undefined>
+```
+
+One family is cached per Runtime/scope lifetime and materialized keyed output. `keys`
+publishes only for membership/order changes. While a key remains a published member,
+`get(key)` returns the same Readable identity and value-only updates notify only that
+item. Removal publishes `undefined` to that generation and retires it; adding the same
+key later creates a new generation. A subscribed missing item stays latent and activates
+if the key is later added. Runtime batches follow the net published membership, so a
+remove/add collapsed to an update does not create a false lifecycle break.
 
 ### Runtime-local keyed state
 
@@ -432,8 +468,35 @@ const doubled = incremental.collection(
 );
 ```
 
+For retained state that belongs independently to each driver key, use
+`incremental.keyed`:
+
+```ts
+const sectionTotals = incremental.keyed(
+  sections,
+  {
+    records: { source: records, keys: section => section.recordIds },
+  },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ value, dependencies, state }) => {
+      state.runs++;
+      return [...dependencies.records.values()].reduce((sum, record) => sum + record.score, 0);
+    },
+  }
+);
+```
+
+The driver exclusively owns output membership/order. Each membership owns its retained
+state; removing a key releases that state and a later re-add starts a new membership
+lifecycle. Scalar dependencies invalidate all current driver keys, while singular or
+plural keyed dependencies use reverse routing to run only affected keys. The processor
+returns only its own output value and does not receive a collection draft.
+
 `incremental(...)` produces one scalar value projection.
 `incremental.collection(...)` exposes keyed `previous`, `next` and `output`.
+`incremental.keyed(...)` preserves one driver's keys/order with independent per-key
+retained state and precise dynamic keyed invalidation.
 `incremental.group(...)` runs one processor for several atomic output leaves:
 
 ```ts

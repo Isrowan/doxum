@@ -33,8 +33,22 @@ export const portableEntities = input.collection<string, { readonly label: strin
 export const portableSelected = derive.keyed(portableRows, row => row.value);
 export const portableKeys = derive.keyed.keys(portableRows);
 export const portableValues = derive.keyed.values(portableRows);
+export const portableEntries = derive.keyed.entries(portableRows);
+export const portableActiveKey = input<string | undefined>('row-a');
+export const portableActiveRow = derive.keyed.get(portableRows, portableActiveKey);
 export const portableSubset = derive.keyed.subset(portableRows, ['row-a', 'row-b'] as const);
 export const portableFiltered = derive.keyed.filter(portableRows, row => row.value > 0);
+export const portableFilteredWithDependency = derive.keyed.filter(
+  portableRows,
+  {
+    entity: {
+      source: portableEntities,
+      key: (row: { readonly entityId: string }) => row.entityId,
+    },
+  },
+  (row, _rowId, dependencies) => row.value > 0 && dependencies.entity !== undefined
+);
+export const portableFilteredValue = derive.keyed(portableFilteredWithDependency, row => row.value);
 export const portableCompacted = derive.keyed.compact(portableRows, row =>
   row.value > 0 ? row.value : undefined
 );
@@ -48,12 +62,43 @@ export const portableJoined = derive.keyed(
   },
   (row, _rowId, dependencies) => `${dependencies.entity?.label ?? ''}:${row.value}`
 );
+export const portablePluralJoined = derive.keyed(
+  portableRows,
+  {
+    entities: {
+      source: portableEntities,
+      keys: (row: { readonly entityId: string }) => [row.entityId],
+    },
+  },
+  (row, _rowId, dependencies) => dependencies.entities.get(row.entityId)?.label
+);
+export const portableGrouped = derive.keyed.groupBy(portableRows, row => row.entityId);
+export const portableOptional = input<{ readonly id: string; readonly value: number } | undefined>(
+  undefined
+);
+export const portableSingleton = derive.keyed.singleton(portableOptional, value => value.id);
 
 export const portableIncrementalCollection = incremental.collection(
   { rows: portableRows },
   {
     process: ({ values, output }) => {
       for (const [key, row] of values.rows) output.set(key, row.value);
+    },
+  }
+);
+export const portableIncrementalKeyed = incremental.keyed(
+  portableRows,
+  {
+    entity: {
+      source: portableEntities,
+      key: (row: { readonly entityId: string }) => row.entityId,
+    },
+  },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ value, dependencies, state }) => {
+      state.runs++;
+      return `${state.runs}:${dependencies.entity?.label ?? ''}:${value.value}`;
     },
   }
 );

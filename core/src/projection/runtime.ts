@@ -10,6 +10,7 @@ import {
   type CollectionInput,
   type CollectionInputDraft,
   type Input,
+  type KeyedProjection,
   type ProducerDefinition,
   type Projection,
 } from './definition';
@@ -25,6 +26,11 @@ import type { Readable } from '../readable';
 import { createScheduler, type OutputRecord, type ProducerRecord } from './graph/scheduler';
 import { createSourceRegistry } from './source/registry';
 import type { SourceWrite } from './source/boundary';
+import {
+  createProjectionItems,
+  type ProjectionItems,
+  type ProjectionItemsController,
+} from './readable/keyed';
 
 export type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;
@@ -34,6 +40,7 @@ export type ProjectionRuntime = {
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
+  items<K extends string, V>(projection: KeyedProjection<K, V>): ProjectionItems<K, V>;
   update<T>(input: Input<T>, value: T): void;
   update<K extends string, V>(
     input: CollectionInput<K, V>,
@@ -58,6 +65,7 @@ export type ProjectionScope = {
     selector: (value: T) => R,
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
+  items<K extends string, V>(projection: KeyedProjection<K, V>): ProjectionItems<K, V>;
   update<T>(input: Input<T>, value: T): void;
   update<K extends string, V>(
     input: CollectionInput<K, V>,
@@ -77,6 +85,7 @@ type ScopeState = {
   active: boolean;
   readonly materialized: ProducerDefinition[];
   readonly subscriptions: Set<Unsubscribe>;
+  readonly items: Map<OutputRecord, ProjectionItemsController<string, unknown>>;
 };
 
 export const createProjectionRuntime = (options?: {
@@ -90,6 +99,40 @@ export const createProjectionRuntime = (options?: {
     { readonly revision: number; readonly value: ReadonlyMap<string, unknown> }
   >();
   const scopes = new Set<ScopeState>();
+  const rootItems = new Map<OutputRecord, ProjectionItemsController<string, unknown>>();
+
+  const disposeItemControllers = (
+    registry: Map<OutputRecord, ProjectionItemsController<string, unknown>>,
+    failures: unknown[]
+  ): void => {
+    const controllers = [...registry.values()];
+    registry.clear();
+    for (const controller of controllers) {
+      try {
+        controller.dispose();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  };
+
+  const disposeScopeConsumers = (state: ScopeState, failures: unknown[]): void => {
+    disposeItemControllers(state.items, failures);
+    const subscriptions = [...state.subscriptions];
+    state.subscriptions.clear();
+    for (const unsubscribe of subscriptions) {
+      try {
+        unsubscribe();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  };
+
+  const throwCleanupFailures = (failures: readonly unknown[], message: string): void => {
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, message);
+  };
 
   const assertAccess = (definition: ProducerDefinition, requester?: ScopeState): void => {
     scheduler.assertActive();
@@ -198,6 +241,27 @@ export const createProjectionRuntime = (options?: {
     });
   };
 
+  const projectionItems = <K extends string, V>(
+    projection: KeyedProjection<K, V>,
+    requester?: ScopeState
+  ): ProjectionItems<K, V> => {
+    const output = resolveOutput(projection as Projection<unknown>, requester);
+    if (output.kind !== 'collection')
+      throw new TypeError('Projection items require a keyed collection projection.');
+    const registry = requester?.items ?? rootItems;
+    const existing = registry.get(output);
+    if (existing) return existing.items as ProjectionItems<K, V>;
+    const controller = createProjectionItems(
+      readableSource(projection as Projection<ReadonlyMap<K, V>>, requester),
+      () => {
+        if (requester && !requester.active) throw new ProjectionDisposedError();
+        assertOutput(output);
+      }
+    );
+    registry.set(output, controller as unknown as ProjectionItemsController<string, unknown>);
+    return controller.items;
+  };
+
   const makeReadable = <T, R>(
     projection: Projection<T>,
     selector?: (value: T) => R,
@@ -270,15 +334,7 @@ export const createProjectionRuntime = (options?: {
     scheduler.assertIdle();
     state.active = false;
     const failures: unknown[] = [];
-    const subscriptions = [...state.subscriptions];
-    state.subscriptions.clear();
-    for (const unsubscribe of subscriptions) {
-      try {
-        unsubscribe();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
+    disposeScopeConsumers(state, failures);
     for (let index = state.materialized.length - 1; index >= 0; index--) {
       const definition = state.materialized[index];
       const current = materialized.get(definition);
@@ -293,7 +349,7 @@ export const createProjectionRuntime = (options?: {
     }
     state.materialized.length = 0;
     scopes.delete(state);
-    if (failures.length) throw failures[0];
+    throwCleanupFailures(failures, 'Projection scope cleanup failed.');
   };
 
   const createScope = (): ProjectionScope => {
@@ -302,6 +358,7 @@ export const createProjectionRuntime = (options?: {
       active: true,
       materialized: [],
       subscriptions: new Set(),
+      items: new Map(),
     };
     scopes.add(state);
 
@@ -400,6 +457,10 @@ export const createProjectionRuntime = (options?: {
         return readProjection(projection, state);
       },
       select: scopeSelect,
+      items: <K extends string, V>(projection: KeyedProjection<K, V>) => {
+        assertActive();
+        return projectionItems(projection, state);
+      },
       update: scopeUpdate,
       batch: scopeBatch,
       dispose: () => disposeScope(state),
@@ -409,6 +470,7 @@ export const createProjectionRuntime = (options?: {
   return Object.freeze({
     read: readProjection,
     select: selectProjection,
+    items: projectionItems,
     update,
     batch,
     scope: createScope,
@@ -418,18 +480,11 @@ export const createProjectionRuntime = (options?: {
       const failures: unknown[] = [];
       for (const scope of scopes) {
         scope.active = false;
-        const subscriptions = [...scope.subscriptions];
-        scope.subscriptions.clear();
-        for (const unsubscribe of subscriptions) {
-          try {
-            unsubscribe();
-          } catch (error) {
-            failures.push(error);
-          }
-        }
+        disposeScopeConsumers(scope, failures);
         scope.materialized.length = 0;
       }
       scopes.clear();
+      disposeItemControllers(rootItems, failures);
       try {
         sources.dispose();
       } catch (error) {
@@ -440,8 +495,7 @@ export const createProjectionRuntime = (options?: {
       } catch (error) {
         failures.push(error);
       }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length) throw new AggregateError(failures, 'Projection cleanup failed.');
+      throwCleanupFailures(failures, 'Projection cleanup failed.');
     },
   });
 };

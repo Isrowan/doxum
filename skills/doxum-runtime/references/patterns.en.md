@@ -122,7 +122,7 @@ runtime.update(selection, draft => draft.set(rowId, true));
 ```
 
 Use named-object `derive` for aggregate values. Use `derive.keyed` when one keyed
-driver owns output keys/order. Its named dependency form handles dynamic keyed lookups;
+driver owns output keys/order. Its named dependency form handles singular/plural dynamic keyed lookups;
 the Runtime owns the binding/reverse index. Use `input.collection` for Runtime-local
 keyed UI/application state rather than canonical document state.
 

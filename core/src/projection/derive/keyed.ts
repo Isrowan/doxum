@@ -1,104 +1,27 @@
 import type { Synchronous } from '../../runtime/contract';
-import { isPlainObject } from '../../value/record';
 import { collectionChange, collectionHasStructuralChange } from '../collection/change';
 import type { SourceContext } from '../contract';
-import { snapshotDependencyValue } from '../dependency';
 import {
   defineProcessor,
   isProjection,
-  outputDefinitionOf,
   type KeyedProjection,
+  type OutputEvaluation,
   type Projection,
 } from '../definition';
 import { assertSynchronous } from '../graph/scheduler';
+import {
+  assertKeyedProjection,
+  compileKeyedDependencies,
+  createKeyedDependencyRuntime,
+  outputKind,
+  type KeyedDependencies as KeyedDeriveDependencies,
+  type KeyedDependencyRecord as KeyedDeriveDependencyRecord,
+  type KeyedDependencyValues,
+} from '../keyed/dependency';
+import { createKeyedTransform, keyedAbsent } from '../keyed/transform';
+import { createKeyRelation } from '../keyed/relation';
 
 type Equality<T> = (previous: T, next: T) => boolean;
-
-/** A declared dynamic lookup from one driver entry to one key in another keyed projection. */
-type KeyedDependency<
-  DriverKey extends string,
-  DriverValue,
-  SourceKey extends string = string,
-  SourceValue = unknown,
-> = {
-  readonly source: KeyedProjection<SourceKey, SourceValue>;
-  readonly key: (value: DriverValue, key: DriverKey) => Synchronous<SourceKey | undefined>;
-};
-
-type KeyedDeriveDependency<K extends string, V> =
-  | (Projection<unknown> & { readonly source?: never; readonly key?: never })
-  | KeyedDependency<K, V, string, unknown>;
-
-type KeyedDeriveDependencyRecord<K extends string, V> = Readonly<
-  Record<string, KeyedDeriveDependency<K, V>>
->;
-
-type KeyedDeriveDependencies<K extends string, V, D extends object> = {
-  readonly [P in keyof D]: P extends string ? KeyedDeriveDependency<K, V> : never;
-};
-
-type KeyedDependencyValues<D extends Readonly<Record<string, unknown>>> = {
-  readonly [P in keyof D]: D[P] extends {
-    readonly source: KeyedProjection<infer _K extends string, infer V>;
-  }
-    ? V | undefined
-    : D[P] extends Projection<infer T>
-      ? T
-      : never;
-};
-
-type RuntimeKeyedDependency = {
-  readonly source: Projection<unknown>;
-  readonly key: (value: unknown, key: string) => unknown;
-};
-
-type BindingIndex = {
-  readonly forward: Map<string, string>;
-  readonly reverse: Map<string, Set<string>>;
-};
-
-const outputKind = (projection: Projection<unknown>): 'value' | 'collection' => {
-  return outputDefinitionOf(projection).kind;
-};
-
-const assertKeyedProjection = (projection: Projection<unknown>, role: string): void => {
-  if (outputKind(projection) !== 'collection')
-    throw new TypeError(`${role} must be a keyed collection projection.`);
-};
-
-const isKeyedDependency = (value: unknown): value is RuntimeKeyedDependency => {
-  if (!value || typeof value !== 'object' || isProjection(value)) return false;
-  const candidate = value as { readonly source?: unknown; readonly key?: unknown };
-  return isProjection(candidate.source) && typeof candidate.key === 'function';
-};
-
-const bindKey = (index: BindingIndex, outputKey: string, sourceKey: string | undefined): void => {
-  const previous = index.forward.get(outputKey);
-  if (previous === sourceKey) return;
-  if (previous !== undefined) {
-    const dependents = index.reverse.get(previous);
-    dependents?.delete(outputKey);
-    if (dependents?.size === 0) index.reverse.delete(previous);
-    index.forward.delete(outputKey);
-  }
-  if (sourceKey === undefined) return;
-  index.forward.set(outputKey, sourceKey);
-  const dependents = index.reverse.get(sourceKey);
-  if (dependents) dependents.add(outputKey);
-  else index.reverse.set(sourceKey, new Set([outputKey]));
-};
-
-const unbindKey = (indexes: readonly (BindingIndex | undefined)[], outputKey: string): void => {
-  for (const index of indexes) if (index) bindKey(index, outputKey, undefined);
-};
-
-const createBindingIndex = (): BindingIndex => ({ forward: new Map(), reverse: new Map() });
-const emptyKeyedDependencies: Readonly<Record<string, unknown>> = Object.freeze(
-  Object.create(null) as Record<string, unknown>
-);
-
-const absent = Symbol('keyed-transform-absent');
-type KeyedTransformResult<T> = T | typeof absent;
 
 const compileOrderedKeys = <K extends string>(
   value: unknown,
@@ -114,203 +37,19 @@ const compileOrderedKeys = <K extends string>(
   return { keys: value as readonly K[], requested: seen };
 };
 
-const createKeyedTransform = <K extends string, V, T>(
-  source: KeyedProjection<K, V>,
-  dependencySpecs: KeyedDeriveDependencyRecord<K, V> | undefined,
-  select: (
-    value: V,
-    key: K,
-    dependencies: Readonly<Record<string, unknown>>
-  ) => Synchronous<KeyedTransformResult<T>>,
-  equality: Equality<T> | undefined,
-  name: string
-): KeyedProjection<K, T> => {
-  assertKeyedProjection(source, 'Keyed derive source');
-
-  const dependencies: Projection<unknown>[] = [source];
-  const dependencyNames: string[] = [];
-  const keyed: Array<RuntimeKeyedDependency | undefined> = [];
-  if (dependencySpecs !== undefined) {
-    if (!isPlainObject(dependencySpecs) || isProjection(dependencySpecs))
-      throw new TypeError('Keyed derive dependencies must be a plain object.');
-    for (const name of Reflect.ownKeys(dependencySpecs)) {
-      if (typeof name !== 'string')
-        throw new TypeError('Keyed derive dependency names must be strings.');
-      const descriptor = Object.getOwnPropertyDescriptor(dependencySpecs, name);
-      if (!descriptor?.enumerable || !('value' in descriptor))
-        throw new TypeError('Keyed derive dependencies must be enumerable data properties.');
-      const dependency = descriptor.value as KeyedDeriveDependency<K, V>;
-      dependencyNames.push(name);
-      if (isProjection(dependency)) {
-        dependencies.push(dependency);
-        keyed.push(undefined);
-        continue;
-      }
-      if (!isKeyedDependency(dependency))
-        throw new TypeError('Keyed derive dependencies must be projections or keyed lookups.');
-      assertKeyedProjection(dependency.source, 'Dynamic keyed dependency source');
-      dependencies.push(dependency.source);
-      keyed.push(dependency);
-    }
-  }
-
-  const [projection] = defineProcessor({
-    dependencies,
-    outputs: [{ kind: 'collection', equality: (equality ?? Object.is) as Equality<unknown> }],
-    create: () => {
-      const bindings = keyed.map(dependency => (dependency ? createBindingIndex() : undefined));
-      const globalValues: unknown[] = keyed.map(() => undefined);
-      const revisions: number[] = [];
-
-      const clearBindings = (): void => {
-        for (const index of bindings) {
-          index?.forward.clear();
-          index?.reverse.clear();
-        }
-      };
-      const rememberRevisions = (sources: readonly SourceContext[]): void => {
-        revisions.length = sources.length;
-        for (let index = 0; index < sources.length; index++)
-          revisions[index] = sources[index].revision;
-      };
-
-      return {
-        evaluate: evaluation => {
-          const driver = evaluation.sources[0];
-          const output = evaluation.outputs[0];
-          if (driver.kind !== 'collection' || output.kind !== 'collection')
-            throw new Error('Keyed derive requires collection input and output.');
-          for (let index = 0; index < keyed.length; index++) {
-            if (keyed[index]) continue;
-            const dependencySource = evaluation.sources[index + 1];
-            if (evaluation.reset || revisions[index + 1] !== dependencySource.revision)
-              globalValues[index] = snapshotDependencyValue(dependencySource);
-          }
-
-          const project = (key: string): void => {
-            if (!driver.read.has(key)) return;
-            const value = driver.read.get(key) as V;
-            let dependencyValues = emptyKeyedDependencies;
-            if (keyed.length) {
-              const values = Object.create(null) as Record<string, unknown>;
-              for (let index = 0; index < keyed.length; index++) {
-                const dependency = keyed[index];
-                if (!dependency) {
-                  values[dependencyNames[index]] = globalValues[index];
-                  continue;
-                }
-                const sourceContext = evaluation.sources[index + 1];
-                if (sourceContext.kind !== 'collection')
-                  throw new TypeError(
-                    'Dynamic keyed dependency resolved to a non-collection source.'
-                  );
-                const selectedKey = dependency.key(value, key);
-                assertSynchronous(selectedKey);
-                if (selectedKey !== undefined && typeof selectedKey !== 'string')
-                  throw new TypeError(
-                    'Dynamic keyed dependency keys must be strings or undefined.'
-                  );
-                bindKey(bindings[index]!, key, selectedKey);
-                values[dependencyNames[index]] =
-                  selectedKey === undefined ? undefined : sourceContext.read.get(selectedKey);
-              }
-              dependencyValues = Object.freeze(values);
-            }
-            const next = select(value, key as K, dependencyValues);
-            assertSynchronous(next);
-            if (next === absent) output.output.remove(key);
-            else output.output.set(key, next);
-          };
-
-          if (evaluation.reset) {
-            clearBindings();
-            const ids = driver.read.ids();
-            for (const key of ids) project(key);
-            output.output.order(ids.filter(key => output.next.has(key)));
-            rememberRevisions(evaluation.sources);
-            return;
-          }
-
-          const dirty = new Set<string>();
-          let all = false;
-          let updateOrder = false;
-          let membershipChanged = false;
-          const driverChanged = revisions[0] !== driver.revision;
-          if (driverChanged) {
-            const change = driver.change;
-            if (!change || change.kind === 'reset') {
-              all = true;
-              updateOrder = true;
-            } else {
-              for (const entry of change.removed) {
-                membershipChanged ||= output.previous.has(entry.key);
-                output.output.remove(entry.key);
-                unbindKey(bindings, entry.key);
-                dirty.delete(entry.key);
-              }
-              for (const entry of change.added) dirty.add(entry.key);
-              for (const entry of change.updated) dirty.add(entry.key);
-              updateOrder = Boolean(change.order);
-            }
-          }
-
-          for (let index = 0; index < keyed.length; index++) {
-            const sourceContext = evaluation.sources[index + 1];
-            if (revisions[index + 1] === sourceContext.revision) continue;
-            const dependency = keyed[index];
-            if (!dependency) {
-              all = true;
-              continue;
-            }
-            if (sourceContext.kind !== 'collection' || !sourceContext.change) {
-              all = true;
-              continue;
-            }
-            if (sourceContext.change.kind === 'reset') {
-              all = true;
-              continue;
-            }
-            const reverse = bindings[index]!.reverse;
-            for (const sourceKey of collectionChange.keys(sourceContext.change))
-              for (const outputKey of reverse.get(sourceKey) ?? []) dirty.add(outputKey);
-          }
-
-          if (all) for (const key of driver.read.ids()) dirty.add(key);
-          for (const key of dirty) {
-            if (!driver.read.has(key)) continue;
-            const beforePresent = output.previous.has(key);
-            project(key);
-            membershipChanged ||= beforePresent !== output.next.has(key);
-          }
-          if (updateOrder || membershipChanged)
-            output.output.order(driver.read.ids().filter(key => output.next.has(key)));
-          rememberRevisions(evaluation.sources);
-        },
-        release: () => {
-          clearBindings();
-          revisions.length = 0;
-        },
-      };
-    },
-    name,
-  });
-  return projection as KeyedProjection<K, T>;
-};
-
 function createKeyedDerive<K extends string, V, T>(
   source: KeyedProjection<K, V>,
-  select: (value: V, key: K) => Synchronous<T>,
+  select: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<T>,
   equality?: Equality<T>
 ): KeyedProjection<K, T>;
-function createKeyedDerive<
-  K extends string,
-  V,
-  const D extends object & KeyedDeriveDependencies<K, V, D>,
-  T,
->(
+function createKeyedDerive<K extends string, V, const D extends object, T>(
   source: KeyedProjection<K, V>,
-  dependencies: D,
-  select: (value: V, key: K, dependencies: KeyedDependencyValues<D>) => Synchronous<T>,
+  dependencies: D & KeyedDeriveDependencies<NoInfer<K>, NoInfer<V>, D>,
+  select: (
+    value: NoInfer<V>,
+    key: NoInfer<K>,
+    dependencies: KeyedDependencyValues<D>
+  ) => Synchronous<T>,
   equality?: Equality<T>
 ): KeyedProjection<K, T>;
 function createKeyedDerive<K extends string, V, T>(
@@ -330,10 +69,12 @@ function createKeyedDerive<K extends string, V, T>(
   const equality = (dependencySpecs === undefined ? selectOrEquality : maybeEquality) as
     Equality<T> | undefined;
   if (typeof select !== 'function') throw new TypeError('Keyed derive requires a selector.');
-  return createKeyedTransform(
+  return createKeyedTransform({
     source,
-    dependencySpecs,
-    (value, key, dependencies) =>
+    dependencies: dependencySpecs,
+    equality,
+    name: 'derive.keyed',
+    evaluate: ({ value, key, dependencies }) =>
       dependencySpecs === undefined
         ? (select as (value: V, key: K) => Synchronous<T>)(value, key)
         : (
@@ -343,9 +84,7 @@ function createKeyedDerive<K extends string, V, T>(
               dependencies: Readonly<Record<string, unknown>>
             ) => Synchronous<T>
           )(value, key, dependencies),
-    equality,
-    'derive.keyed'
-  );
+  });
 }
 
 const createKeyedKeys = <K extends string, V>(
@@ -370,61 +109,62 @@ const createKeyedKeys = <K extends string, V>(
   return projection as Projection<readonly K[]>;
 };
 
-const createKeyedValues = <K extends string, V>(
-  source: KeyedProjection<K, V>
-): Projection<readonly V[]> => {
-  assertKeyedProjection(source, 'Keyed values source');
+const createOrderedSnapshot = <K extends string, V, T>(
+  source: KeyedProjection<K, V>,
+  name: string,
+  make: (key: K, value: V) => T
+): Projection<readonly T[]> => {
+  assertKeyedProjection(source, `${name} source`);
   const [projection] = defineProcessor({
     dependencies: [source],
     outputs: [{ kind: 'value', equality: Object.is }],
     create: () => {
       let indexes = new Map<string, number>();
-      const rebuild = (driver: Extract<SourceContext, { kind: 'collection' }>): readonly V[] => {
+      const rebuild = (driver: Extract<SourceContext, { kind: 'collection' }>): readonly T[] => {
         const nextIndexes = new Map<string, number>();
-        const ids = driver.read.ids();
-        const values = Object.freeze(
-          ids.map((key, index) => {
+        const result = Object.freeze(
+          driver.read.ids().map((key, index) => {
             nextIndexes.set(key, index);
-            return driver.read.get(key) as V;
+            return make(key as K, driver.read.get(key) as V);
           })
         );
         indexes = nextIndexes;
-        return values;
+        return result;
       };
       const rebuildIncremental = (
         driver: Extract<SourceContext, { kind: 'collection' }>,
         change: Extract<NonNullable<typeof driver.change>, { readonly kind: 'incremental' }>,
-        previous: readonly V[]
-      ): readonly V[] => {
+        previous: readonly T[]
+      ): readonly T[] => {
         const changedValues = new Map<string, V>();
         for (const entry of change.added) changedValues.set(entry.key, entry.after as V);
         for (const entry of change.updated) changedValues.set(entry.key, entry.after as V);
         const nextIndexes = new Map<string, number>();
-        const values = Object.freeze(
+        const result = Object.freeze(
           driver.read.ids().map((key, index) => {
             nextIndexes.set(key, index);
-            if (changedValues.has(key)) return changedValues.get(key) as V;
+            if (changedValues.has(key)) return make(key as K, changedValues.get(key) as V);
             const previousIndex = indexes.get(key);
             return previousIndex === undefined
-              ? (driver.read.get(key) as V)
+              ? make(key as K, driver.read.get(key) as V)
               : previous[previousIndex];
           })
         );
         indexes = nextIndexes;
-        return values;
+        return result;
       };
       return {
         evaluate: evaluation => {
           const driver = evaluation.sources[0];
           const output = evaluation.outputs[0];
           if (driver.kind !== 'collection' || output.kind !== 'value')
-            throw new Error('derive.keyed.values requires collection input and value output.');
+            throw new Error(`${name} requires collection input and value output.`);
           const change = driver.change;
           if (evaluation.reset || !change || change.kind === 'reset') {
             output.output.set(rebuild(driver));
             return;
           }
-          const previous = output.previous as readonly V[] | undefined;
+          const previous = output.previous as readonly T[] | undefined;
           if (!previous) {
             output.output.set(rebuild(driver));
             return;
@@ -441,30 +181,99 @@ const createKeyedValues = <K extends string, V>(
               output.output.set(rebuild(driver));
               return;
             }
-            next[index] = entry.after as V;
+            next[index] = make(entry.key as K, entry.after as V);
           }
           output.output.set(Object.freeze(next));
         },
         release: () => indexes.clear(),
       };
     },
-    name: 'derive.keyed.values',
+    name,
   });
-  return projection as Projection<readonly V[]>;
+  return projection as Projection<readonly T[]>;
+};
+
+const createKeyedValues = <K extends string, V>(
+  source: KeyedProjection<K, V>
+): Projection<readonly V[]> =>
+  createOrderedSnapshot(source, 'derive.keyed.values', (_key, value) => value);
+
+const createKeyedEntries = <K extends string, V>(
+  source: KeyedProjection<K, V>
+): Projection<readonly (readonly [K, V])[]> =>
+  createOrderedSnapshot(source, 'derive.keyed.entries', (key, value) =>
+    Object.freeze([key, value] as const)
+  );
+
+const createKeyedGet = <K extends string, V>(
+  source: KeyedProjection<K, V>,
+  key: Projection<NoInfer<K> | undefined>,
+  equality: Equality<V | undefined> = Object.is
+): Projection<V | undefined> => {
+  assertKeyedProjection(source, 'derive.keyed.get source');
+  if (outputKind(key) !== 'value')
+    throw new TypeError('derive.keyed.get key must be a scalar projection.');
+  const [projection] = defineProcessor({
+    dependencies: [source, key],
+    outputs: [{ kind: 'value', equality: equality as Equality<unknown> }],
+    create: () => {
+      let sourceRevision = -1;
+      let keyRevision = -1;
+      let selected: K | undefined;
+      return {
+        evaluate: evaluation => {
+          const collection = evaluation.sources[0];
+          const selectedKey = evaluation.sources[1];
+          const output = evaluation.outputs[0];
+          if (
+            collection.kind !== 'collection' ||
+            selectedKey.kind !== 'value' ||
+            output.kind !== 'value'
+          )
+            throw new Error('derive.keyed.get resolved invalid input/output kinds.');
+          let affected = evaluation.reset;
+          if (evaluation.reset || keyRevision !== selectedKey.revision) {
+            const candidate = selectedKey.value;
+            if (candidate !== undefined && typeof candidate !== 'string')
+              throw new TypeError('derive.keyed.get key must resolve to a string or undefined.');
+            selected = candidate as K | undefined;
+            affected = true;
+          } else if (sourceRevision !== collection.revision) {
+            const change = collection.change;
+            if (!change || change.kind === 'reset') affected = true;
+            else if (selected !== undefined)
+              for (const changedKey of collectionChange.keys(change))
+                if (changedKey === selected) {
+                  affected = true;
+                  break;
+                }
+          }
+          if (affected)
+            output.output.set(
+              selected === undefined ? undefined : (collection.read.get(selected) as V | undefined)
+            );
+          sourceRevision = collection.revision;
+          keyRevision = selectedKey.revision;
+        },
+      };
+    },
+    name: 'derive.keyed.get',
+  });
+  return projection as Projection<V | undefined>;
 };
 
 function createKeyedFilter<K extends string, V>(
   source: KeyedProjection<K, V>,
-  predicate: (value: V, key: K) => Synchronous<boolean>
+  predicate: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<boolean>
 ): KeyedProjection<K, V>;
-function createKeyedFilter<
-  K extends string,
-  V,
-  const D extends object & KeyedDeriveDependencies<K, V, D>,
->(
+function createKeyedFilter<K extends string, V, const D extends object>(
   source: KeyedProjection<K, V>,
-  dependencies: D,
-  predicate: (value: V, key: K, dependencies: KeyedDependencyValues<D>) => Synchronous<boolean>
+  dependencies: D & KeyedDeriveDependencies<NoInfer<K>, NoInfer<V>, D>,
+  predicate: (
+    value: NoInfer<V>,
+    key: NoInfer<K>,
+    dependencies: KeyedDependencyValues<D>
+  ) => Synchronous<boolean>
 ): KeyedProjection<K, V>;
 function createKeyedFilter<K extends string, V>(
   source: KeyedProjection<K, V>,
@@ -483,10 +292,12 @@ function createKeyedFilter<K extends string, V>(
     | ((value: V, key: K, dependencies: Readonly<Record<string, unknown>>) => Synchronous<boolean>)
     | undefined;
   if (typeof predicate !== 'function') throw new TypeError('Keyed filter requires a predicate.');
-  return createKeyedTransform(
+  return createKeyedTransform({
     source,
-    dependencySpecs,
-    (value, key, dependencies) => {
+    dependencies: dependencySpecs,
+    equality: Object.is,
+    name: 'derive.keyed.filter',
+    evaluate: ({ value, key, dependencies }) => {
       const included =
         dependencySpecs === undefined
           ? (predicate as (value: V, key: K) => Synchronous<boolean>)(value, key)
@@ -500,27 +311,24 @@ function createKeyedFilter<K extends string, V>(
       assertSynchronous(included);
       if (typeof included !== 'boolean')
         throw new TypeError('Keyed filter predicate must return boolean.');
-      return included ? value : absent;
+      return included ? value : keyedAbsent;
     },
-    Object.is,
-    'derive.keyed.filter'
-  );
+  });
 }
 
 function createKeyedCompact<K extends string, V, T>(
   source: KeyedProjection<K, V>,
-  select: (value: V, key: K) => Synchronous<T | undefined>,
+  select: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<T | undefined>,
   equality?: Equality<T>
 ): KeyedProjection<K, T>;
-function createKeyedCompact<
-  K extends string,
-  V,
-  const D extends object & KeyedDeriveDependencies<K, V, D>,
-  T,
->(
+function createKeyedCompact<K extends string, V, const D extends object, T>(
   source: KeyedProjection<K, V>,
-  dependencies: D,
-  select: (value: V, key: K, dependencies: KeyedDependencyValues<D>) => Synchronous<T | undefined>,
+  dependencies: D & KeyedDeriveDependencies<NoInfer<K>, NoInfer<V>, D>,
+  select: (
+    value: NoInfer<V>,
+    key: NoInfer<K>,
+    dependencies: KeyedDependencyValues<D>
+  ) => Synchronous<T | undefined>,
   equality?: Equality<T>
 ): KeyedProjection<K, T>;
 function createKeyedCompact<K extends string, V, T>(
@@ -549,10 +357,12 @@ function createKeyedCompact<K extends string, V, T>(
   const equality = (dependencySpecs === undefined ? selectOrEquality : maybeEquality) as
     Equality<T> | undefined;
   if (typeof select !== 'function') throw new TypeError('Keyed compact requires a selector.');
-  return createKeyedTransform(
+  return createKeyedTransform({
     source,
-    dependencySpecs,
-    (value, key, dependencies) => {
+    dependencies: dependencySpecs,
+    equality,
+    name: 'derive.keyed.compact',
+    evaluate: ({ value, key, dependencies }) => {
       const next =
         dependencySpecs === undefined
           ? (select as (value: V, key: K) => Synchronous<T | undefined>)(value, key)
@@ -564,11 +374,9 @@ function createKeyedCompact<K extends string, V, T>(
               ) => Synchronous<T | undefined>
             )(value, key, dependencies);
       assertSynchronous(next);
-      return next === undefined ? absent : next;
+      return next === undefined ? keyedAbsent : next;
     },
-    equality,
-    'derive.keyed.compact'
-  );
+  });
 }
 
 const createKeyedSubset = <K extends string, V>(
@@ -688,9 +496,299 @@ const createKeyedSubset = <K extends string, V>(
   return projection as KeyedProjection<K, V>;
 };
 
+const normalizeGroups = <G extends string>(value: unknown): readonly G[] => {
+  const groups = typeof value === 'string' ? [value] : value;
+  if (!Array.isArray(groups))
+    throw new TypeError(
+      'derive.keyed.groupBy selector must return a string or an array of strings.'
+    );
+  const seen = new Set<string>();
+  const result: G[] = [];
+  for (const group of groups) {
+    if (typeof group !== 'string')
+      throw new TypeError('derive.keyed.groupBy selector must return only string group keys.');
+    if (seen.has(group))
+      throw new TypeError('derive.keyed.groupBy selector must not return duplicate group keys.');
+    seen.add(group);
+    result.push(group as G);
+  }
+  return Object.freeze(result);
+};
+
+function createKeyedGroupBy<K extends string, V, G extends string>(
+  source: KeyedProjection<K, V>,
+  selector: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<G | readonly G[]>
+): KeyedProjection<G, readonly K[]>;
+function createKeyedGroupBy<K extends string, V, const D extends object, G extends string>(
+  source: KeyedProjection<K, V>,
+  dependencies: D & KeyedDeriveDependencies<NoInfer<K>, NoInfer<V>, D>,
+  selector: (
+    value: NoInfer<V>,
+    key: NoInfer<K>,
+    dependencies: KeyedDependencyValues<D>
+  ) => Synchronous<G | readonly G[]>
+): KeyedProjection<G, readonly K[]>;
+function createKeyedGroupBy<K extends string, V, G extends string>(
+  source: KeyedProjection<K, V>,
+  dependenciesOrSelector:
+    KeyedDeriveDependencyRecord<K, V> | ((value: V, key: K) => Synchronous<G | readonly G[]>),
+  maybeSelector?: (
+    value: V,
+    key: K,
+    dependencies: Readonly<Record<string, unknown>>
+  ) => Synchronous<G | readonly G[]>
+): KeyedProjection<G, readonly K[]> {
+  assertKeyedProjection(source, 'derive.keyed.groupBy source');
+  const dependencySpecs =
+    typeof dependenciesOrSelector === 'function' ? undefined : dependenciesOrSelector;
+  const selector = (dependencySpecs === undefined ? dependenciesOrSelector : maybeSelector) as
+    | ((value: V, key: K) => Synchronous<G | readonly G[]>)
+    | ((
+        value: V,
+        key: K,
+        dependencies: Readonly<Record<string, unknown>>
+      ) => Synchronous<G | readonly G[]>)
+    | undefined;
+  if (typeof selector !== 'function')
+    throw new TypeError('derive.keyed.groupBy requires a selector.');
+
+  const compiled = compileKeyedDependencies(
+    source,
+    dependencySpecs as KeyedDeriveDependencyRecord<string, unknown> | undefined,
+    'derive.keyed.groupBy'
+  );
+  const [projection] = defineProcessor({
+    dependencies: compiled.projections,
+    outputs: [
+      {
+        kind: 'collection',
+        equality: (previous: unknown, next: unknown) => {
+          const left = previous as readonly string[];
+          const right = next as readonly string[];
+          return left.length === right.length && left.every((key, index) => key === right[index]);
+        },
+      },
+    ],
+    create: () => {
+      const dependencies = createKeyedDependencyRuntime(compiled);
+      const relation = createKeyRelation();
+      const orderIndex = new Map<string, number>();
+      const groupRanks = new Map<G, { readonly source: number; readonly selector: number }>();
+
+      const refreshOrderIndex = (driver: Extract<SourceContext, { kind: 'collection' }>): void => {
+        orderIndex.clear();
+        driver.read.ids().forEach((key, index) => orderIndex.set(key, index));
+      };
+
+      const selectGroups = (
+        driver: Extract<SourceContext, { kind: 'collection' }>,
+        sources: readonly SourceContext[],
+        key: string,
+        affected: Set<G>
+      ): boolean => {
+        if (!driver.read.has(key)) return false;
+        const value = driver.read.get(key) as V;
+        const dependencyValues = dependencies.resolve(value, key, sources);
+        const selected =
+          dependencySpecs === undefined
+            ? (selector as (value: V, key: K) => Synchronous<G | readonly G[]>)(value, key as K)
+            : (
+                selector as (
+                  value: V,
+                  key: K,
+                  dependencies: Readonly<Record<string, unknown>>
+                ) => Synchronous<G | readonly G[]>
+              )(value, key as K, dependencyValues);
+        assertSynchronous(selected);
+        const next = normalizeGroups<G>(selected);
+        const previous = relation.forward(key) ?? Object.freeze([]);
+        if (!relation.replace(key, next)) return false;
+        for (const group of previous) affected.add(group as G);
+        for (const group of next) affected.add(group);
+        return true;
+      };
+
+      const updateGroup = (
+        group: G,
+        output: Extract<OutputEvaluation, { kind: 'collection' }>
+      ): void => {
+        const reverse = relation.reverse(group);
+        if (!reverse?.size) {
+          groupRanks.delete(group);
+          output.output.remove(group);
+          return;
+        }
+        const members = [...reverse].sort(
+          (left, right) =>
+            (orderIndex.get(left) ?? Number.MAX_SAFE_INTEGER) -
+            (orderIndex.get(right) ?? Number.MAX_SAFE_INTEGER)
+        );
+        const first = members[0];
+        const source = orderIndex.get(first);
+        const selector = relation.forward(first)?.indexOf(group) ?? -1;
+        if (source === undefined || selector < 0)
+          throw new Error('derive.keyed.groupBy relation is inconsistent with source order.');
+        groupRanks.set(group, { source, selector });
+        output.output.set(group, Object.freeze(members as K[]));
+      };
+
+      const publishGroupOrder = (
+        output: Extract<OutputEvaluation, { kind: 'collection' }>
+      ): void => {
+        const order = [...groupRanks.entries()]
+          .sort(([leftKey, left], [rightKey, right]) => {
+            if (left.source !== right.source) return left.source - right.source;
+            if (left.selector !== right.selector) return left.selector - right.selector;
+            return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+          })
+          .map(([group]) => group);
+        output.output.order(order);
+      };
+
+      const rebuild = (
+        driver: Extract<SourceContext, { kind: 'collection' }>,
+        sources: readonly SourceContext[],
+        output: Extract<OutputEvaluation, { kind: 'collection' }>
+      ): void => {
+        dependencies.clearBindings();
+        relation.clear();
+        groupRanks.clear();
+        refreshOrderIndex(driver);
+        const affected = new Set<G>();
+        for (const key of driver.read.ids()) selectGroups(driver, sources, key, affected);
+        for (const key of output.previous.ids()) affected.add(key as G);
+        for (const group of affected) updateGroup(group, output);
+        publishGroupOrder(output);
+      };
+
+      const publishAffected = (
+        affected: ReadonlySet<G>,
+        output: Extract<OutputEvaluation, { kind: 'collection' }>,
+        orderDirty: boolean
+      ): void => {
+        for (const group of affected) updateGroup(group, output);
+        if (orderDirty) publishGroupOrder(output);
+      };
+
+      const removeSourceKey = (key: string, affected: Set<G>): boolean => {
+        const previous = relation.forward(key);
+        if (!previous) return false;
+        for (const group of previous) affected.add(group as G);
+        return relation.delete(key);
+      };
+
+      const markAllGroups = (
+        output: Extract<OutputEvaluation, { kind: 'collection' }>,
+        affected: Set<G>
+      ): void => {
+        for (const group of relation.rights()) affected.add(group as G);
+        for (const group of output.previous.ids()) affected.add(group as G);
+      };
+
+      return {
+        evaluate: evaluation => {
+          const driver = evaluation.sources[0];
+          const output = evaluation.outputs[0];
+          if (driver.kind !== 'collection' || output.kind !== 'collection')
+            throw new Error('derive.keyed.groupBy requires collection input and output.');
+          dependencies.prepare(evaluation.sources, evaluation.reset);
+
+          if (evaluation.reset) {
+            rebuild(driver, evaluation.sources, output);
+            dependencies.remember(evaluation.sources);
+            return;
+          }
+
+          const dirty = new Set<string>();
+          const affected = new Set<G>();
+          let all = false;
+          let structural = false;
+          let orderDirty = false;
+          if (dependencies.driverChanged(driver)) {
+            const change = driver.change;
+            if (!change || change.kind === 'reset') {
+              rebuild(driver, evaluation.sources, output);
+              dependencies.remember(evaluation.sources);
+              return;
+            } else {
+              for (const entry of change.removed) {
+                orderDirty ||= removeSourceKey(entry.key, affected);
+                dependencies.remove(entry.key);
+                dirty.delete(entry.key);
+              }
+              for (const entry of change.added) dirty.add(entry.key);
+              for (const entry of change.updated) dirty.add(entry.key);
+              structural = Boolean(change.added.length || change.removed.length || change.order);
+              orderDirty ||= structural;
+              if (structural) refreshOrderIndex(driver);
+            }
+          }
+          all ||= dependencies.collectInvalidated(evaluation.sources, dirty);
+          if (all) for (const key of driver.read.ids()) dirty.add(key);
+          for (const key of dirty)
+            orderDirty ||= selectGroups(driver, evaluation.sources, key, affected);
+          if (structural) markAllGroups(output, affected);
+          publishAffected(affected, output, orderDirty);
+          dependencies.remember(evaluation.sources);
+        },
+        release: () => {
+          relation.clear();
+          orderIndex.clear();
+          groupRanks.clear();
+          dependencies.release();
+        },
+      };
+    },
+    name: 'derive.keyed.groupBy',
+  });
+  return projection as KeyedProjection<G, readonly K[]>;
+}
+
+const createKeyedSingleton = <K extends string, V>(
+  source: Projection<V | undefined>,
+  keyOf: (value: V) => Synchronous<K>,
+  equality: Equality<V> = Object.is
+): KeyedProjection<K, V> => {
+  if (outputKind(source) !== 'value')
+    throw new TypeError('derive.keyed.singleton source must be a scalar projection.');
+  if (typeof keyOf !== 'function')
+    throw new TypeError('derive.keyed.singleton requires a key selector.');
+  const [projection] = defineProcessor({
+    dependencies: [source],
+    outputs: [{ kind: 'collection', equality: equality as Equality<unknown> }],
+    create: () => ({
+      evaluate: evaluation => {
+        const scalar = evaluation.sources[0];
+        const output = evaluation.outputs[0];
+        if (scalar.kind !== 'value' || output.kind !== 'collection')
+          throw new Error('derive.keyed.singleton resolved invalid input/output kinds.');
+        const previous = output.previous.ids();
+        if (scalar.value === undefined) {
+          for (const key of previous) output.output.remove(key);
+          return;
+        }
+        const key = keyOf(scalar.value as V);
+        assertSynchronous(key);
+        if (typeof key !== 'string')
+          throw new TypeError('derive.keyed.singleton key selector must return a string.');
+        for (const previousKey of previous)
+          if (previousKey !== key) output.output.remove(previousKey);
+        output.output.set(key, scalar.value as V);
+        if (previous.length !== 1 || previous[0] !== key) output.output.order([key]);
+      },
+    }),
+    name: 'derive.keyed.singleton',
+  });
+  return projection as KeyedProjection<K, V>;
+};
+
 export const keyedDerive = Object.assign(createKeyedDerive, {
   keys: createKeyedKeys,
   values: createKeyedValues,
+  entries: createKeyedEntries,
+  get: createKeyedGet,
+  groupBy: createKeyedGroupBy,
+  singleton: createKeyedSingleton,
   subset: createKeyedSubset,
   filter: createKeyedFilter,
   compact: createKeyedCompact,

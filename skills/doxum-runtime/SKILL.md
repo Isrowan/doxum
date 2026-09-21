@@ -49,20 +49,26 @@ Before runtime changes read [invariants](references/invariants.en.md) or
   `CollectionInput<K,V>` all use that same keyed capability.
   Use named-object `derive` for pure aggregate values. The `derive.keyed` family owns
   keyed derivation: ordinary `derive.keyed` preserves driver membership/order;
-  `keys`/`values` expose standard ordered read shapes; `subset`/`filter`/`compact` own
-  membership-changing derivation without application-side collection patch loops.
+  `keys`/`values`/`entries` expose standard ordered read shapes; `get` is the precise
+  scalar keyed lookup; `subset`/`filter`/`compact` own membership-changing derivation;
+  `groupBy` is the generic reverse-index primitive and `singleton` is optional-scalar
+  to 0/1 keyed composition.
   Per-entry equality suppresses unchanged generated values. Its dependency form uses a named object: plain Projection members
-  invalidate the driver key set, while `{ source, key }` members let the Runtime own
-  per-output-key source bindings and reverse lookup. Selectors receive
+  invalidate the driver key set, while `{ source, key }` / `{ source, keys }` members let the Runtime own
+  singular/plural per-output-key source bindings and reverse lookup. Selectors receive
   `(entry, key)` or `(entry, key, dependencies)`. The producer graph remains explicit and static;
   processors never perform imperative Runtime reads to discover dependencies.
+  Use `runtime.items(keyedProjection)` / `scope.items(...)` for Runtime-owned ordered
+  membership plus stable per-membership item Readables; do not rebuild that cache in adapters.
   `input.collection` edits have a strong exception boundary: callback or per-entry
   equality failure leaves both the published value and the next draft unchanged.
   A `ProjectionScope` only adds lifecycle ownership through `scope.own(...)`; create
   definitions with the root declaration APIs, then own a projection or static output tree
   before that definition is first materialized as a root.
   Use advanced `incremental` only for retained state or cross-key coordination that
-  cannot be expressed by the `derive.keyed` family. `collectionChange.keys` is the
+  cannot be expressed by the `derive.keyed` family. `incremental.keyed` owns independent
+  per-driver-key retained state while preserving driver membership/order and reuses the
+  same dynamic keyed dependency routing. `collectionChange.keys` is the
   transport-level iterable for incremental added/updated/removed keys; callers handle
   reset and order semantics themselves. React selector tracking remains a consumer
   concern through `ProjectionProvider` and `useProjection(projection, selector)`.

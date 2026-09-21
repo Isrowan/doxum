@@ -53,11 +53,15 @@ Standard keyed structure reads stay in the same family:
 ```ts
 const ids = derive.keyed.keys(records); // Projection<readonly RecordId[]>
 const all = derive.keyed.values(records); // Projection<readonly Record[]>
+const entries = derive.keyed.entries(records); // Projection<readonly (readonly [RecordId, Record])[]>
+const active = derive.keyed.get(records, activeRecordId); // Projection<Record | undefined>
 ```
 
 `keys` republishes only for add/remove/order/reset. A value-only update keeps its
-published array reference and revision. `values` follows formal keyed order and updates
-for entry or structural changes.
+published array reference and revision. `values` and `entries` follow formal keyed order
+and update for entry or structural changes. `entries` reuses tuple references for
+unchanged entries. `get` binds to exactly one scalar-selected key; missing keys remain
+bound so a later add invalidates the result.
 
 Membership-changing keyed derives are also first-class:
 
@@ -65,6 +69,8 @@ Membership-changing keyed derives are also first-class:
 const visible = derive.keyed.filter(fields, field => field.visible);
 const ordered = derive.keyed.subset(fields, visibleFieldIds);
 const content = derive.keyed.compact(cards, card => card.content);
+const bySection = derive.keyed.groupBy(records, record => record.sectionId);
+const activeCollection = derive.keyed.singleton(activeRecord, record => record.id);
 ```
 
 `filter` preserves source values and source-relative order. `subset` uses
@@ -72,7 +78,10 @@ const content = derive.keyed.compact(cards, card => card.content);
 and appear if the source later adds them, while duplicate ordered keys are invalid.
 `compact` treats selected `undefined` as absence and applies optional per-entry equality
 to present values. `filter` and `compact` reuse the normal named dependency and dynamic
-keyed lookup protocol.
+keyed lookup protocol. `groupBy` is the one-to-many reverse-index primitive: a source
+entry may belong to one or several groups, bucket members follow source order, and group
+order follows first appearance in source order. `singleton` converts an optional scalar
+projection to a zero-or-one keyed projection.
 
 Dynamic keyed dependencies declare how one output key selects a key from another
 keyed projection:
@@ -82,10 +91,12 @@ const cardContent = derive.keyed(
   items,
   {
     record: { source: records, key: item => item.recordId },
+    related: { source: records, keys: item => item.relatedRecordIds },
     view: activeView,
     fields: visibleFields,
   },
-  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
+  (item, itemId, { record, related, view, fields }) =>
+    renderCard(itemId, item, record, related, view, fields)
 );
 ```
 
@@ -93,7 +104,10 @@ The Runtime owns the output-key → source-key binding and reverse index. Updati
 source key invalidates only output keys currently bound to it. Missing selected
 entries resolve to `undefined` but remain bound so a later add invalidates the
 dependent output. A plain projection dependency such as `view` invalidates the
-driver key set when it changes.
+driver key set when it changes. `{ source, keys }` declares an ordered duplicate-free
+set of keyed dependencies and resolves to a readonly map of currently present selected
+entries. Changes to one selected source key invalidate only reverse-bound driver keys;
+source order-only changes do not invalidate keyed lookups.
 
 This is the dynamic join protocol. Do not add a second join abstraction or a
 document-specific wildcard path grammar to processors.
@@ -163,6 +177,7 @@ Stable verbs:
 | ------------------------------------------ | --------------------------------------------------------------- |
 | `read(projection)`                         | Read the current published value synchronously.                 |
 | `select(projection, selector?, equality?)` | Create a standard `Readable`.                                   |
+| `items(keyedProjection)`                   | Create a Runtime-owned keyed Readable family.                   |
 | `update(input, value)`                     | Write an `Input<T>`.                                            |
 | `update(collectionInput, draft => ...)`    | Atomically edit keyed Runtime-local state.                      |
 | `batch(run, options?)`                     | Defer graph settlement/listeners across one application action. |
@@ -176,6 +191,13 @@ processing/notification.
 
 `ProjectionError` exposes stable `phase` and `cause` fields. Producer names, revision
 arrays and scheduler topology remain Runtime diagnostics rather than public API.
+
+For keyed consumer identity, `runtime.items(projection)` returns `{ keys, get }`.
+`keys` is an ordered-membership Readable. `get(key)` returns one stable
+`Readable<V | undefined>` for the duration of that published membership. A remove
+publishes `undefined` and retires that generation; re-adding the same key creates a new
+Readable identity. Subscribed missing keys remain latent and can activate on a later add.
+The family owns one source subscription and is disposed with its Runtime or scope.
 
 ## Runtime-local keyed state
 
@@ -326,6 +348,37 @@ const doubled = incremental.collection(
 
 Collection context additionally exposes previous, next and a borrowed output draft.
 The draft has set, remove and order.
+
+### Keyed processor
+
+`incremental.keyed(driver, dependencies, definition)` is the retained-state counterpart
+to `derive.keyed`. The driver exclusively owns output membership and order, while each
+driver membership owns independent retained state:
+
+```ts
+const sectionTotals = incremental.keyed(
+  sections,
+  {
+    records: { source: records, keys: section => section.recordIds },
+  },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ value, dependencies, state }) => {
+      state.runs++;
+      return [...dependencies.records.values()].reduce((sum, record) => sum + record.score, 0);
+    },
+  }
+);
+```
+
+Ordinary scalar dependencies invalidate every current driver key. Singular/plural keyed
+dependencies use reverse routing and run only dependent keys. Driver order-only changes
+reorder output without executing `process`. Removing a driver key releases its state;
+re-adding the same key starts a new membership lifecycle. Reset intersections preserve
+state, while processor fault recovery recreates the processor and all per-key state.
+The process context is `key`, `value`, named `dependencies`, `reset`, `cause`, and
+optional retained `state`; it returns only its own output value and receives no
+collection draft.
 
 ### Multi-output group
 

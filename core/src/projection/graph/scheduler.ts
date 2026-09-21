@@ -1,6 +1,6 @@
 import { profile } from '../../profile';
 import type { ObserverError, Unsubscribe } from '../../runtime/contract';
-import type { BatchContext, SourceContext } from '../contract';
+import type { BatchContext, CollectionChange, SourceContext } from '../contract';
 import { ProjectionDisposedError, ProjectionError } from '../contract';
 
 type BatchOptions = { readonly cause?: unknown };
@@ -14,6 +14,8 @@ type ProducerBase = {
   release(): void;
 };
 
+export type OutputListener = (change?: CollectionChange<string, unknown>) => void;
+
 export type OutputRecord = {
   readonly kind: 'value' | 'collection';
   readonly owner: ProducerRecord;
@@ -21,8 +23,8 @@ export type OutputRecord = {
   current(): unknown;
   revision(): number;
   reset(): boolean;
-  subscribe(listener: () => void): Unsubscribe;
-  emit(call: (listener: () => void) => void): void;
+  subscribe(listener: OutputListener): Unsubscribe;
+  emit(call: (listener: OutputListener, change?: CollectionChange<string, unknown>) => void): void;
   hasConsumers(): boolean;
   forEachConsumer(run: (consumer: ProcessorRecord) => void): void;
   attachConsumer(consumer: ProcessorRecord): void;
@@ -246,9 +248,9 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     const reportFailures: unknown[] = [];
     try {
       emissions.forEach(output =>
-        output.emit(listener => {
+        output.emit((listener, change) => {
           try {
-            listener();
+            listener(change);
           } catch (cause) {
             errors.push(errorFor(output.owner, cause, 'listener'));
           }

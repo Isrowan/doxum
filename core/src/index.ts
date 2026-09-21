@@ -62,3 +62,4 @@ export type {
   ExternalValueSource,
 } from './projection/contract';
 export type { ProjectionRuntime, ProjectionScope } from './projection/runtime';
+export type { ProjectionItems } from './projection/readable/keyed';

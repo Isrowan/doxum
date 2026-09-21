@@ -73,10 +73,14 @@ const fieldValues = derive.keyed(records, record => record.values[fieldId]);
 ```ts
 const ids = derive.keyed.keys(records);
 const all = derive.keyed.values(records);
+const entries = derive.keyed.entries(records);
+const active = derive.keyed.get(records, activeRecordId);
 ```
 
 `keys` 只在 add/remove/order/reset 时变化，value-only update 保持已发布 array 的引用与
-revision；`values` 始终遵循 keyed collection 的正式顺序。
+revision；`values` / `entries` 始终遵循 keyed collection 的正式顺序，`entries` 会复用
+未变化 entry 的 tuple 引用。`get` 只绑定当前 scalar-selected key；即使 key 当前缺失，
+binding 仍保留，因此以后 add 会正确触发 scalar result。
 
 membership-changing derive 也作为正式 primitive，而不是让应用手写 incremental
 collection patch：
@@ -85,6 +89,8 @@ collection patch：
 const visible = derive.keyed.filter(fields, field => field.visible);
 const ordered = derive.keyed.subset(fields, visibleFieldIds);
 const content = derive.keyed.compact(cards, card => card.content);
+const bySection = derive.keyed.groupBy(records, record => record.sectionId);
+const activeCollection = derive.keyed.singleton(activeRecord, record => record.id);
 ```
 
 `filter` 保留 source value 与 source-relative order。`subset` 使用
@@ -92,6 +98,8 @@ const content = derive.keyed.compact(cards, card => card.content);
 latent，后续 source add 时自动出现，duplicate ordered keys 非法。`compact` 将 selected
 `undefined` 解释为 output absence，对 present value 使用可选 per-entry equality。
 `filter` / `compact` 与普通 `derive.keyed` 共用 named global/dynamic keyed dependencies。
+`groupBy` 是通用一对多 reverse-index primitive，bucket member 遵循 source 正式顺序；
+`singleton` 将 optional scalar 转成 0/1 keyed projection。
 
 Dynamic keyed lookup 仍使用同一个 API：
 
@@ -100,17 +108,21 @@ const cardContent = derive.keyed(
   items,
   {
     record: { source: records, key: item => item.recordId },
+    related: { source: records, keys: item => item.relatedRecordIds },
     view: activeView,
     fields: visibleFields,
   },
-  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
+  (item, itemId, { record, related, view, fields }) =>
+    renderCard(itemId, item, record, related, view, fields)
 );
 ```
 
 普通 Projection dependency 变化时使 driver key set 失效。`{ source, key }` 声明
 output-key → dynamic source-key dependency；Runtime 拥有 forward binding 和 reverse
 invalidation。selected source entry 缺失时仍保留 binding，因此以后新增该 source key
-会正确触发 dependent output key。
+会正确触发 dependent output key。`{ source, keys }` 将一个 driver key 绑定到一个有序、
+无重复的 source-key 集合，dependency value 是按声明顺序包含当前存在 entry 的 readonly
+map；source 仅 order 变化不会使 keyed lookup 失效。
 
 这就是 keyed join 协议。不要再添加第二套 join abstraction、wildcard document path
 grammar 或 processor 内 imperative dependency discovery。
@@ -121,6 +133,8 @@ grammar 或 processor 内 imperative dependency discovery。
 const value = runtime.read(visible);
 const selected = runtime.select(visible, rows => rows.get(rowId), equality);
 const stop = selected.subscribe(listener);
+const itemFamily = runtime.items(records);
+const record = itemFamily.get(rowId);
 
 runtime.update(filter, 'open');
 runtime.update(selection, draft => {
@@ -133,6 +147,12 @@ runtime.batch(run, { cause });
 
 `select` 返回标准 `Readable`。keyed selector 追踪相关 key/structure 读取；只有发生
 相关 invalidation 后才执行 selector，随后 equality 决定是否发布结果。
+
+`runtime.items(keyedProjection)` 返回一个 Runtime-owned keyed Readable family：`keys`
+表示正式有序 membership，`get(key)` 在一次 published membership generation 内保持
+Readable identity。remove 会结束这一 generation；同 key 以后 re-add 会得到新 identity。
+已订阅的 missing item 可以保持 latent，并在未来 add 时激活。`ProjectionScope.items`
+使用相同语义，并随 scope disposal 一起结束。
 
 `CollectionInputDraft` 提供 `get`、`has`、`set`、`remove`，同步 edit callback 返回后
 失效。callback throw 时该次 edit 不应用。collection input equality 按 entry 比较，
@@ -219,6 +239,28 @@ const weights = incremental.collection(
 `values`、`changes` 按 dependency 名称读取。scalar dependency 没有 collection change
 metadata。collection processor 额外提供 keyed `previous`、`next` 和 borrowed
 `output` draft。
+
+每个 driver key 需要独立 retained state 时使用 `incremental.keyed`：
+
+```ts
+const totals = incremental.keyed(
+  sections,
+  { records: { source: records, keys: section => section.recordIds } },
+  {
+    state: () => ({ runs: 0 }),
+    process: ({ dependencies, state }) => {
+      state.runs++;
+      return [...dependencies.records.values()].reduce((sum, record) => sum + record.score, 0);
+    },
+  }
+);
+```
+
+driver 独占 output membership/order。普通 dependency 变化会 invalidate 当前所有 driver
+key；singular/plural keyed dependency 通过 reverse routing 只运行真正受影响的 key。
+driver 仅 order 变化不会执行 `process`。remove 释放该 key 的 state，re-add 建立新的
+membership lifecycle；reset intersection 保留 state，processor fault recovery 重建全部
+per-key state。process 只返回自身 output value，不暴露 collection draft。
 
 多输出 processor 使用一个 closed group definition：
 

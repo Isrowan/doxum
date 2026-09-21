@@ -120,7 +120,7 @@ runtime.update(selection, draft => draft.set(rowId, true));
 ```
 
 聚合值使用 named-object `derive`。一个 keyed driver 拥有 output key/order 时使用
-`derive.keyed`；named dependency form 负责 dynamic keyed lookup，binding/reverse
+`derive.keyed`；named dependency form 负责 singular/plural dynamic keyed lookup，binding/reverse
 index 由 Runtime 拥有。`input.collection` 用于 Runtime-local 的 keyed UI/application
 state，不进入 canonical document state。
 

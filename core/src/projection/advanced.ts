@@ -11,6 +11,12 @@ import { defineProcessor } from './definition';
 import { compileProjectionDependencies } from './dependency';
 import { assertSynchronous } from './graph/scheduler';
 import { isPlainObject } from '../value/record';
+import type {
+  KeyedDependencies,
+  KeyedDependencyRecord,
+  KeyedDependencyValues,
+} from './keyed/dependency';
+import { createKeyedTransform } from './keyed/transform';
 
 type ProjectionDependencies = Readonly<Record<string, Projection<unknown>>>;
 
@@ -64,6 +70,21 @@ export type IncrementalCollectionDefinition<
 > = {
   readonly process: (context: IncrementalCollectionContext<D, K, V, State>) => void;
 } & RetainedStateDefinition<State>;
+
+export type IncrementalKeyedContext<K extends string, V, D extends object, State = never> = {
+  readonly key: K;
+  readonly value: V;
+  readonly dependencies: KeyedDependencyValues<D>;
+  readonly reset: boolean;
+  readonly cause: unknown;
+} & RetainedStateContext<State>;
+
+export type IncrementalKeyedDefinition<K extends string, V, D extends object, T, State = never> = {
+  readonly equality?: (previous: T, next: T) => boolean;
+  readonly process: (context: IncrementalKeyedContext<K, V, D, State>) => T;
+} & ([State] extends [never]
+  ? { readonly state?: never }
+  : { readonly state: (value: V, key: K) => State });
 
 declare const groupOutput: unique symbol;
 
@@ -296,6 +317,58 @@ function createIncrementalCollection<const D extends ProjectionDependencies, K e
   return projection as KeyedProjection<K, V>;
 }
 
+function createIncrementalKeyed<K extends string, V, const D extends object, T, State>(
+  driver: KeyedProjection<K, V>,
+  dependencies: D & KeyedDependencies<NoInfer<K>, NoInfer<V>, D>,
+  definition: {
+    readonly state: (value: NoInfer<V>, key: NoInfer<K>) => State;
+    readonly equality?: (previous: T, next: T) => boolean;
+    readonly process: (context: IncrementalKeyedContext<NoInfer<K>, NoInfer<V>, D, State>) => T;
+  }
+): KeyedProjection<K, T>;
+function createIncrementalKeyed<K extends string, V, const D extends object, T>(
+  driver: KeyedProjection<K, V>,
+  dependencies: D & KeyedDependencies<NoInfer<K>, NoInfer<V>, D>,
+  definition: {
+    readonly equality?: (previous: T, next: T) => boolean;
+    readonly process: (context: IncrementalKeyedContext<NoInfer<K>, NoInfer<V>, D>) => T;
+  }
+): KeyedProjection<K, T>;
+function createIncrementalKeyed<K extends string, V, T>(
+  driver: KeyedProjection<K, V>,
+  dependencies: KeyedDependencyRecord<K, V>,
+  definition: {
+    readonly state?: (value: V, key: K) => unknown;
+    readonly equality?: (previous: T, next: T) => boolean;
+    readonly process: (context: never) => T;
+  }
+): KeyedProjection<K, T> {
+  validateDefinition(definition, ['state', 'equality', 'process'], 'Incremental keyed');
+  if (definition.state !== undefined && typeof definition.state !== 'function')
+    throw new TypeError('Incremental keyed state must be a function when provided.');
+  if (definition.equality !== undefined && typeof definition.equality !== 'function')
+    throw new TypeError('Incremental keyed equality must be a function when provided.');
+  if (typeof definition.process !== 'function')
+    throw new TypeError('Incremental keyed definition requires a process function.');
+
+  return createKeyedTransform<K, V, T, unknown>({
+    source: driver,
+    dependencies,
+    equality: definition.equality,
+    name: 'incremental.keyed',
+    ...(definition.state ? { state: definition.state } : {}),
+    evaluate: ({ key, value, dependencies: values, state, reset, cause }) =>
+      definition.process({
+        key,
+        value,
+        dependencies: values,
+        reset,
+        cause,
+        ...(definition.state ? { state } : {}),
+      } as never),
+  });
+}
+
 type GroupShape = number | { readonly [key: string]: GroupShape };
 type GroupOutputMetadata = {
   readonly kind: OutputDefinition['kind'];
@@ -475,6 +548,7 @@ function createIncrementalGroup<
 
 export const incremental = Object.assign(createIncrementalValue, {
   collection: createIncrementalCollection,
+  keyed: createIncrementalKeyed,
   group: createIncrementalGroup,
 });
 
