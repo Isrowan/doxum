@@ -713,7 +713,8 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
               return;
             } else {
               for (const entry of change.removed) {
-                orderDirty ||= removeSourceKey(entry.key, affected);
+                const changed = removeSourceKey(entry.key, affected);
+                orderDirty ||= changed;
                 dependencies.remove(entry.key);
                 dirty.delete(entry.key);
               }
@@ -726,8 +727,10 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
           }
           all ||= dependencies.collectInvalidated(evaluation.sources, dirty);
           if (all) for (const key of driver.read.ids()) dirty.add(key);
-          for (const key of dirty)
-            orderDirty ||= selectGroups(driver, evaluation.sources, key, affected);
+          for (const key of dirty) {
+            const changed = selectGroups(driver, evaluation.sources, key, affected);
+            orderDirty ||= changed;
+          }
           if (structural) markAllGroups(output, affected);
           publishAffected(affected, output, orderDirty);
           dependencies.remember(evaluation.sources);

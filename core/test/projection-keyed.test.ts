@@ -622,6 +622,60 @@ describe('keyed projection evolution', () => {
     runtime.dispose();
   });
 
+  it('publishes every source entry that enters the same new group in one document commit', () => {
+    const schema = object({ rows: map(object({ group: field<string>() })) });
+    const document = createDocument({
+      schema,
+      initial: {
+        rows: {
+          a: { group: 'x' },
+          b: { group: 'y' },
+          c: { group: 'y' },
+        },
+      },
+    });
+    const rows = observe(document, path => path.rows);
+    const grouped = derive.keyed.groupBy(rows, row => row.group);
+    const runtime = createProjectionRuntime();
+    expect([...runtime.read(grouped)]).toEqual([
+      ['x', ['a']],
+      ['y', ['b', 'c']],
+    ]);
+
+    document.update(draft => {
+      draft.rows.get('a')!.group = 'z';
+      draft.rows.get('b')!.group = 'z';
+    });
+
+    expect([...runtime.read(grouped)]).toEqual([
+      ['z', ['a', 'b']],
+      ['y', ['c']],
+    ]);
+    document.dispose();
+    runtime.dispose();
+  });
+
+  it('removes every source membership from groupBy in one collection edit', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', { group: 'x' }],
+        ['b', { group: 'x' }],
+        ['c', { group: 'y' }],
+      ])
+    );
+    const grouped = derive.keyed.groupBy(rows, row => row.group);
+    const runtime = createProjectionRuntime();
+    runtime.read(grouped);
+
+    runtime.update(rows, draft => {
+      draft.remove('a');
+      draft.remove('b');
+    });
+
+    expect([...runtime.read(grouped)]).toEqual([['y', ['c']]]);
+    runtime.dispose();
+  });
+
   it('converts an optional scalar to a zero-or-one keyed singleton', () => {
     const current = input<{ readonly id: string; readonly value: number } | undefined>(undefined);
     const singleton = derive.keyed.singleton(current, value => value.id);
