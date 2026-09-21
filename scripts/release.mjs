@@ -22,6 +22,13 @@ const requiredFiles = [
   'dist/advanced.d.ts',
   'dist/advanced.js',
   'skills/doxum-runtime/SKILL.md',
+  'skills/doxum-runtime/agents/openai.yaml',
+  'skills/doxum-runtime/references/public-api.md',
+  'skills/doxum-runtime/references/document-runtime.md',
+  'skills/doxum-runtime/references/projections.md',
+  'skills/doxum-runtime/references/integrations.md',
+  'skills/doxum-runtime/references/recipes.md',
+  'skills/doxum-runtime/references/invariants.md',
 ];
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 

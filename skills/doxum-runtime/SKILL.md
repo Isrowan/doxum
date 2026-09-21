@@ -1,88 +1,70 @@
 ---
 name: doxum-runtime
-description: 'Use Doxum core, advanced projections, React, and local-sync for schemas, document state, ChangeSets, history, projections, subscriptions, persistence, and adapters.'
+description: Use Doxum public APIs to design, implement, and review schemas, document mutations, projections, React bindings, local sync, and advanced processors without reading implementation source. Read maintainer invariants only when changing Doxum itself.
 ---
 
 # Doxum Runtime
 
-Read the [English guide](references/guide.en.md) or [中文指南](references/guide.zh-CN.md).
-For examples read [patterns](references/patterns.en.md) or [中文模式](references/patterns.zh-CN.md).
-For exact public call shapes, exported package surface, callback contexts, result
-types, and supported errors, read the [API reference](references/api.en.md) or
-[中文 API 参考](references/api.zh-CN.md) instead of implementation source.
-For any projection design or implementation, especially custom processors or
-cross-collection dependencies, read the [projection reference](references/projections.en.md)
-or [中文 Projection 参考](references/projections.zh-CN.md).
-Before runtime changes read [invariants](references/invariants.en.md) or
-[中文不变量](references/invariants.zh-CN.md).
+Use this skill as the public contract for Doxum. When Doxum is a dependency, work from the public API and these references. Do not inspect `core/src`, `react/src`, tests, source maps, or built JavaScript to discover how application code should use Doxum. If a public behavior is missing here while working in the Doxum repository, treat that as a skill documentation defect and update the skill together with the API change.
 
-- Root object defines schema identity; Infer describes readonly data with shared immutable payloads.
-- createDocument owns canonical state. update, apply and replace share one session.
-- Draft and trusted internal readWith scopes are borrowed for synchronous callbacks;
-  their proxies must not escape. Public values should use snapshot when they need to
-  outlive the callback.
-- Atomic fields are deeply readonly during access and replaced whole.
-- Maps use get/has/ids/put/remove/replace; table/list/tree use overloaded replace
-  for member and whole-container replacement. Use replace(parent, key, value) for
-  object or variant members whose Draft type contains collection tools.
-- Ordered table/list Drafts use move(key | readonly key[], anchor?) for relative
-  movement and reorder(keys) for an exact full-membership permutation.
-- Trees may be empty. `tree(field(...))` requires every existing node to own `value`;
-  use `tree(optional(field(...)))` only when node payload absence is part of the model.
-  `optional(tree(...))` controls whole-tree presence independently.
-- Tree projection paths reuse ordinary source protocols: `tree.rootId` is scalar,
-  `tree.nodes` is keyed, and `tree.nodes.item(id)` is a single-node value.
-- Expected business failure throws TransactionRejected. Other exceptions roll back
-  and rethrow unchanged. Callback returns carry business values and notices.
-- Commits contain final reversible ChangeSets. History and impact share those facts.
-- ChangeSets group member transitions by container, with explicit added/removed/updated
-  kinds, optional before/after order in the same group, and a separate root reset.
-  Standalone order records and duplicate groups are invalid. Grouping preserves field-level impact.
-- Paths belong in subscription, impact and collection source callbacks.
-- `Schema` / `ObjectSchema` are portable schema handles. Export inferred schemas
-  directly; application code should not need `ReturnType<typeof object>` or internal
-  node types to make declarations portable.
-- Projection definitions are lazy; one ProjectionRuntime owns all materialized
-  producers, outputs, scheduling and source attachments for that Runtime.
-  `KeyedProjection<K,V>` is the single public keyed projection handle. Collection
-  `observe`, `derive.keyed`, `incremental.collection`, group collection leaves and
-  `CollectionInput<K,V>` all use that same keyed capability.
-  Use named-object `derive` for pure aggregate values. The `derive.keyed` family owns
-  keyed derivation: ordinary `derive.keyed` preserves driver membership/order;
-  `keys`/`values`/`entries` expose standard ordered read shapes; `get` is the precise
-  scalar keyed lookup; `subset`/`filter`/`compact` own membership-changing derivation;
-  `groupBy` is the generic reverse-index primitive and `singleton` is optional-scalar
-  to 0/1 keyed composition.
-  Per-entry equality suppresses unchanged generated values. Its dependency form uses a named object: plain Projection members
-  invalidate the driver key set, while `{ source, key }` / `{ source, keys }` members let the Runtime own
-  singular/plural per-output-key source bindings and reverse lookup. Selectors receive
-  `(entry, key)` or `(entry, key, dependencies)`. The producer graph remains explicit and static;
-  processors never perform imperative Runtime reads to discover dependencies.
-  Use `runtime.items(keyedProjection)` / `scope.items(...)` for Runtime-owned ordered
-  membership plus stable per-membership item Readables; do not rebuild that cache in adapters.
-  `input.collection` edits have a strong exception boundary: callback or per-entry
-  equality failure leaves both the published value and the next draft unchanged.
-  A `ProjectionScope` only adds lifecycle ownership through `scope.own(...)`; create
-  definitions with the root declaration APIs, then own a projection or static output tree
-  before that definition is first materialized as a root.
-  Use advanced `incremental` only for retained state or cross-key coordination that
-  cannot be expressed by the `derive.keyed` family. `incremental.keyed` owns independent
-  per-driver-key retained state while preserving driver membership/order and reuses the
-  same dynamic keyed dependency routing. `collectionChange.keys` is the
-  transport-level iterable for incremental added/updated/removed keys; callers handle
-  reset and order semantics themselves. React selector tracking remains a consumer
-  concern through `ProjectionProvider` and `useProjection(projection, selector)`.
-- Advanced incremental definitions always declare `process`; `state()` is present only
-  when retained state is actually needed. `incremental.group` declares its static
-  output tree through the synchronous `output` callback. `define.value` and
-  `define.collection` are callback methods, not separate imports; every returned leaf
-  is a `Projection<T>` or `KeyedProjection<K,V>` from the same producer.
-- Observer errors leave commits accepted. Do not retry as if they rolled back.
-- Core stays framework-neutral; adapters consume standard `Readable`,
-  document `select`, and projection readables without internal target/address protocols.
-- Local sync owns browser persistence/leadership. Network conflict policy and
-  collaborative undo belong at a separate boundary.
+Answer and write examples in the user's language. The canonical references are intentionally single-source so API semantics cannot drift between translations.
 
-Update examples and tests when behavior changes. Never add compatibility APIs,
-a second path grammar, a parallel join/dependency protocol, or another writable
-derived cache.
+## Ownership spine
+
+Choose the owner before choosing an API:
+
+- **Canonical application data** belongs to one `DocumentRuntime` created by `createDocument`.
+- **Pure derived data** belongs to lazy `Projection` definitions and one materializing `ProjectionRuntime`.
+- **Runtime-local UI/application state** belongs to `input` or `input.collection`, not to the canonical document unless it must participate in document history, persistence, replay, or impact.
+- **Framework state** stays behind adapters. React consumes `Readable`, document selectors, projections, and projection inputs.
+- **Browser durability/leadership** belongs to `doxum/local-sync`; network collaboration and distributed conflict policy are separate boundaries.
+- **Retained incremental state** belongs to `doxum/advanced` only when ordinary `derive` / `derive.keyed` cannot express the work clearly.
+
+## Reference routing
+
+Read the smallest complete reference for the task before implementing it.
+
+| Task                                                                                                                           | Read                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| Exact imports, signatures, callback fields, result types, errors, and all public exports                                       | [Public API](references/public-api.md)             |
+| Schema modeling, validators, Draft operations, reads, snapshots, commits, history, apply, impact, trees                        | [Document runtime](references/document-runtime.md) |
+| `observe`, `derive`, the `derive.keyed` family, dynamic keyed dependencies, Runtime/scope/items, batching, advanced processors | [Projections](references/projections.md)           |
+| React, external sources, `Readable`, and local-sync lifecycle                                                                  | [Integrations](references/integrations.md)         |
+| End-to-end usage patterns that can be adapted directly                                                                         | [Recipes](references/recipes.md)                   |
+| Editing or reviewing Doxum internals, ownership boundaries, scheduler/mutation architecture, release-facing invariants         | [Maintainer invariants](references/invariants.md)  |
+
+For application work, do not read the maintainer reference unless the task is actually changing Doxum itself.
+
+## Default API decisions
+
+Follow these choices unless the requirement says otherwise:
+
+1. Model stable document structure with `object`, `variant`, `map`, `table`, `list`, and `tree`; use `field` for atomic payloads that are replaced as a whole.
+2. Mutate canonical state only through `document.update`, `document.apply`, `document.replace`, or history operations. Draft/read proxies are synchronous borrowed views and must not escape their callback.
+3. Use `read` for one synchronous document read and `select` for a document `Readable` with dynamic dependency tracking.
+4. Use `observe` to bring a document/readable/external source into the projection graph.
+5. Use named-object `derive` for pure aggregate values.
+6. Use `derive.keyed` when one keyed source owns output membership/order. Prefer its built-in `keys`, `values`, `entries`, `get`, `subset`, `filter`, `compact`, `groupBy`, and `singleton` primitives over hand-written incremental collection patches.
+7. Express per-output-key joins through `{ source, key }` or `{ source, keys }` dependencies. Let the Runtime own binding and reverse invalidation; do not maintain an application `Map` just to route dependency changes.
+8. Use `runtime.items(keyedProjection)` or `scope.items(...)` for stable per-membership item `Readable`s.
+9. Use `incremental.keyed` for independent retained state per driver key. Use `incremental.collection` or `incremental.group` only when direct incremental output patching or shared retained state is required.
+10. Use `ProjectionScope` only for lifecycle ownership. Define projections normally, then `scope.own(...)` before that definition is first materialized as a root.
+
+## Failure and lifecycle rules
+
+- Doxum callbacks are synchronous unless the public API explicitly returns a Promise.
+- `TransactionRejected` expresses expected application rejection; ordinary thrown exceptions roll back and rethrow unchanged.
+- A committed document write remains committed even if projection or listener notification later fails; observer errors are reported on the result or through projection error handling.
+- `CollectionChange` is an advanced processor transport contract. Reset, membership transitions, value updates, and order are distinct facts.
+- `input.collection` has a strong exception boundary: callback or equality failure installs no partial next state.
+- Dispose the owning `ProjectionRuntime`, `ProjectionScope`, and `LocalSync` with the application/service lifecycle that created them.
+
+## Completion contract
+
+Before finishing Doxum application work, verify that:
+
+- every import comes from `doxum`, `doxum/advanced`, `doxum/react`, or `doxum/local-sync`;
+- no application behavior depends on an internal path, private brand, generated chunk, or source implementation detail;
+- canonical, projection, input, adapter, and persistence responsibilities have one owner each;
+- advanced APIs are used only for requirements that the ordinary public projection family cannot express;
+- examples follow the documented public failure and lifecycle semantics.

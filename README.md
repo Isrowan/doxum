@@ -599,8 +599,9 @@ Builds produce root `dist` ESM/CJS/declarations for `doxum`,
 The runtime shares one transaction lifecycle; complete mutation operations are
 organized by domain under `core/src/mutation/operations`, with access, first-touch
 recording and publication retaining their own responsibilities.
-The published [runtime skill](skills/doxum-runtime/SKILL.md) includes English and
-Chinese application guidance.
+The published [runtime skill](skills/doxum-runtime/SKILL.md) is a source-free consumer
+contract with complete public API routing, lifecycle guidance, recipes, integration
+semantics and separate maintainer invariants.
 
 ## Release
 

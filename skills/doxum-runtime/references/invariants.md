@@ -1,7 +1,6 @@
 # Runtime Invariants
 
-Public call shapes belong in [api.en.md](api.en.md); keep this file limited to
-implementation invariants that affect design and review decisions.
+This file is maintainer-only. Application/library consumers should use [Public API](public-api.md), [Document runtime](document-runtime.md), [Projections](projections.md), and [Integrations](integrations.md) without reading implementation source. Keep this file limited to implementation invariants that affect Doxum design and review decisions.
 
 1. createDocument owns canonical state; Draft, apply and replace share MutationSession.
    runtime owns one execution/rollback/seal/publish boundary, also used by history.
@@ -66,3 +65,7 @@ implementation invariants that affect design and review decisions.
 
 Network intent, authorization, collaborative undo and persist-before-visible acceptance
 are separate requirements, not hidden runtime capabilities.
+
+## Skill contract
+
+The published `skills/doxum-runtime` directory is part of the consumer contract. When a public export, call shape, lifecycle rule, failure mode, or recommended primitive changes, update the canonical skill reference in the same change. Consumer references must not require internal source paths to explain ordinary usage. The repository skill check owns export coverage and source-free consumer-reference validation.
