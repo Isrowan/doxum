@@ -10,9 +10,9 @@ import {
   table,
   tree,
   type Draft,
-} from '../src';
-import { startProfile } from '../src/profile';
-import { MutationSession } from '../src/mutation/session';
+} from 'doxum';
+import { startProfile } from '@/profile';
+import { MutationSession } from '@/mutation/session';
 const schema = object({
   entities: map(
     object({ position: object({ x: field<number>(), y: field<number>() }), name: field<string>() })

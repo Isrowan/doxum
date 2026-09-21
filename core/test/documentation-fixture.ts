@@ -9,7 +9,7 @@ import {
   observe,
   parse,
   type Infer,
-} from '../src';
+} from 'doxum';
 
 export const documentationExamples = () => {
   const task = object({ title: field<string>(), done: field<boolean>() });

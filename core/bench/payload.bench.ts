@@ -1,5 +1,5 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, field, object } from '../src';
+import { createDocument, field, object } from 'doxum';
 
 describe('shared payload validation, publication and history', () => {
   for (const size of [10, 10000, 100000]) {

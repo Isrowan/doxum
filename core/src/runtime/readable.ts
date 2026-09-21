@@ -1,4 +1,4 @@
-import type { ObjectSchema } from '../schema/model';
+import type { ObjectSchema } from '@/schema/model';
 import type { ReadonlyDocument, DocumentRuntime } from './contract';
 import { bindContext, contextOf } from './context';
 

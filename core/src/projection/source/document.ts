@@ -1,16 +1,16 @@
-import * as address from '../../address/resolve';
-import * as impactTarget from '../../impact/target';
-import * as sequence from '../../order/sequence';
-import { contextOf } from '../../runtime/context';
-import type { ReadonlyDocument, Unsubscribe } from '../../runtime/contract';
-import { collectionEntryNode } from '../../schema/model';
-import type { DocumentTreeNode, ObjectSchema } from '../../schema/model';
-import type { ImpactTarget } from '../../schema/path';
-import type { ChangeSet } from '../../changes';
-import * as schemaValue from '../../schema/value';
-import { isRecord } from '../../value/record';
-import type { CollectionRead } from '../contract';
-import type { SourceDefinition } from '../definition';
+import * as address from '@/address/resolve';
+import * as impactTarget from '@/impact/target';
+import * as sequence from '@/order/sequence';
+import { contextOf } from '@/runtime/context';
+import type { ReadonlyDocument, Unsubscribe } from '@/runtime/contract';
+import { collectionEntryNode } from '@/schema/model';
+import type { DocumentTreeNode, ObjectSchema } from '@/schema/model';
+import type { ImpactTarget } from '@/schema/path';
+import type { ChangeSet } from '@/changes';
+import * as schemaValue from '@/schema/value';
+import { isRecord } from '@/value/record';
+import type { CollectionRead } from '@/projection/contract';
+import type { SourceDefinition } from '@/projection/definition';
 import { materializeDocumentValue } from './materialization';
 import {
   clearCollectionPending,
@@ -22,7 +22,7 @@ import {
   mergeValueChanges,
   resetCollectionPending,
 } from './dirty';
-import { assertScope, type Scheduler } from '../graph/scheduler';
+import { assertScope, type Scheduler } from '@/projection/graph/scheduler';
 import {
   createCollectionBoundary,
   createValueBoundary,

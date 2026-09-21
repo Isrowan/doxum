@@ -1,9 +1,9 @@
-import { createDependencyTracker } from '../access/dependency';
-import type { Read } from '../access/scope';
-import * as target from '../impact/target';
-import type { Readable, Unsubscribe } from '../readable';
-import type { ObjectSchema } from '../schema/model';
-import type { ImpactTarget } from '../schema/path';
+import { createDependencyTracker } from '@/access/dependency';
+import type { Read } from '@/access/scope';
+import * as target from '@/impact/target';
+import type { Readable, Unsubscribe } from '@/readable';
+import type { ObjectSchema } from '@/schema/model';
+import type { ImpactTarget } from '@/schema/path';
 import { readWith } from './access';
 import { DocumentDisposedError, type ReadonlyDocument } from './contract';
 import { contextOf } from './context';

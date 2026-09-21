@@ -1,11 +1,11 @@
-import type { Unsubscribe } from '../../runtime/contract';
+import type { Unsubscribe } from '@/runtime/contract';
 import {
   collectionChange,
   collectionHasStructuralChange,
   diffCollection,
-} from '../collection/change';
-import type { CollectionChange } from '../contract';
-import type { Readable } from '../../readable';
+} from '@/projection/collection/change';
+import type { CollectionChange } from '@/projection/contract';
+import type { Readable } from '@/readable';
 import { notifyProjectionListeners } from './listeners';
 
 export type ProjectionReadableSource<T> = {

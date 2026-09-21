@@ -1,4 +1,4 @@
-import type { CollectionChange } from '../contract';
+import type { CollectionChange } from '@/projection/contract';
 
 type Added<K extends string, V> = { readonly key: K; readonly after: V };
 type Updated<K extends string, V> = {

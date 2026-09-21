@@ -6,6 +6,12 @@
   ChangeSets, canonical document state, history, impact, and projections.
 - `react` is a one-way adapter from `doxum` to React. Do not import React
   or UI concepts into `core`.
+- `tsconfig.base.json` is the single module-alias authority. Inside `core/src`,
+  keep same-directory imports relative (`./...`) and use `@/...` for every
+  cross-directory core dependency. `@/*` maps to `core/src/*`. React code must
+  consume core through the public `doxum` package surface and must not use `@/`.
+  Tests and benchmarks use `doxum` entry points for public behavior and `@/`
+  only when intentionally exercising internal core modules.
 - Root `dist` is build output. Change `src` and rebuild; do
   not edit generated files.
 

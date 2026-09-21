@@ -1,4 +1,4 @@
-import { profile } from '../../profile';
+import { profile } from '@/profile';
 
 type IndexNode<K extends string, V> = {
   readonly key: K;

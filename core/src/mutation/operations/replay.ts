@@ -1,10 +1,10 @@
-import type { ChangeDirection, ChangeSet } from '../../changes';
-import type { MutationSession } from '../session';
-import * as state from '../state';
-import * as sequence from '../../order/sequence';
-import * as issue from '../issue';
-import * as schemaValue from '../../schema/value';
-import * as tree from '../../tree/topology';
+import type { ChangeDirection, ChangeSet } from '@/changes';
+import type { MutationSession } from '@/mutation/session';
+import * as state from '@/mutation/state';
+import * as sequence from '@/order/sequence';
+import * as issue from '@/mutation/issue';
+import * as schemaValue from '@/schema/value';
+import * as tree from '@/tree/topology';
 export function apply(
   session: MutationSession,
   changes: ChangeSet,

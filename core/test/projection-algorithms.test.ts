@@ -4,8 +4,8 @@ import {
   collectionHasStructuralChange,
   createCollectionChange,
   diffCollection,
-} from '../src/projection/collection/change';
-import { PersistentKeyedIndex } from '../src/projection/collection/index';
+} from '@/projection/collection/change';
+import { PersistentKeyedIndex } from '@/projection/collection/index';
 
 const generator = (seed: number) => {
   let state = seed >>> 0;

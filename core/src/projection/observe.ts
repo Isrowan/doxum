@@ -1,7 +1,7 @@
-import type { Readable } from '../readable';
-import { contextOf } from '../runtime/context';
-import type { ReadonlyDocument } from '../runtime/contract';
-import type { Infer, ObjectSchema, ReadonlyValue } from '../schema/model';
+import type { Readable } from '@/readable';
+import { contextOf } from '@/runtime/context';
+import type { ReadonlyDocument } from '@/runtime/contract';
+import type { Infer, ObjectSchema, ReadonlyValue } from '@/schema/model';
 import {
   compilePath,
   type CollectionEntry,
@@ -10,7 +10,7 @@ import {
   type PathValueOf,
   type SchemaPath,
   type ValueSelector,
-} from '../schema/path';
+} from '@/schema/path';
 import type { ExternalCollectionSource, ExternalValueSource } from './contract';
 import { defineSource, type KeyedProjection, type Projection } from './definition';
 

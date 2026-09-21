@@ -9,8 +9,8 @@ import {
   object,
   observe,
   ProjectionDisposedError,
-} from '../src';
-import { incremental } from '../src/projection/advanced';
+} from 'doxum';
+import { incremental } from 'doxum/advanced';
 
 describe('keyed projection evolution', () => {
   it('publishes ordered entries and reuses unchanged tuples', () => {

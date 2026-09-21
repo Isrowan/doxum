@@ -1,4 +1,4 @@
-import { isRecord } from '../value/record';
+import { isRecord } from '@/value/record';
 export type MutableTreeNode = { parentId?: string; children: string[]; value?: unknown };
 export type MutableTree = { rootId?: string; nodes: Record<string, MutableTreeNode> };
 const node = (tree: MutableTree, id: string) =>

@@ -1,5 +1,5 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, field, list, object } from '../src';
+import { createDocument, field, list, object } from 'doxum';
 
 const count = 10_000;
 const movedCount = 1_000;

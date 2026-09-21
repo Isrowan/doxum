@@ -1,4 +1,4 @@
-import type { ObjectSchema, RootNodeOf } from './schema/model';
+import type { ObjectSchema, RootNodeOf } from '@/schema/model';
 import type {
   CollectionId,
   CollectionPath,
@@ -6,12 +6,12 @@ import type {
   ImpactTarget,
   PathPick,
   SchemaPath,
-} from './schema/path';
-import { compilePath } from './schema/path';
+} from '@/schema/path';
+import { compilePath } from '@/schema/path';
 import type { ChangeSet } from './changes';
-import { AddressIndex } from './address/index';
-import * as relation from './address/relation';
-import * as target from './impact/target';
+import { AddressIndex } from '@/address/index';
+import * as relation from '@/address/relation';
+import * as target from '@/impact/target';
 import { profile } from './profile';
 
 export type CollectionImpact<K> =

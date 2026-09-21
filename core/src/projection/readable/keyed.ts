@@ -1,6 +1,6 @@
-import type { Readable } from '../../readable';
-import type { Unsubscribe } from '../../runtime/contract';
-import { ProjectionDisposedError, type CollectionChange } from '../contract';
+import type { Readable } from '@/readable';
+import type { Unsubscribe } from '@/runtime/contract';
+import { ProjectionDisposedError, type CollectionChange } from '@/projection/contract';
 import { notifyProjectionListeners } from './listeners';
 import type { ProjectionReadableSource } from './selection';
 

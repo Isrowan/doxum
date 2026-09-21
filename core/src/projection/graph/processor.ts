@@ -1,6 +1,6 @@
-import { profile } from '../../profile';
-import { createCollectionOutput, type CollectionOutputState } from '../output/collection';
-import { ProjectionDisposedError } from '../contract';
+import { profile } from '@/profile';
+import { createCollectionOutput, type CollectionOutputState } from '@/projection/output/collection';
+import { ProjectionDisposedError } from '@/projection/contract';
 import type {
   CollectionOutputEvaluation,
   OutputDefinition,
@@ -8,14 +8,14 @@ import type {
   ProcessorDefinition,
   ProcessorInstance,
   ValueOutputEvaluation,
-} from '../definition';
+} from '@/projection/definition';
 import {
   assertSynchronous,
   type OutputRecord,
   type ProcessorRecord,
   type Scheduler,
 } from './scheduler';
-import { createValueOutput, type ValueOutputState } from '../output/value';
+import { createValueOutput, type ValueOutputState } from '@/projection/output/value';
 
 type BoundOutput =
   | {

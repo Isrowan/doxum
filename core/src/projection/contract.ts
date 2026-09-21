@@ -1,5 +1,5 @@
-import type { CollectionImpact } from '../impact';
-import type { Unsubscribe } from '../runtime/contract';
+import type { CollectionImpact } from '@/impact';
+import type { Unsubscribe } from '@/runtime/contract';
 
 /** Scheduler-owned metadata for one Runtime batch. */
 export type BatchContext = {

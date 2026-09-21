@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, field, list, map, object, table, type ChangeSet } from '../src';
-import { schemaNodeOf } from '../src/schema/model';
-import type { ImpactTarget } from '../src/schema/path';
-import { startProfile } from '../src/profile';
-import { SubscriptionIndex } from '../src/impact/target';
-import { MutationSession } from '../src/mutation/session';
-import { jsonChanges } from '../src/local-sync/json';
+import { createDocument, field, list, map, object, table, type ChangeSet } from 'doxum';
+import { schemaNodeOf } from '@/schema/model';
+import type { ImpactTarget } from '@/schema/path';
+import { startProfile } from '@/profile';
+import { SubscriptionIndex } from '@/impact/target';
+import { MutationSession } from '@/mutation/session';
+import { jsonChanges } from '@/local-sync/json';
 
 describe('grouped mutation architecture', () => {
   it('refreshes retained member handles across commands and rejects foreign sessions', () => {

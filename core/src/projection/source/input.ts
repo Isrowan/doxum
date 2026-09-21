@@ -1,6 +1,6 @@
-import { mapRead } from '../collection/view';
-import type { CollectionInputDraft, SourceDefinition } from '../definition';
-import { assertScope, assertSynchronous, type Scheduler } from '../graph/scheduler';
+import { mapRead } from '@/projection/collection/view';
+import type { CollectionInputDraft, SourceDefinition } from '@/projection/definition';
+import { assertScope, assertSynchronous, type Scheduler } from '@/projection/graph/scheduler';
 import {
   createCollectionBoundary,
   createValueBoundary,

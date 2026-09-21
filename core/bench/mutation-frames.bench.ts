@@ -1,5 +1,5 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, field, map, object, type SchemaPath } from '../src';
+import { createDocument, field, map, object, type SchemaPath } from 'doxum';
 const model = object({ rows: map(object({ x: field<number>(), y: field<number>() })) });
 describe('entity frames and subscription matching', () => {
   for (const [count, changed, listeners, offset, mode] of [

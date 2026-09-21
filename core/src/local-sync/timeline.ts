@@ -1,7 +1,7 @@
 import { LocalSyncError, normalizeLocalSyncError } from './error';
 import { json, jsonChanges, type JsonValue } from './json';
-import type { ChangeSet } from '../changes';
-import { isRecord } from '../value/record';
+import type { ChangeSet } from '@/changes';
+import { isRecord } from '@/value/record';
 
 const DATABASE_VERSION = 5;
 const FORMAT_VERSION = 3;

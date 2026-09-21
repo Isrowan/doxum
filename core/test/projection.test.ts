@@ -15,9 +15,9 @@ import {
   tree,
   type ExternalCollectionEvent,
   type ExternalValueEvent,
-} from '../src';
-import { incremental } from '../src/projection/advanced';
-import { measureProfile } from '../src/profile';
+} from 'doxum';
+import { incremental } from 'doxum/advanced';
+import { measureProfile } from '@/profile';
 
 const row = object({ value: field<number>(), label: field<string>() });
 const model = object({ rows: map(row), ordered: table(row) });

@@ -16,6 +16,14 @@ The runtime is instance identity.
 `address/relation.ts` owns address relations, and `address/index.ts` owns the
 prefix index. `impact/target.ts` owns internal target identity and matching.
 
+Internal module addresses mirror these ownership boundaries. `tsconfig.base.json`
+is the only alias definition: `@/*` resolves to `core/src/*`. Core modules keep
+same-directory imports as `./...` and use `@/...` whenever they cross a directory;
+the runtime import graph resolves both forms to the same source files before checking
+dependency direction and cycles. The React adapter never uses the internal alias and
+depends on core through the public `doxum` package surface. Public fixtures likewise
+exercise package entry points, while white-box tests may use `@/` deliberately.
+
 `runtime/context.ts` is the single document-runtime identity boundary. The
 canonical runtime, its history `Readable` and every `document.readonly()` capability
 alias bind to

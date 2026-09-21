@@ -16,21 +16,21 @@ import type {
   TreeNode,
   ValueSchemaNode,
   VariantNode,
-} from '../schema/model';
-import * as address from '../address/resolve';
-import { compiledShape, type FixedMember } from '../schema/layout';
-import * as schemaValue from '../schema/value';
+} from '@/schema/model';
+import * as address from '@/address/resolve';
+import { compiledShape, type FixedMember } from '@/schema/layout';
+import * as schemaValue from '@/schema/value';
 import type { DependencyTracker } from './dependency';
-import type { CanonicalState } from '../mutation/state';
-import type { MutationSession } from '../mutation/session';
-import * as tableOperations from '../mutation/operations/table';
-import * as listOperations from '../mutation/operations/list';
-import * as treeOperations from '../mutation/operations/tree';
-import * as orderOperations from '../mutation/operations/order';
-import * as sequence from '../order/sequence';
-import * as tree from '../tree/topology';
-import { profile } from '../profile';
-import * as target from '../impact/target';
+import type { CanonicalState } from '@/mutation/state';
+import type { MutationSession } from '@/mutation/session';
+import * as tableOperations from '@/mutation/operations/table';
+import * as listOperations from '@/mutation/operations/list';
+import * as treeOperations from '@/mutation/operations/tree';
+import * as orderOperations from '@/mutation/operations/order';
+import * as sequence from '@/order/sequence';
+import * as tree from '@/tree/topology';
+import { profile } from '@/profile';
+import * as target from '@/impact/target';
 
 declare const scopeValue: unique symbol;
 type Scoped<N extends DocumentNode, W extends boolean, V = Infer<N>> = {

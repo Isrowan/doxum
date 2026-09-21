@@ -1,6 +1,6 @@
-import * as relation from '../../address/relation';
-import type { ChangeSet } from '../../changes';
-import type { CollectionSelector, ValueSelector } from '../../schema/path';
+import * as relation from '@/address/relation';
+import type { ChangeSet } from '@/changes';
+import type { CollectionSelector, ValueSelector } from '@/schema/path';
 
 export type DocumentDirty = {
   replace: boolean;

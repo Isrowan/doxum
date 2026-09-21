@@ -1,11 +1,11 @@
-import { profile } from '../../profile';
-import type { Unsubscribe } from '../../runtime/contract';
-import { createCollectionOutput, type CollectionOutputState } from '../output/collection';
-import type { CollectionRead } from '../contract';
-import { ProjectionDisposedError, ProjectionError } from '../contract';
-import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '../graph/scheduler';
-import { createValueOutput, type ValueOutputState } from '../output/value';
-import type { CollectionInputDraft } from '../definition';
+import { profile } from '@/profile';
+import type { Unsubscribe } from '@/runtime/contract';
+import { createCollectionOutput, type CollectionOutputState } from '@/projection/output/collection';
+import type { CollectionRead } from '@/projection/contract';
+import { ProjectionDisposedError, ProjectionError } from '@/projection/contract';
+import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '@/projection/graph/scheduler';
+import { createValueOutput, type ValueOutputState } from '@/projection/output/value';
+import type { CollectionInputDraft } from '@/projection/definition';
 
 export type SourceWrite =
   | { readonly kind: 'value'; set(value: unknown): void }

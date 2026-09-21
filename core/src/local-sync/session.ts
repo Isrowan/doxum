@@ -2,13 +2,13 @@ import {
   installRuntimeWriteDriver,
   type RuntimeWriteDriverLease,
   type RuntimeWriteIntent,
-} from '../runtime/driver';
-import type { DocumentCommit } from '../runtime/contract';
-import type { Infer, ObjectSchema } from '../schema/model';
+} from '@/runtime/driver';
+import type { DocumentCommit } from '@/runtime/contract';
+import type { Infer, ObjectSchema } from '@/schema/model';
 import { type AttachLocalSyncOptions, type LocalSync, type LocalSyncState } from './contract';
 import { LocalSyncError, normalizeLocalSyncError } from './error';
 import { json, jsonChanges } from './json';
-import type { ChangeSet } from '../changes';
+import type { ChangeSet } from '@/changes';
 import { openIndexedDbTimeline, type StoredCommit } from './timeline';
 
 type LockOptions = {

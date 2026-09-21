@@ -10,9 +10,9 @@ import {
   observe,
   read,
   table,
-} from '../src';
-import { attachLocalSync, LocalSyncError, type LocalSyncErrorCode } from '../src/local-sync';
-import { openIndexedDbTimeline } from '../src/local-sync/timeline';
+} from 'doxum';
+import { attachLocalSync, LocalSyncError, type LocalSyncErrorCode } from 'doxum/local-sync';
+import { openIndexedDbTimeline } from '@/local-sync/timeline';
 
 const expectLocalSyncCode = (run: () => unknown, code: LocalSyncErrorCode): void => {
   let thrown: unknown;

@@ -10,9 +10,9 @@ import {
   table,
   tree,
   variant,
-} from '../src';
-import { jsonChanges } from '../src/local-sync/json';
-import { startProfile } from '../src/profile';
+} from 'doxum';
+import { jsonChanges } from '@/local-sync/json';
+import { startProfile } from '@/profile';
 
 const number = (value: unknown): value is number => {
   if (typeof value !== 'number') throw new Error('Expected number');

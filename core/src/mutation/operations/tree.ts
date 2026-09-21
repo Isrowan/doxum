@@ -1,9 +1,9 @@
-import type { DocumentAddress } from '../../schema/model';
-import type { ResolvedTreeContainer } from '../../address/resolve';
-import type { MutationSession } from '../session';
-import * as treeTopology from '../../tree/topology';
-import type { MutableTree, TreePosition } from '../../tree/topology';
-import * as issue from '../issue';
+import type { DocumentAddress } from '@/schema/model';
+import type { ResolvedTreeContainer } from '@/address/resolve';
+import type { MutationSession } from '@/mutation/session';
+import * as treeTopology from '@/tree/topology';
+import type { MutableTree, TreePosition } from '@/tree/topology';
+import * as issue from '@/mutation/issue';
 const node = (tree: MutableTree, id: string) =>
   Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
 const positionIndex = (index: number | undefined, length: number, at: DocumentAddress): number => {

@@ -9,7 +9,7 @@ import {
   object,
   observe,
   table,
-} from '../src';
+} from 'doxum';
 
 const task = object({ title: field<string>(), done: field<boolean>() });
 const model = object({ title: field<string>(), tasks: map(task), ordered: table(task) });

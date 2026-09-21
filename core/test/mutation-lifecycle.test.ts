@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, field, object, TransactionRejected, type Draft } from '../src';
-import { installRuntimeWriteDriver } from '../src/runtime/driver';
+import { createDocument, field, object, TransactionRejected, type Draft } from 'doxum';
+import { installRuntimeWriteDriver } from '@/runtime/driver';
 
 const schema = object({ a: field<number>(), z: field<number>() });
 const initial = { a: 0, z: 0 };

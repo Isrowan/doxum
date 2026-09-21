@@ -1,5 +1,5 @@
-import type { SourceDefinition } from '../definition';
-import type { Scheduler } from '../graph/scheduler';
+import type { SourceDefinition } from '@/projection/definition';
+import type { Scheduler } from '@/projection/graph/scheduler';
 import type { SourceMaterialization } from './boundary';
 import { createDocumentSourceRegistry } from './document';
 import { createExternalSourceRegistry } from './external';

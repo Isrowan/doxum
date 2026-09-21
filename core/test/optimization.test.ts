@@ -10,9 +10,9 @@ import {
   object,
   observe,
   tree,
-} from '../src';
-import { incremental } from '../src/projection/advanced';
-import { measureProfile } from '../src/profile';
+} from 'doxum';
+import { incremental } from 'doxum/advanced';
+import { measureProfile } from '@/profile';
 
 describe('projection optimization boundaries', () => {
   it('reorders a keyed subset without restaging unchanged values', () => {

@@ -8,7 +8,7 @@ import {
   tree,
   TransactionRejected,
   type Draft,
-} from '../src';
+} from 'doxum';
 
 const model = object({ rows: table(object({ n: field<number>() })) });
 type State = { rows: { ids: string[]; byId: Record<string, { n: number }> } };

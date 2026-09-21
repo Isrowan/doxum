@@ -17,8 +17,8 @@ import {
   variant,
   type Draft,
   type SchemaPath,
-} from '../src';
-import { schemaNodeOf } from '../src/schema/model';
+} from 'doxum';
+import { schemaNodeOf } from '@/schema/model';
 
 const row = object({ n: field<number>(), title: field<string>() });
 const model = object({

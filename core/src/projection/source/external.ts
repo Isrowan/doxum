@@ -1,9 +1,9 @@
-import type { Readable } from '../../readable';
-import { contextOf } from '../../runtime/context';
-import type { Unsubscribe } from '../../runtime/contract';
-import type { ExternalCollectionSource } from '../contract';
-import type { SourceDefinition } from '../definition';
-import type { Scheduler } from '../graph/scheduler';
+import type { Readable } from '@/readable';
+import { contextOf } from '@/runtime/context';
+import type { Unsubscribe } from '@/runtime/contract';
+import type { ExternalCollectionSource } from '@/projection/contract';
+import type { SourceDefinition } from '@/projection/definition';
+import type { Scheduler } from '@/projection/graph/scheduler';
 import {
   createCollectionBoundary,
   createValueBoundary,

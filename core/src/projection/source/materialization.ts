@@ -1,9 +1,9 @@
-import * as sequence from '../../order/sequence';
-import { profile } from '../../profile';
-import type { DocumentNode, DocumentTreeNode } from '../../schema/model';
-import { compiledShape } from '../../schema/layout';
-import * as schemaValue from '../../schema/value';
-import { installOwn, isRecord } from '../../value/record';
+import * as sequence from '@/order/sequence';
+import { profile } from '@/profile';
+import type { DocumentNode, DocumentTreeNode } from '@/schema/model';
+import { compiledShape } from '@/schema/layout';
+import * as schemaValue from '@/schema/value';
+import { installOwn, isRecord } from '@/value/record';
 import type { DocumentDirty } from './dirty';
 
 const hasDocumentDirty = (dirty: DocumentDirty): boolean =>

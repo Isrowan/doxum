@@ -1,14 +1,14 @@
-import type { Synchronous } from '../../runtime/contract';
-import { collectionChange, collectionHasStructuralChange } from '../collection/change';
-import type { SourceContext } from '../contract';
+import type { Synchronous } from '@/runtime/contract';
+import { collectionChange, collectionHasStructuralChange } from '@/projection/collection/change';
+import type { SourceContext } from '@/projection/contract';
 import {
   defineProcessor,
   isProjection,
   type KeyedProjection,
   type OutputEvaluation,
   type Projection,
-} from '../definition';
-import { assertSynchronous } from '../graph/scheduler';
+} from '@/projection/definition';
+import { assertSynchronous } from '@/projection/graph/scheduler';
 import {
   assertKeyedProjection,
   compileKeyedDependencies,
@@ -17,9 +17,9 @@ import {
   type KeyedDependencies as KeyedDeriveDependencies,
   type KeyedDependencyRecord as KeyedDeriveDependencyRecord,
   type KeyedDependencyValues,
-} from '../keyed/dependency';
-import { createKeyedTransform, keyedAbsent } from '../keyed/transform';
-import { createKeyRelation } from '../keyed/relation';
+} from '@/projection/keyed/dependency';
+import { createKeyedTransform, keyedAbsent } from '@/projection/keyed/transform';
+import { createKeyRelation } from '@/projection/keyed/relation';
 
 type Equality<T> = (previous: T, next: T) => boolean;
 

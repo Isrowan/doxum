@@ -1,8 +1,8 @@
-import type { Synchronous } from '../runtime/contract';
+import type { Synchronous } from '@/runtime/contract';
 import { compileProjectionDependencies, snapshotDependencyValue } from './dependency';
 import { defineProcessor, type Projection } from './definition';
-import { keyedDerive } from './derive/keyed';
-import { assertSynchronous } from './graph/scheduler';
+import { keyedDerive } from '@/projection/derive/keyed';
+import { assertSynchronous } from '@/projection/graph/scheduler';
 
 type ProjectionDependencies = Readonly<Record<string, Projection<unknown>>>;
 type ProjectionValues<D extends ProjectionDependencies> = {

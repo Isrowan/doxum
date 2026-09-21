@@ -1,22 +1,22 @@
-import type { Infer, ObjectSchema, RootNodeOf } from './schema/model';
-import { schemaNodeOf } from './schema/model';
-import type { PathPick } from './schema/path';
-import { compilePath } from './schema/path';
+import type { Infer, ObjectSchema, RootNodeOf } from '@/schema/model';
+import { schemaNodeOf } from '@/schema/model';
+import type { PathPick } from '@/schema/path';
+import { compilePath } from '@/schema/path';
 import { createImpact } from './impact';
 import { createHistory } from './history';
-import { createAccess, type Draft } from './access/scope';
-import { MutationSession } from './mutation/session';
-import * as replay from './mutation/operations/replay';
-import type { RuntimeWriteIntent } from './runtime/driver';
-import * as changeSet from './mutation/changes';
-import * as issue from './mutation/issue';
+import { createAccess, type Draft } from '@/access/scope';
+import { MutationSession } from '@/mutation/session';
+import * as replay from '@/mutation/operations/replay';
+import type { RuntimeWriteIntent } from '@/runtime/driver';
+import * as changeSet from '@/mutation/changes';
+import * as issue from '@/mutation/issue';
 import type { ChangeSet } from './changes';
-import * as schemaValue from './schema/value';
+import * as schemaValue from '@/schema/value';
 import {
   DocumentDisposedError,
   DocumentReentrancyError,
   TransactionRejected,
-} from './runtime/contract';
+} from '@/runtime/contract';
 import type {
   CommitListener,
   CommitSource,
@@ -25,11 +25,11 @@ import type {
   ReadonlyDocument,
   OperationResult,
   TransactionResult,
-} from './runtime/contract';
-import { readonlyDocument } from './runtime/readable';
-import { assertRuntimeWritable } from './runtime/driver';
-import { bindContext, type RuntimeContext, type RuntimeState } from './runtime/context';
-import { createNotificationCenter } from './runtime/notification';
+} from '@/runtime/contract';
+import { readonlyDocument } from '@/runtime/readable';
+import { assertRuntimeWritable } from '@/runtime/driver';
+import { bindContext, type RuntimeContext, type RuntimeState } from '@/runtime/context';
+import { createNotificationCenter } from '@/runtime/notification';
 
 export const createDocument = <S extends ObjectSchema<object>>(input: {
   readonly schema: S;

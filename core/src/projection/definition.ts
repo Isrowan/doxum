@@ -1,6 +1,6 @@
-import type { ReadonlyDocument } from '../runtime/contract';
-import type { ObjectSchema } from '../schema/model';
-import type { CollectionSelector, ValueSelector } from '../schema/path';
+import type { ReadonlyDocument } from '@/runtime/contract';
+import type { ObjectSchema } from '@/schema/model';
+import type { CollectionSelector, ValueSelector } from '@/schema/path';
 import type {
   CollectionChange,
   CollectionDraft,
@@ -9,7 +9,7 @@ import type {
   ExternalValueSource,
   SourceContext,
 } from './contract';
-import type { Readable } from '../readable';
+import type { Readable } from '@/readable';
 
 declare const projectionDefinition: unique symbol;
 declare const keyedProjection: unique symbol;

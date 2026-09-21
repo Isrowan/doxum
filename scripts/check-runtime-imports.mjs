@@ -5,6 +5,21 @@ import ts from 'typescript';
 const root = process.cwd();
 const sourceRoots = ['core/src', 'react/src'];
 const extensions = new Set(['.ts', '.tsx']);
+const tsconfigPath = join(root, 'tsconfig.base.json');
+const loadedTsconfig = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+if (loadedTsconfig.error)
+  throw new Error(ts.flattenDiagnosticMessageText(loadedTsconfig.error.messageText, '\n'));
+const tsconfig = loadedTsconfig.config;
+const internalAliasTargets = tsconfig.compilerOptions?.paths?.['@/*'];
+if (!Array.isArray(internalAliasTargets) || internalAliasTargets.length !== 1)
+  throw new Error('tsconfig.base.json must define exactly one @/* target.');
+const internalAliasPattern = internalAliasTargets[0];
+if (typeof internalAliasPattern !== 'string' || !internalAliasPattern.endsWith('/*'))
+  throw new Error('tsconfig.base.json @/* target must end with /*.');
+const tsconfigBase = tsconfig.compilerOptions?.baseUrl
+  ? resolve(dirname(tsconfigPath), tsconfig.compilerOptions.baseUrl)
+  : dirname(tsconfigPath);
+const internalAliasRoot = resolve(tsconfigBase, internalAliasPattern.slice(0, -2));
 
 const walk = entry => {
   const absolute = join(root, entry);
@@ -51,9 +66,13 @@ const moduleSpecifier = statement => {
     : undefined;
 };
 
-const resolveRelative = (from, specifier) => {
-  if (!specifier.startsWith('.')) return undefined;
-  const base = resolve(dirname(from), specifier);
+const resolveInternal = (from, specifier) => {
+  const base = specifier.startsWith('@/')
+    ? resolve(internalAliasRoot, specifier.slice(2))
+    : specifier.startsWith('.')
+      ? resolve(dirname(from), specifier)
+      : undefined;
+  if (!base) return undefined;
   const candidates = [
     base,
     `${base}.ts`,
@@ -76,10 +95,27 @@ for (const file of files) {
     true
   );
   for (const statement of source.statements) {
-    if (!isRuntimeImport(statement)) continue;
     const specifier = moduleSpecifier(statement);
     if (!specifier) continue;
-    const dependency = resolveRelative(file, specifier);
+    const dependency = resolveInternal(file, specifier);
+    const sourcePath = rel(file);
+    const targetPath = dependency ? rel(dependency) : undefined;
+
+    if (sourcePath.startsWith('core/src/')) {
+      if (specifier === 'doxum' || specifier.startsWith('doxum/'))
+        failures.push(`${sourcePath}: core internals must not import package entry ${specifier}`);
+      if (targetPath?.startsWith('core/src/')) {
+        const sameDirectory = dirname(file) === dirname(dependency);
+        if (sameDirectory && !specifier.startsWith('./'))
+          failures.push(`${sourcePath}: same-directory import must stay relative: ${specifier}`);
+        if (!sameDirectory && !specifier.startsWith('@/'))
+          failures.push(`${sourcePath}: cross-directory import must use @/: ${specifier}`);
+      }
+    }
+    if (sourcePath.startsWith('react/src/') && specifier.startsWith('@/'))
+      failures.push(`${sourcePath}: react must consume core through doxum public exports`);
+
+    if (!isRuntimeImport(statement)) continue;
     if (dependency && graph.has(dependency)) graph.get(file).push(dependency);
   }
 }

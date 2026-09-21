@@ -1,6 +1,6 @@
-import type { CollectionRead, SourceContext } from '../contract';
-import { defineProcessor, type KeyedProjection } from '../definition';
-import { assertSynchronous } from '../graph/scheduler';
+import type { CollectionRead, SourceContext } from '@/projection/contract';
+import { defineProcessor, type KeyedProjection } from '@/projection/definition';
+import { assertSynchronous } from '@/projection/graph/scheduler';
 import {
   assertKeyedProjection,
   compileKeyedDependencies,

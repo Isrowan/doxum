@@ -1,5 +1,5 @@
-import { profile } from '../profile';
-import type { DocumentAddress } from '../schema/model';
+import { profile } from '@/profile';
+import type { DocumentAddress } from '@/schema/model';
 
 export const contains = (parent: DocumentAddress, child: DocumentAddress): boolean => {
   profile.address.prefixComparison();

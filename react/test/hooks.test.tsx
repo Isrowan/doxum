@@ -12,7 +12,7 @@ import {
   observe,
   derive,
 } from 'doxum';
-import { ProjectionProvider, useDocumentSelector, useInput, useProjection } from '../src';
+import { ProjectionProvider, useDocumentSelector, useInput, useProjection } from 'doxum/react';
 
 describe('projection React adapter', () => {
   it('uses the same hook for values, selectors, and inputs', () => {

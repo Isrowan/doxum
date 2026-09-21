@@ -1,8 +1,8 @@
-import type { Change, ChangeSet, MemberChange, ValueTransition } from '../changes';
-import { AddressIndex } from '../address/index';
-import { isPlainObject } from '../value/record';
+import type { Change, ChangeSet, MemberChange, ValueTransition } from '@/changes';
+import { AddressIndex } from '@/address/index';
+import { isPlainObject } from '@/value/record';
 import * as issue from './issue';
-import * as tree from '../tree/topology';
+import * as tree from '@/tree/topology';
 
 const validated = new WeakSet<ChangeSet>();
 

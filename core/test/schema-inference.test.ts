@@ -12,7 +12,7 @@ import {
   tree,
   variant,
   type Infer,
-} from '../src';
+} from 'doxum';
 
 describe('projection schema inference', () => {
   it('infers observed collection values from the schema', () => {

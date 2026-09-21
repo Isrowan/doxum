@@ -10,7 +10,7 @@ import {
   observe,
   table,
   tree,
-} from '../src';
+} from 'doxum';
 const model = object({ rows: table(object({ value: field<number>() })) });
 // Keep the regular suite quick; run the 100k stress case with
 // DOXUM_PROJECTION_BENCH_SIZE=100000 when profiling a large collection.

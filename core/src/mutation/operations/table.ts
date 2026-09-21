@@ -1,8 +1,8 @@
-import type { DocumentAnchor } from '../../schema/model';
-import type { MutationSession } from '../session';
-import type { ResolvedContainer } from '../../address/resolve';
-import * as anchor from '../../order/anchor';
-import * as issue from '../issue';
+import type { DocumentAnchor } from '@/schema/model';
+import type { MutationSession } from '@/mutation/session';
+import type { ResolvedContainer } from '@/address/resolve';
+import * as anchor from '@/order/anchor';
+import * as issue from '@/mutation/issue';
 export function create(
   session: MutationSession,
   container: ResolvedContainer,

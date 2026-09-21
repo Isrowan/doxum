@@ -9,7 +9,7 @@ import {
   list,
   type ChangeSet,
   type Infer,
-} from '../src';
+} from 'doxum';
 const model = object({ n: field<number>(), rows: map(object({ n: field<number>() })) });
 const setup = () => createDocument({ schema: model, initial: { n: 0, rows: { a: { n: 1 } } } });
 const set = (at: readonly string[], before: unknown, after: unknown) => ({

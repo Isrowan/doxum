@@ -1,8 +1,8 @@
-import type { ChangeSet } from '../changes';
-import type { DocumentAddress, ObjectNode } from '../schema/model';
-import type { ImpactTarget, TreeTarget } from '../schema/path';
-import { AddressIndex } from '../address/index';
-import { profile } from '../profile';
+import type { ChangeSet } from '@/changes';
+import type { DocumentAddress, ObjectNode } from '@/schema/model';
+import type { ImpactTarget, TreeTarget } from '@/schema/path';
+import { AddressIndex } from '@/address/index';
+import { profile } from '@/profile';
 
 const treeRootSegment = 'rootId';
 const treeNodesSegment = 'nodes';

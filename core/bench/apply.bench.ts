@@ -1,5 +1,5 @@
 import { afterAll, bench, describe } from 'vitest';
-import { createDocument, field, map, object } from '../src';
+import { createDocument, field, map, object } from 'doxum';
 const model = object({ rows: map(object({ n: field<number>() })) });
 describe('ChangeSet and draft costs', () => {
   for (const count of [1, 100, 10000]) {

@@ -1,4 +1,4 @@
-import { profile } from '../profile';
+import { profile } from '@/profile';
 import type { DocumentNode, ObjectNode, ObjectShape, VariantNode, VariantShape } from './model';
 
 type MemberDefinition = {

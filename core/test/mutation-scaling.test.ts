@@ -1,18 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createDocument,
-  field,
-  list,
-  map,
-  object,
-  optional,
-  replace,
-  table,
-  variant,
-} from '../src';
-import { startProfile } from '../src/profile';
-import { decodeChanges } from '../src/mutation/changes';
-import { jsonChanges } from '../src/local-sync/json';
+import { createDocument, field, list, map, object, optional, replace, table, variant } from 'doxum';
+import { startProfile } from '@/profile';
+import { decodeChanges } from '@/mutation/changes';
+import { jsonChanges } from '@/local-sync/json';
 
 describe('mutation scaling and ownership', () => {
   it('validates only the changed table value during apply and history', () => {

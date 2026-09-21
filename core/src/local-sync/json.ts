@@ -1,6 +1,6 @@
-import { isPlainObject } from '../value/record';
-import * as changeSet from '../mutation/changes';
-import type { ChangeSet } from '../changes';
+import { isPlainObject } from '@/value/record';
+import * as changeSet from '@/mutation/changes';
+import type { ChangeSet } from '@/changes';
 import { LocalSyncError } from './error';
 
 export type JsonPrimitive = null | boolean | number | string;

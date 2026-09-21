@@ -1,5 +1,5 @@
-import type { Unsubscribe } from '../runtime/contract';
-import { collectionView, mapRead, snapshotCollectionView } from './collection/view';
+import type { Unsubscribe } from '@/runtime/contract';
+import { collectionView, mapRead, snapshotCollectionView } from '@/projection/collection/view';
 import type { CollectionRead } from './contract';
 import { ProjectionDisposedError } from './contract';
 import {
@@ -14,23 +14,27 @@ import {
   type ProducerDefinition,
   type Projection,
 } from './definition';
-import { isPlainObject } from '../value/record';
-import { createProcessor } from './graph/processor';
+import { isPlainObject } from '@/value/record';
+import { createProcessor } from '@/projection/graph/processor';
 import {
   createDirectReadable,
   createSelectorReadable,
   isMapLike,
   type ProjectionReadableSource,
-} from './readable/selection';
-import type { Readable } from '../readable';
-import { createScheduler, type OutputRecord, type ProducerRecord } from './graph/scheduler';
-import { createSourceRegistry } from './source/registry';
-import type { SourceWrite } from './source/boundary';
+} from '@/projection/readable/selection';
+import type { Readable } from '@/readable';
+import {
+  createScheduler,
+  type OutputRecord,
+  type ProducerRecord,
+} from '@/projection/graph/scheduler';
+import { createSourceRegistry } from '@/projection/source/registry';
+import type { SourceWrite } from '@/projection/source/boundary';
 import {
   createProjectionItems,
   type ProjectionItems,
   type ProjectionItemsController,
-} from './readable/keyed';
+} from '@/projection/readable/keyed';
 
 export type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;

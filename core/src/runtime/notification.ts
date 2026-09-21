@@ -1,7 +1,7 @@
-import type { ObjectSchema, RootNodeOf } from '../schema/model';
-import type { ImpactTarget } from '../schema/path';
+import type { ObjectSchema, RootNodeOf } from '@/schema/model';
+import type { ImpactTarget } from '@/schema/path';
 import type { CommitListener, DocumentCommit, Unsubscribe, ObserverError } from './contract';
-import * as target from '../impact/target';
+import * as target from '@/impact/target';
 
 type ProjectionAttachment<TSchema extends ObjectSchema<object>> = {
   capture(commit: DocumentCommit<TSchema>): void;

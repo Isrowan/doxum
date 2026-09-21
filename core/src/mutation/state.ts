@@ -1,6 +1,6 @@
-import type { DocumentNode, ObjectNode } from '../schema/model';
-import * as sequence from '../order/sequence';
-import { installOwn } from '../value/record';
+import type { DocumentNode, ObjectNode } from '@/schema/model';
+import * as sequence from '@/order/sequence';
+import { installOwn } from '@/value/record';
 
 export type CanonicalState = { schema: ObjectNode; document: unknown };
 

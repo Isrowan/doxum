@@ -1,5 +1,5 @@
-import { isPlainObject } from '../value/record';
-import { snapshotCollectionView } from './collection/view';
+import { isPlainObject } from '@/value/record';
+import { snapshotCollectionView } from '@/projection/collection/view';
 import type { SourceContext } from './contract';
 import { isProjection, projectionRef, type Projection } from './definition';
 

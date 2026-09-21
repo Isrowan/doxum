@@ -1,5 +1,5 @@
-import type { ImpactTarget } from '../schema/path';
-import * as target from '../impact/target';
+import type { ImpactTarget } from '@/schema/path';
+import * as target from '@/impact/target';
 
 export type DependencyTracker = {
   readonly record: (target: ImpactTarget<unknown>) => void;

@@ -1,7 +1,7 @@
-import type { ObjectSchema } from '../schema/model';
-import type { DocumentRuntime } from '../runtime/contract';
+import type { ObjectSchema } from '@/schema/model';
+import type { DocumentRuntime } from '@/runtime/contract';
 import type { JsonChangeLimits } from './json';
-import type { Readable } from '../readable';
+import type { Readable } from '@/readable';
 import type { LocalSyncError } from './error';
 
 export type LocalSyncState =

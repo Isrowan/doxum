@@ -1,16 +1,16 @@
-import type { Synchronous } from '../../runtime/contract';
-import { isPlainObject } from '../../value/record';
-import { collectionView, mapRead } from '../collection/view';
-import { collectionChange } from '../collection/change';
-import type { SourceContext } from '../contract';
-import { readNamedDependencyEntries, snapshotDependencyValue } from '../dependency';
+import type { Synchronous } from '@/runtime/contract';
+import { isPlainObject } from '@/value/record';
+import { collectionView, mapRead } from '@/projection/collection/view';
+import { collectionChange } from '@/projection/collection/change';
+import type { SourceContext } from '@/projection/contract';
+import { readNamedDependencyEntries, snapshotDependencyValue } from '@/projection/dependency';
 import {
   isProjection,
   outputDefinitionOf,
   type KeyedProjection,
   type Projection,
-} from '../definition';
-import { assertSynchronous } from '../graph/scheduler';
+} from '@/projection/definition';
+import { assertSynchronous } from '@/projection/graph/scheduler';
 import { createKeyRelation, type KeyRelation } from './relation';
 
 export type SingularKeyedDependency<

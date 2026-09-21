@@ -1,7 +1,7 @@
-import { profile } from '../profile';
-import * as sequence from '../order/sequence';
-import * as tree from '../tree/topology';
-import { isPlainObject, isRecord } from '../value/record';
+import { profile } from '@/profile';
+import * as sequence from '@/order/sequence';
+import * as tree from '@/tree/topology';
+import { isPlainObject, isRecord } from '@/value/record';
 import type {
   DocumentAddress,
   DocumentNode,

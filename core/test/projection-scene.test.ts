@@ -8,7 +8,7 @@ import {
   map,
   object,
   observe,
-} from '../src';
+} from 'doxum';
 
 describe('projection scenes', () => {
   it('composes document observation, input state, and named derivation', () => {

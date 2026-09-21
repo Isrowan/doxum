@@ -1,11 +1,11 @@
-import type { DocumentAddress, Infer, ObjectSchema } from '../schema/model';
-import type { PathPick } from '../schema/path';
-import type { ChangeSet } from '../changes';
-import type { DocumentImpact } from '../impact';
-import type { Draft } from '../access/scope';
-import type { MutationIssue } from '../mutation/issue';
-import type { Readable, Unsubscribe } from '../readable';
-export type { Unsubscribe } from '../readable';
+import type { DocumentAddress, Infer, ObjectSchema } from '@/schema/model';
+import type { PathPick } from '@/schema/path';
+import type { ChangeSet } from '@/changes';
+import type { DocumentImpact } from '@/impact';
+import type { Draft } from '@/access/scope';
+import type { MutationIssue } from '@/mutation/issue';
+import type { Readable, Unsubscribe } from '@/readable';
+export type { Unsubscribe } from '@/readable';
 export type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 export type CommitSource = 'local' | 'system' | 'history' | 'remote';
 export class DocumentReentrancyError extends Error {

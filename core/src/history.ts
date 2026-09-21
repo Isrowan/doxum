@@ -4,8 +4,8 @@ import type {
   LocalHistory,
   ObserverError,
   OperationResult,
-} from './runtime/contract';
-import { DocumentDisposedError } from './runtime/contract';
+} from '@/runtime/contract';
+import { DocumentDisposedError } from '@/runtime/contract';
 
 type Entry = { readonly batches: ChangeSet[] };
 type Group = { entry?: Entry; readonly undos: Entry[]; readonly redos: Entry[] };

@@ -7,7 +7,7 @@ import {
   input,
   object,
   observe,
-} from '../src';
+} from 'doxum';
 
 describe('projection value boundaries', () => {
   it('keeps scalar values outside borrowed access scopes', () => {

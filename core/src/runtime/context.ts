@@ -1,4 +1,4 @@
-import type { Infer, ObjectSchema, RootNodeOf } from '../schema/model';
+import type { Infer, ObjectSchema, RootNodeOf } from '@/schema/model';
 import type { DocumentRuntime } from './contract';
 import type { RuntimeWriteDriver } from './driver';
 import type { NotificationCenter } from './notification';

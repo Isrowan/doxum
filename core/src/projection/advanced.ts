@@ -1,4 +1,4 @@
-import { collectionView } from './collection/view';
+import { collectionView } from '@/projection/collection/view';
 import type { CollectionChange, CollectionDraft, CollectionRead, SourceContext } from './contract';
 import type {
   KeyedProjection,
@@ -9,14 +9,14 @@ import type {
 } from './definition';
 import { defineProcessor } from './definition';
 import { compileProjectionDependencies } from './dependency';
-import { assertSynchronous } from './graph/scheduler';
-import { isPlainObject } from '../value/record';
+import { assertSynchronous } from '@/projection/graph/scheduler';
+import { isPlainObject } from '@/value/record';
 import type {
   KeyedDependencies,
   KeyedDependencyRecord,
   KeyedDependencyValues,
-} from './keyed/dependency';
-import { createKeyedTransform } from './keyed/transform';
+} from '@/projection/keyed/dependency';
+import { createKeyedTransform } from '@/projection/keyed/transform';
 
 type ProjectionDependencies = Readonly<Record<string, Projection<unknown>>>;
 
@@ -552,5 +552,5 @@ export const incremental = Object.assign(createIncrementalValue, {
   group: createIncrementalGroup,
 });
 
-export { collectionChange } from './collection/change';
+export { collectionChange } from '@/projection/collection/change';
 export type { CollectionChange } from './contract';

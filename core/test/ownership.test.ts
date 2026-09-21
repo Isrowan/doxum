@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument, createProjectionRuntime, field, map, object, observe } from '../src';
+import { createDocument, createProjectionRuntime, field, map, object, observe } from 'doxum';
 
 describe('projection ownership', () => {
   it('returns immutable snapshots rather than borrowed document readers', () => {

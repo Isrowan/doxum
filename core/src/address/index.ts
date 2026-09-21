@@ -1,4 +1,4 @@
-import type { DocumentAddress } from '../schema/model';
+import type { DocumentAddress } from '@/schema/model';
 
 type AddressIndexNode<T> = {
   readonly children: Map<string, AddressIndexNode<T>>;

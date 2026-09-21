@@ -1,9 +1,9 @@
-import * as sequence from '../order/sequence';
-import { profile } from '../profile';
-import type { DocumentAddress, DocumentNode } from '../schema/model';
-import { compiledLayout, variantBranch, type MemberLayout } from '../schema/layout';
-import * as tree from '../tree/topology';
-import { isRecord } from '../value/record';
+import * as sequence from '@/order/sequence';
+import { profile } from '@/profile';
+import type { DocumentAddress, DocumentNode } from '@/schema/model';
+import { compiledLayout, variantBranch, type MemberLayout } from '@/schema/layout';
+import * as tree from '@/tree/topology';
+import { isRecord } from '@/value/record';
 
 const step = (
   nodeInput: DocumentNode | undefined,

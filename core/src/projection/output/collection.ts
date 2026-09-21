@@ -1,19 +1,19 @@
-import { profile } from '../../profile';
-import { createCollectionChange } from '../collection/change';
-import { PersistentKeyedIndex } from '../collection/index';
+import { profile } from '@/profile';
+import { createCollectionChange } from '@/projection/collection/change';
+import { PersistentKeyedIndex } from '@/projection/collection/index';
 import type {
   CollectionChange,
   CollectionContext,
   CollectionDraft,
   CollectionRead,
-} from '../contract';
+} from '@/projection/contract';
 import {
   assertScope,
   type OutputListener,
   type OutputRecord,
   type ProcessorRecord,
   type ProducerRecord,
-} from '../graph/scheduler';
+} from '@/projection/graph/scheduler';
 
 type Entry<V> = { readonly present: true; readonly value: V } | { readonly present: false };
 

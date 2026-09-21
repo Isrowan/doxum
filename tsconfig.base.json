@@ -8,6 +8,7 @@
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,
     "paths": {
+      "@/*": ["./core/src/*"],
       "doxum": ["./core/src/index.ts"],
       "doxum/local-sync": ["./core/src/local-sync/index.ts"],
       "doxum/react": ["./react/src/index.ts"],

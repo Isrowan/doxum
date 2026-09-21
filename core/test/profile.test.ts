@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { equal } from '../src/order/sequence';
-import { copyValue } from '../src/schema/value';
-import { field, object } from '../src';
-import { schemaNodeOf } from '../src/schema/model';
-import { startProfile } from '../src/profile';
-import { createDependencyTracker } from '../src/access/dependency';
+import { equal } from '@/order/sequence';
+import { copyValue } from '@/schema/value';
+import { field, object } from 'doxum';
+import { schemaNodeOf } from '@/schema/model';
+import { startProfile } from '@/profile';
+import { createDependencyTracker } from '@/access/dependency';
 
 describe('runtime profile', () => {
   it('collects counters only inside an explicit session', () => {

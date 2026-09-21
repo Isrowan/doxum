@@ -3,14 +3,7 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "doxum": ["./core/src/index.ts"],
-      "doxum/advanced": ["./core/src/projection/advanced.ts"],
-      "doxum/local-sync": ["./core/src/local-sync/index.ts"],
-      "doxum/react": ["./react/src/index.ts"]
-    }
+    "noEmit": true
   },
   "include": ["fixtures/public-api.ts"],
   "exclude": ["node_modules"]

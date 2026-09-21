@@ -1,4 +1,4 @@
-import type { CollectionRead } from '../contract';
+import type { CollectionRead } from '@/projection/contract';
 
 export const mapRead = <K extends string, V>(value: ReadonlyMap<K, V>): CollectionRead<K, V> => ({
   get: key => value.get(key),

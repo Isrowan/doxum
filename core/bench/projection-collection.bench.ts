@@ -1,7 +1,7 @@
 import { bench, describe } from 'vitest';
-import { diffCollection } from '../src/projection/collection/change';
-import { PersistentKeyedIndex } from '../src/projection/collection/index';
-import { createCollectionOutput } from '../src/projection/output/collection';
+import { diffCollection } from '@/projection/collection/change';
+import { PersistentKeyedIndex } from '@/projection/collection/index';
+import { createCollectionOutput } from '@/projection/output/collection';
 
 const size = 10_000;
 const entries = Array.from({ length: size }, (_, index) => [`key-${index}`, index] as const);
