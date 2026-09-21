@@ -25,6 +25,8 @@ Public declaration primitives are:
 - `observe(...)` — document, `Readable`, or exported external source boundary.
 - `derive(dependencies, compute, equality?)` — pure value derivation.
 - `derive.keyed(...)` — key-preserving per-entry derivation and keyed joins.
+- `derive.keyed.from(...)` — ordered scalar/static collection to keyed projection.
+- `derive.keyed.merge(...)` — multiple keyed projections to one union projection.
 
 `Projection<T>` is the scalar/value handle and `KeyedProjection<K,V>` is the public
 keyed handle. Collection `observe`, `derive.keyed`, `incremental.collection`, and
@@ -62,6 +64,44 @@ published array reference and revision. `values` and `entries` follow formal key
 and update for entry or structural changes. `entries` reuses tuple references for
 unchanged entries. `get` binds to exactly one scalar-selected key; missing keys remain
 bound so a later add invalidates the result.
+
+Keyed shape construction and composition are also first-class:
+
+```ts
+const rows = derive.keyed.from(rowArray, row => row.id);
+const projectedRows = derive.keyed.from(rowArrayProjection, row => row.id);
+const effectiveRows = derive.keyed.merge([baseRows, rowOverrides], {
+  conflict: 'last',
+});
+```
+
+`from` accepts either `readonly V[]` or `Projection<readonly V[]>`. `keyOf(value)` is
+the keyed identity and must produce unique string keys. The array's order is the output
+formal order. Duplicate keys are processor errors. Static outer arrays are shallow-
+snapshotted at definition creation, but `keyOf` still runs lazily during materialization.
+Scalar-array updates require an O(n) scan because the scalar source has no entry delta;
+the resulting keyed publication is still exact. Same-key equality-equivalent values do
+not publish `updated` and retain the previous published value identity.
+
+`merge` accepts a fixed definition-time source list with union membership. Conflict
+policy is mandatory: `error` rejects overlap, `first` uses the earliest source, `last`
+uses the latest source, and `resolve` receives source-priority `{ sourceIndex, value }`
+contributions only when at least two sources currently contain the key. A single
+contribution passes through unchanged. Equality compares the final effective value.
+
+Formal order is always:
+
+```text
+stableUnique(S0.ids() ++ S1.ids() ++ ... ++ Sn.ids())
+```
+
+Position and value winner are independent. With `[base, overrides]` and `last`, shared
+keys keep their base position while override values win; override-only keys are included
+as union members. Removing an override while base still contains the key is an update or
+no-op, not a remove/add lifecycle. This preserves `runtime.items(merged)` item identity
+through winner changes. Value-only source updates recompute only affected keys and do not
+rebuild formal order; membership/order changes rebuild the stable merged order once.
+Membership uses `has(key)`, so present `undefined` remains valid.
 
 Membership-changing keyed derives are also first-class:
 

@@ -300,6 +300,8 @@ const ids = derive.keyed.keys(records);
 const all = derive.keyed.values(records);
 const entries = derive.keyed.entries(records);
 const active = derive.keyed.get(records, activeRecordId);
+const rowsFromArray = derive.keyed.from(rowArray, row => row.id);
+const effectiveRows = derive.keyed.merge([baseRows, rowOverrides], { conflict: 'last' });
 const visible = derive.keyed.filter(records, record => record.visible);
 const orderedVisible = derive.keyed.subset(records, visibleIds);
 const definedContent = derive.keyed.compact(records, record => record.content);
@@ -317,6 +319,20 @@ currently missing source keys until they appear. `filter` preserves source value
 source-relative order. `compact` omits keys whose selected value is `undefined` and
 uses its optional equality for present values. `filter` and `compact` support the same
 named global/dynamic keyed dependency object as ordinary `derive.keyed`.
+
+`from` turns either a static readonly array or `Projection<readonly V[]>` into a keyed
+projection using `keyOf(value)`. Input order becomes formal keyed order; duplicate keys
+are errors rather than implicit overwrites. Static outer arrays are snapshotted at
+definition creation, while key selection remains lazy. Same-key equality-equivalent
+values retain the previous published identity.
+
+`merge` combines a fixed list of keyed sources with union membership and an explicit
+`error`, `first`, `last`, or `resolve` conflict policy. Its formal order is the stable
+first occurrence from the sources' formal orders, independent of which source supplies
+the effective value. `derive.keyed.merge([base, overrides], { conflict: 'last' })` is
+therefore the standard sparse-override composition: shared override values win without
+moving their base positions, override-only keys join the union, and removing an override
+falls back to the base without breaking the key's merged membership lifecycle.
 
 `groupBy` is the general reverse-index primitive. A source entry may return one group
 key or several; each output bucket contains source keys in the source's formal order,

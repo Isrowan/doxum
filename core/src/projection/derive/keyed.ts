@@ -23,6 +23,11 @@ import {
 } from '@/projection/keyed/dependency';
 import { createKeyedTransform, keyedAbsent } from '@/projection/keyed/transform';
 import { createKeyRelation } from '@/projection/keyed/relation';
+import {
+  createKeyedFrom,
+  createKeyedMerge,
+  createKeyedSingleton,
+} from '@/projection/keyed/composition';
 import { sameArray } from '@/value/array';
 
 type Equality<T> = (previous: T, next: T) => boolean;
@@ -748,49 +753,13 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
   return projection as KeyedProjection<G, readonly K[]>;
 }
 
-const createKeyedSingleton = <K extends string, V>(
-  source: Projection<V | undefined>,
-  keyOf: (value: V) => Synchronous<K>,
-  equality: Equality<V> = Object.is
-): KeyedProjection<K, V> => {
-  if (outputKind(source) !== 'value')
-    throw new TypeError('derive.keyed.singleton source must be a scalar projection.');
-  if (typeof keyOf !== 'function')
-    throw new TypeError('derive.keyed.singleton requires a key selector.');
-  const [projection] = defineProcessor({
-    dependencies: [source],
-    outputs: [{ kind: 'collection', equality: equality as Equality<unknown> }],
-    create: () => ({
-      evaluate: evaluation => {
-        const scalar = evaluation.sources[0];
-        const output = evaluation.outputs[0];
-        if (scalar.kind !== 'value' || output.kind !== 'collection')
-          throw new Error('derive.keyed.singleton resolved invalid input/output kinds.');
-        const previous = output.previous.ids();
-        if (scalar.value === undefined) {
-          for (const key of previous) output.output.remove(key);
-          return;
-        }
-        const key = keyOf(scalar.value as V);
-        assertSynchronous(key);
-        if (typeof key !== 'string')
-          throw new TypeError('derive.keyed.singleton key selector must return a string.');
-        for (const previousKey of previous)
-          if (previousKey !== key) output.output.remove(previousKey);
-        output.output.set(key, scalar.value as V);
-        if (previous.length !== 1 || previous[0] !== key) output.output.order([key]);
-      },
-    }),
-    name: 'derive.keyed.singleton',
-  });
-  return projection as KeyedProjection<K, V>;
-};
-
 export const keyedDerive = Object.assign(createKeyedDerive, {
   keys: createKeyedKeys,
   values: createKeyedValues,
   entries: createKeyedEntries,
   get: createKeyedGet,
+  from: createKeyedFrom,
+  merge: createKeyedMerge,
   groupBy: createKeyedGroupBy,
   singleton: createKeyedSingleton,
   subset: createKeyedSubset,

@@ -366,13 +366,20 @@ membership/order; removal drops per-key state, reset intersections retain it, an
 processor recovery recreates the transform-local state through the normal scheduler
 lifecycle.
 
+`projection/keyed/composition.ts` owns keyed construction/composition whose output
+membership/order is not exclusively driven by one keyed source: scalar/static `from`,
+multi-source `merge`, and scalar-to-keyed `singleton`. `merge` keeps only source revision
+bookkeeping between evaluations; current source reads and the collection output are the
+semantic truth. It does not maintain winner, membership, order, or value mirrors.
+
 `projection/derive/keyed.ts` owns keyed algorithm semantics that are not generic runtime
-plumbing: ordered `keys` / `values` / `entries` snapshots, precise scalar `get`, `subset`,
-reverse-index `groupBy`, and scalar-to-keyed `singleton`. `groupBy` reuses the shared
+plumbing or construction/composition: ordered `keys` / `values` / `entries` snapshots,
+precise scalar `get`, `subset`, and reverse-index `groupBy`. `groupBy` reuses the shared
 dependency runtime but owns its own grouping/order algorithm. None of these introduces a
 second keyed handle or publication protocol. `projection/output/collection.ts` remains
 the sole owner of published membership, order, per-entry equality, revision, exact
-`CollectionChange`, reset publication and stable collection references.
+`CollectionChange`, reset publication and stable collection references. Composition
+processors only stage semantic `set` / `remove` / `order` intent into that owner.
 
 `projection/readable/keyed.ts` owns the consumer-side `runtime.items` family. It consumes
 the exact published `CollectionChange` from one materialized collection output, fans one

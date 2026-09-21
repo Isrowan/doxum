@@ -32,6 +32,8 @@ Use the simplest public primitive that owns the required semantics:
 | Ordered values as scalar array                      | `derive.keyed.values(source)`                  |
 | Ordered `[key,value]` tuples as scalar array        | `derive.keyed.entries(source)`                 |
 | Current scalar key selects one keyed entry          | `derive.keyed.get(source, keyProjection)`      |
+| Ordered scalar/static collection becomes keyed      | `derive.keyed.from(source, keyOf)`             |
+| Multiple keyed sources become one keyed union       | `derive.keyed.merge(sources, options)`         |
 | Select requested ordered subset                     | `derive.keyed.subset(source, orderedKeys)`     |
 | Preserve source values but filter membership        | `derive.keyed.filter(source, predicate)`       |
 | Map entry and drop `undefined` results              | `derive.keyed.compact(source, selector)`       |
@@ -167,6 +169,40 @@ const active = derive.keyed.get(rows, activeId);
 `activeId` is a scalar `Projection<K | undefined>`. The derive binds exactly the selected key. If the key is absent, the result is `undefined` while the binding remains live for later add.
 
 Use this for active entity, editor target, selected record, or current-cell lookups.
+
+## Keyed construction and composition
+
+### `from`
+
+```ts
+const rows = derive.keyed.from(rowArray, row => row.id);
+const projectedRows = derive.keyed.from(rowsProjection, row => row.id);
+```
+
+`source` is either a static readonly array or `Projection<readonly V[]>`. `keyOf(value)` defines stable member identity and must return a unique string key. The output formal order is exactly the input array order. Duplicate keys are processor errors; Doxum never silently overwrites or deduplicates them.
+
+Static outer arrays are shallow-snapshotted when the definition is created, while `keyOf` remains lazy until materialization. A scalar array projection has no per-entry delta, so every scalar publication is scanned. Output publication is still exact: same-key equality-equivalent values retain the previous published value identity, and reorder-only updates publish order without inventing value updates.
+
+### `merge`
+
+```ts
+const effective = derive.keyed.merge([base, overrides], {
+  conflict: 'last',
+});
+```
+
+`merge` accepts a fixed definition-time list of `KeyedProjection<K,V>` sources. Membership is their union. Conflict policy is required:
+
+- `error`: overlapping keys are processor errors;
+- `first`: earliest source wins;
+- `last`: latest source wins;
+- `resolve`: for true conflicts only, call `resolve(contributions, key)` with source-priority `{ sourceIndex, value }` contributions.
+
+A single contribution always passes through without invoking the resolver. Equality compares the final effective value and defaults to `Object.is`.
+
+Formal merged order is always the stable first occurrence from concatenated source orders: `stableUnique(S0.ids() ++ S1.ids() ++ ... ++ Sn.ids())`. Value winner and position are therefore independent. For base + sparse overrides, `{ conflict: 'last' }` changes shared values without moving their base positions; override-only keys are also valid union members. If an override disappears while base still contains the key, the merged membership lifecycle remains continuous and `runtime.items(merged).get(key)` keeps the same current membership identity.
+
+Value-only source changes only recompute affected keys. Structural or source-order changes may rebuild merged formal order. Present `undefined` remains a valid value because membership is determined by `has(key)`, not by `get(key) !== undefined`.
 
 ## Membership-changing keyed primitives
 

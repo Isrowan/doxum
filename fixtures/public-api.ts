@@ -85,6 +85,17 @@ const labels = derive.keyed(
 const rowKeys = derive.keyed.keys(rows);
 const rowValues = derive.keyed.values(rows);
 const rowEntries = derive.keyed.entries(rows);
+const rowsFromValues = derive.keyed.from(rowValues, row => row.entityId);
+const syntheticRows = derive.keyed.from([{ value: 0, entityId: 'synthetic' }], row => row.entityId);
+const mergedRows = derive.keyed.merge([syntheticRows, rows], { conflict: 'last' });
+const resolvedRows = derive.keyed.merge([syntheticRows, rows], {
+  conflict: 'resolve',
+  resolve: contributions => contributions[contributions.length - 1].value,
+});
+// @ts-expect-error merge requires an explicit conflict policy
+derive.keyed.merge([syntheticRows, rows], {});
+// @ts-expect-error resolver is only valid for conflict: 'resolve'
+derive.keyed.merge([syntheticRows, rows], { conflict: 'last', resolve: () => initial.rows.a });
 const activeRowId = input<string | undefined>('a');
 const activeRow = derive.keyed.get(rows, activeRowId);
 const positiveRows = derive.keyed.filter(rows, row => row.value > 0);
@@ -152,6 +163,9 @@ runtime.read(labels);
 runtime.read(rowKeys);
 runtime.read(rowValues);
 runtime.read(rowEntries);
+runtime.read(rowsFromValues);
+runtime.read(mergedRows);
+runtime.read(resolvedRows);
 runtime.read(activeRow);
 runtime.read(positiveRows);
 runtime.read(selectedRows);
@@ -197,6 +211,9 @@ void keyedRows;
 void keyedLabels;
 void keyedGroupValues;
 void rowEntries;
+void rowsFromValues;
+void mergedRows;
+void resolvedRows;
 void activeRow;
 void rowsByEntity;
 void singletonRow;

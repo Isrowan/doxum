@@ -287,6 +287,35 @@ const entries = derive.keyed.entries(records);
 
 Use this instead of a two-stage `derive.keyed(records, (value,key) => [key,value])` followed by `values`.
 
+## Ordered scalar/static collection to keyed
+
+```ts
+const visibleFields = derive.keyed.from(visibleFieldArray, field => field.id);
+```
+
+Use `from` when the source shape is an ordered scalar array and downstream work needs formal keyed membership/order. `keyOf` must produce unique stable keys. For high-frequency single-key edits, keep the source keyed instead of repeatedly flattening it to a scalar array first.
+
+## Synthetic fixed entry plus dynamic keyed source
+
+```ts
+const titleFields = derive.keyed.from<FieldId, Field>([titleField], field => field.id);
+const allFields = derive.keyed.merge([titleFields, fields], {
+  conflict: 'error',
+});
+```
+
+Use this instead of an application-maintained `Set`/`Map` plus manual output ordering. `conflict: 'error'` makes an accidental collision between the synthetic entry and dynamic source explicit.
+
+## Base plus sparse overrides
+
+```ts
+const effectiveRows = derive.keyed.merge([baseRows, rowOverrides], {
+  conflict: 'last',
+});
+```
+
+Shared keys use override values while keeping the first formal position from `baseRows`. Keys that exist only in `rowOverrides` are also included because merge membership is a union. Removing an override falls back to the base value without ending the merged key's membership lifecycle while the base key remains present.
+
 ## Active keyed lookup
 
 ```ts

@@ -62,6 +62,53 @@ const collectExports = relativePath => {
   return names;
 };
 
+const collectObjectAssignMembers = (relativePath, bindingName) => {
+  const file = resolve(root, relativePath);
+  const source = ts.createSourceFile(
+    file,
+    readFileSync(file, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== bindingName) continue;
+      const initializer = declaration.initializer;
+      if (
+        !initializer ||
+        !ts.isCallExpression(initializer) ||
+        !ts.isPropertyAccessExpression(initializer.expression) ||
+        !ts.isIdentifier(initializer.expression.expression) ||
+        initializer.expression.expression.text !== 'Object' ||
+        initializer.expression.name.text !== 'assign'
+      )
+        fail(`${relativePath} ${bindingName} must be assembled with Object.assign.`);
+      const members = initializer.arguments[1];
+      if (!members || !ts.isObjectLiteralExpression(members))
+        fail(`${relativePath} ${bindingName} must declare its family members inline.`);
+      const names = new Set();
+      for (const property of members.properties) {
+        if (ts.isSpreadAssignment(property))
+          fail(`${relativePath} ${bindingName} family must not use spread members.`);
+        if (
+          !ts.isPropertyAssignment(property) &&
+          !ts.isShorthandPropertyAssignment(property) &&
+          !ts.isMethodDeclaration(property)
+        )
+          fail(`${relativePath} ${bindingName} contains an unsupported family member.`);
+        const name = property.name;
+        if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))
+          names.add(name.text);
+        else fail(`${relativePath} ${bindingName} family members must use static names.`);
+      }
+      return names;
+    }
+  }
+  fail(`${relativePath} is missing ${bindingName}.`);
+};
+
 const reference = readFileSync(publicReference, 'utf8');
 const documentedExports = packageName => {
   const start = `<!-- exports:${packageName}:start -->`;
@@ -69,6 +116,18 @@ const documentedExports = packageName => {
   const from = reference.indexOf(start);
   const to = reference.indexOf(end);
   if (from < 0 || to < from) fail(`missing export inventory markers for ${packageName}.`);
+  const block = reference.slice(from + start.length, to);
+  const names = new Set();
+  for (const match of block.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)) names.add(match[1]);
+  return names;
+};
+
+const documentedFamily = familyName => {
+  const start = `<!-- family:${familyName}:start -->`;
+  const end = `<!-- family:${familyName}:end -->`;
+  const from = reference.indexOf(start);
+  const to = reference.indexOf(end);
+  if (from < 0 || to < from) fail(`missing family inventory markers for ${familyName}.`);
   const block = reference.slice(from + start.length, to);
   const names = new Set();
   for (const match of block.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)) names.add(match[1]);
@@ -91,6 +150,22 @@ for (const [packageName, entry] of packages) {
     fail(`${packageName} exports missing from public-api.md: ${missing.join(', ')}`);
   if (stale.length) fail(`${packageName} inventory contains non-exports: ${stale.join(', ')}`);
 }
+
+const actualKeyedMembers = collectObjectAssignMembers(
+  'core/src/projection/derive/keyed.ts',
+  'keyedDerive'
+);
+const documentedKeyedMembers = documentedFamily('derive.keyed');
+const missingKeyedMembers = [...actualKeyedMembers]
+  .filter(name => !documentedKeyedMembers.has(name))
+  .sort();
+const staleKeyedMembers = [...documentedKeyedMembers]
+  .filter(name => !actualKeyedMembers.has(name))
+  .sort();
+if (missingKeyedMembers.length)
+  fail(`derive.keyed members missing from public-api.md: ${missingKeyedMembers.join(', ')}`);
+if (staleKeyedMembers.length)
+  fail(`derive.keyed inventory contains non-members: ${staleKeyedMembers.join(', ')}`);
 
 const skill = readFileSync(resolve(skillRoot, 'SKILL.md'), 'utf8');
 const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);

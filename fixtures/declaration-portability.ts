@@ -34,6 +34,14 @@ export const portableSelected = derive.keyed(portableRows, row => row.value);
 export const portableKeys = derive.keyed.keys(portableRows);
 export const portableValues = derive.keyed.values(portableRows);
 export const portableEntries = derive.keyed.entries(portableRows);
+export const portableFrom = derive.keyed.from(portableValues, row => row.entityId);
+export const portableMerged = derive.keyed.merge([portableFrom, portableRows], {
+  conflict: 'last',
+});
+export const portableResolvedMerge = derive.keyed.merge([portableFrom, portableRows], {
+  conflict: 'resolve',
+  resolve: contributions => contributions[contributions.length - 1].value,
+});
 export const portableActiveKey = input<string | undefined>('row-a');
 export const portableActiveRow = derive.keyed.get(portableRows, portableActiveKey);
 export const portableSubset = derive.keyed.subset(portableRows, ['row-a', 'row-b'] as const);
