@@ -237,6 +237,120 @@ describe('keyed projection evolution', () => {
     runtime.dispose();
   });
 
+  it('routes same-key dependencies without an identity selector', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+      ])
+    );
+    const metadata = input.collection(
+      new Map([
+        ['a', 'A'],
+        ['b', 'B'],
+        ['unused', 'U'],
+      ])
+    );
+    const select = vi.fn(
+      (value: number, key: string, dependencies: { readonly metadata: string | undefined }) =>
+        `${key}:${value}:${dependencies.metadata ?? 'missing'}`
+    );
+    const projected = derive.keyed(rows, { metadata: { source: metadata } }, select);
+    const runtime = createProjectionRuntime();
+    expect([...runtime.read(projected)]).toEqual([
+      ['a', 'a:1:A'],
+      ['b', 'b:2:B'],
+    ]);
+    select.mockClear();
+
+    runtime.update(metadata, draft => draft.set('unused', 'U2'));
+    expect(select).not.toHaveBeenCalled();
+
+    runtime.update(metadata, draft => draft.set('a', 'A2'));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.read(projected).get('a')).toBe('a:1:A2');
+    select.mockClear();
+
+    runtime.update(metadata, draft => draft.remove('b'));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.read(projected).get('b')).toBe('b:2:missing');
+    select.mockClear();
+
+    runtime.update(metadata, draft => draft.set('b', 'B3'));
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(runtime.read(projected).get('b')).toBe('b:2:B3');
+    runtime.dispose();
+  });
+
+  it('does not invalidate same-key dependencies for source order-only changes', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+      ])
+    );
+    const metadata = input.collection(
+      new Map([
+        ['a', 'A'],
+        ['b', 'B'],
+      ])
+    );
+    const order = input<readonly string[]>(['a', 'b']);
+    const orderedMetadata = derive.keyed.subset(metadata, order);
+    const select = vi.fn(
+      (value: number, _key: string, dependencies: { readonly metadata: string | undefined }) =>
+        `${value}:${dependencies.metadata}`
+    );
+    const projected = derive.keyed(rows, { metadata: { source: orderedMetadata } }, select);
+    const runtime = createProjectionRuntime();
+    runtime.read(projected);
+    select.mockClear();
+
+    runtime.update(order, ['b', 'a']);
+
+    expect(select).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it('shares same-key dependency routing with incremental.keyed', () => {
+    const rows = input.collection(
+      new Map([
+        ['a', 1],
+        ['b', 2],
+      ])
+    );
+    const metadata = input.collection(
+      new Map([
+        ['a', 'A'],
+        ['b', 'B'],
+        ['unused', 'U'],
+      ])
+    );
+    const process = vi.fn(
+      ({
+        value,
+        dependencies,
+      }: {
+        readonly value: number;
+        readonly dependencies: { readonly metadata: string | undefined };
+      }) => `${value}:${dependencies.metadata ?? 'missing'}`
+    );
+    const projected = incremental.keyed(rows, { metadata: { source: metadata } }, { process });
+    const runtime = createProjectionRuntime();
+    expect([...runtime.read(projected)]).toEqual([
+      ['a', '1:A'],
+      ['b', '2:B'],
+    ]);
+    process.mockClear();
+
+    runtime.update(metadata, draft => draft.set('unused', 'U2'));
+    expect(process).not.toHaveBeenCalled();
+    runtime.update(metadata, draft => draft.set('b', 'B2'));
+    expect(process).toHaveBeenCalledTimes(1);
+    expect(runtime.read(projected).get('b')).toBe('2:B2');
+    runtime.dispose();
+  });
+
   it('rejects malformed dynamic keyed dependency declarations at definition time', () => {
     const rows = input.collection(new Map([['a', 1]]));
     const source = input.collection(new Map([['x', 1]]));
@@ -251,8 +365,10 @@ describe('keyed projection evolution', () => {
       get: () => () => 'x',
     });
     expect(() => define(accessor)).toThrow(/data properties/i);
-    expect(() => define({ source, key: () => 'x', keys: () => ['x'] })).toThrow(/exactly one/i);
-    expect(() => define({ source })).toThrow(/exactly one/i);
+    expect(() => define({ source, key: () => 'x', keys: () => ['x'] })).toThrow(
+      /both key and keys/i
+    );
+    expect(() => define({ source })).not.toThrow();
     expect(() => define({ source: 1, key: () => 'x' })).toThrow(/source must be a projection/i);
   });
 

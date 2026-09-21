@@ -371,11 +371,12 @@ Merged formal order is always `stableUnique(S0.ids() ++ S1.ids() ++ ... ++ Sn.id
 Dynamic keyed dependency entries are either ordinary global `Projection`s or:
 
 ```ts
+{ source: keyedProjection }
 { source: keyedProjection, key: (driverValue, driverKey) => sourceKey | undefined }
 { source: keyedProjection, keys: (driverValue, driverKey) => readonly sourceKey[] }
 ```
 
-The singular resolved value is `V | undefined`; plural resolves to `ReadonlyMap<K,V>` in the requested key order, including only currently present entries.
+`{ source }` is a same-key dependency: the current driver key directly selects the source entry. It is allowed only when `DriverKey extends SourceKey`, so branded key domains remain type-safe. `{ source, key }` is a mapped singular lookup. Both singular forms resolve to `V | undefined`. `{ source, keys }` resolves to `ReadonlyMap<K,V>` in the requested key order, including only currently present entries. Selector callbacks remain value-first: `(driverValue, driverKey)`.
 
 ### Projection runtime and scope
 

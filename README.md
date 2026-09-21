@@ -354,13 +354,21 @@ projection dependencies by name:
 const cardContent = derive.keyed(
   items,
   {
+    metadata: { source: metadataByItemId },
     record: { source: records, key: item => item.recordId },
     view: activeView,
     fields: visibleFields,
   },
-  (item, itemId, { record, view, fields }) => renderCard(itemId, item, record, view, fields)
+  (item, itemId, { metadata, record, view, fields }) =>
+    renderCard(itemId, item, metadata, record, view, fields)
 );
 ```
+
+Use `{ source }` when driver and dependency use the same key. It directly binds driver
+key `K` to source key `K`, requires the driver key type to be assignable to the source
+key type, and avoids a redundant `key: (_value, id) => id` selector. Source value or
+membership changes invalidate only the driver entry with that key; source order-only
+changes do not invalidate it.
 
 For `{ source, key }` dependencies, the Runtime owns output-key → source-key bindings
 and reverse invalidation. A missing source entry resolves to `undefined` but remains

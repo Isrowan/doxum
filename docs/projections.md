@@ -132,24 +132,27 @@ keyed projection:
 const cardContent = derive.keyed(
   items,
   {
+    metadata: { source: itemMetadata },
     record: { source: records, key: item => item.recordId },
     related: { source: records, keys: item => item.relatedRecordIds },
     view: activeView,
     fields: visibleFields,
   },
-  (item, itemId, { record, related, view, fields }) =>
-    renderCard(itemId, item, record, related, view, fields)
+  (item, itemId, { metadata, record, related, view, fields }) =>
+    renderCard(itemId, item, metadata, record, related, view, fields)
 );
 ```
 
-The Runtime owns the output-key → source-key binding and reverse index. Updating a
-source key invalidates only output keys currently bound to it. Missing selected
-entries resolve to `undefined` but remain bound so a later add invalidates the
-dependent output. A plain projection dependency such as `view` invalidates the
-driver key set when it changes. `{ source, keys }` declares an ordered duplicate-free
-set of keyed dependencies and resolves to a readonly map of currently present selected
-entries. Changes to one selected source key invalidate only reverse-bound driver keys;
-source order-only changes do not invalidate keyed lookups.
+`{ source }` is the same-key form: the driver key directly selects the source entry.
+It requires `DriverKey extends SourceKey`, so branded key domains stay type-safe, and
+the Runtime can route a source-key change directly to the identical driver key without
+maintaining a relation map. `{ source, key }` owns a mapped singular binding and reverse
+index. Missing selected entries resolve to `undefined` but remain bound so a later add
+invalidates the dependent output. A plain projection dependency such as `view`
+invalidates the driver key set when it changes. `{ source, keys }` declares an ordered
+duplicate-free set of keyed dependencies and resolves to a readonly map of currently
+present selected entries. Changes to one selected source key invalidate only the
+relevant driver keys; source order-only changes do not invalidate keyed lookups.
 
 This is the dynamic join protocol. Do not add a second join abstraction or a
 document-specific wildcard path grammar to processors.

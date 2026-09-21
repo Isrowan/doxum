@@ -351,9 +351,11 @@ cleanup collections.
 The `derive.keyed` family remains ordinary processor producers over the same collection
 output spine. `projection/keyed/relation.ts` owns the Runtime-local domain-neutral
 many-to-many relation shared by keyed dependency routing and `groupBy` membership.
-`projection/keyed/dependency.ts` owns keyed
-dependency declaration validation/compilation, singular `{ source, key }` and plural
-`{ source, keys }` binding resolution, and reverse dirty routing. The producer DAG stays
+`projection/keyed/dependency.ts` owns keyed dependency declaration validation/compilation,
+same-key `{ source }`, singular `{ source, key }`, and plural `{ source, keys }` resolution
+and dirty routing. Same-key dependencies compile to a dedicated identity relation and
+route changed source keys directly without allocating a forward/reverse relation map;
+mapped singular/plural dependencies use the shared relation owner. The producer DAG stays
 static; missing selected keys remain bound and source order-only changes do not invalidate
 lookup dependencies.
 

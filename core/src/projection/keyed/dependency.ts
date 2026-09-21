@@ -23,6 +23,12 @@ export type SingularKeyedDependency<
   readonly keys?: never;
 };
 
+export type SameKeyedDependency<SourceKey extends string, SourceValue> = {
+  readonly source: KeyedProjection<SourceKey, SourceValue>;
+  readonly key?: never;
+  readonly keys?: never;
+};
+
 export type PluralKeyedDependency<
   DriverKey extends string,
   DriverValue,
@@ -40,6 +46,7 @@ export type KeyedDependency<DriverKey extends string, DriverValue> =
       readonly key?: never;
       readonly keys?: never;
     })
+  | SameKeyedDependency<string, unknown>
   | SingularKeyedDependency<DriverKey, DriverValue, string, unknown>
   | PluralKeyedDependency<DriverKey, DriverValue, string, unknown>;
 
@@ -47,8 +54,20 @@ export type KeyedDependencyRecord<DriverKey extends string, DriverValue> = Reado
   Record<string, KeyedDependency<DriverKey, DriverValue>>
 >;
 
+type SameKeyConstraint<DriverKey extends string, Dependency> = Dependency extends {
+  readonly source: KeyedProjection<infer SourceKey extends string, unknown>;
+}
+  ? Dependency extends { readonly key: unknown } | { readonly keys: unknown }
+    ? unknown
+    : DriverKey extends SourceKey
+      ? unknown
+      : never
+  : unknown;
+
 export type KeyedDependencies<DriverKey extends string, DriverValue, D extends object> = {
-  readonly [P in keyof D]: P extends string ? KeyedDependency<DriverKey, DriverValue> : never;
+  readonly [P in keyof D]: P extends string
+    ? KeyedDependency<DriverKey, DriverValue> & SameKeyConstraint<DriverKey, D[P]>
+    : never;
 };
 
 export type KeyedDependencyValues<D extends object> = {
@@ -67,6 +86,10 @@ export type KeyedDependencyValues<D extends object> = {
 };
 
 type CompiledDynamicKeyedDependency =
+  | {
+      readonly kind: 'same';
+      readonly projection: Projection<unknown>;
+    }
   | {
       readonly kind: 'one';
       readonly projection: Projection<unknown>;
@@ -104,9 +127,7 @@ const compileDynamicDependency = (
   label: string
 ): CompiledDynamicKeyedDependency => {
   if (!isPlainObject(value) || isProjection(value))
-    throw new TypeError(
-      `${label} dependencies must be projections or singular/plural keyed lookups.`
-    );
+    throw new TypeError(`${label} dependencies must be projections or keyed lookups.`);
   const candidate: { source?: unknown; key?: unknown; keys?: unknown } = {};
   const allowed = new Set(['source', 'key', 'keys']);
   let hasKey = false;
@@ -123,15 +144,18 @@ const compileDynamicDependency = (
   }
   if (!isProjection(candidate.source))
     throw new TypeError(`${label} dynamic keyed dependency source must be a projection.`);
-  if (hasKey === hasKeys)
-    throw new TypeError(
-      `${label} dynamic keyed dependency must declare exactly one of key or keys.`
-    );
+  if (hasKey && hasKeys)
+    throw new TypeError(`${label} dynamic keyed dependency must not declare both key and keys.`);
+  assertKeyedProjection(candidate.source, `${label} dynamic keyed dependency source`);
+  if (!hasKey && !hasKeys)
+    return {
+      kind: 'same',
+      projection: candidate.source,
+    };
   const singular = hasKey;
   const selector = singular ? candidate.key : candidate.keys;
   if (typeof selector !== 'function')
     throw new TypeError(`${label} dynamic keyed dependency selector must be a function.`);
-  assertKeyedProjection(candidate.source, `${label} dynamic keyed dependency source`);
   return singular
     ? {
         kind: 'one',
@@ -235,25 +259,33 @@ export const createKeyedDependencyRuntime = (
     revision: number;
     globalValue: unknown;
   };
+  type SameDependencyState = {
+    readonly kind: 'same';
+    readonly entry: Extract<CompiledKeyedDependency, { readonly kind: 'same' }>;
+    readonly sourceIndex: number;
+    revision: number;
+  };
   type DynamicDependencyState = {
     readonly kind: 'dynamic';
-    readonly entry: Exclude<CompiledKeyedDependency, { readonly kind: 'global' }>;
+    readonly entry: Extract<CompiledKeyedDependency, { readonly kind: 'one' | 'many' }>;
     readonly sourceIndex: number;
     readonly relation: KeyRelation;
     revision: number;
   };
-  type DependencyState = GlobalDependencyState | DynamicDependencyState;
-  const states: DependencyState[] = compiled.entries.map((entry, index) =>
-    entry.kind === 'global'
-      ? { kind: 'global', entry, sourceIndex: index + 1, revision: -1, globalValue: undefined }
-      : {
-          kind: 'dynamic',
-          entry,
-          sourceIndex: index + 1,
-          relation: createKeyRelation(),
-          revision: -1,
-        }
-  );
+  type DependencyState = GlobalDependencyState | SameDependencyState | DynamicDependencyState;
+  const states: DependencyState[] = compiled.entries.map((entry, index) => {
+    const sourceIndex = index + 1;
+    if (entry.kind === 'global')
+      return { kind: 'global', entry, sourceIndex, revision: -1, globalValue: undefined };
+    if (entry.kind === 'same') return { kind: 'same', entry, sourceIndex, revision: -1 };
+    return {
+      kind: 'dynamic',
+      entry,
+      sourceIndex,
+      relation: createKeyRelation(),
+      revision: -1,
+    };
+  });
   let driverRevision = -1;
 
   return {
@@ -273,10 +305,14 @@ export const createKeyedDependencyRuntime = (
           values[state.entry.name] = state.globalValue;
           continue;
         }
-        const dependency = state.entry;
         const source = sources[state.sourceIndex];
         if (source.kind !== 'collection')
           throw new TypeError('Dynamic keyed dependency resolved to a non-collection source.');
+        if (state.kind === 'same') {
+          values[state.entry.name] = source.read.get(driverKey);
+          continue;
+        }
+        const dependency = state.entry;
         if (dependency.kind === 'one') {
           const selected = selectedKey(dependency, driverValue, driverKey);
           state.relation.replaceOne(driverKey, selected);
@@ -308,6 +344,12 @@ export const createKeyedDependencyRuntime = (
           all = true;
           continue;
         }
+        if (state.kind === 'same') {
+          for (const entry of source.change.added) dirty.add(entry.key);
+          for (const entry of source.change.updated) dirty.add(entry.key);
+          for (const entry of source.change.removed) dirty.add(entry.key);
+          continue;
+        }
         for (const entry of source.change.added)
           for (const dependent of state.relation.reverse(entry.key) ?? []) dirty.add(dependent);
         for (const entry of source.change.updated)
@@ -331,7 +373,7 @@ export const createKeyedDependencyRuntime = (
       for (const state of states) {
         state.revision = -1;
         if (state.kind === 'global') state.globalValue = undefined;
-        else state.relation.clear();
+        else if (state.kind === 'dynamic') state.relation.clear();
       }
       driverRevision = -1;
     },

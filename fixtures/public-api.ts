@@ -67,6 +67,7 @@ const entities = input.collection(
     ['e2', { label: 'Two' }],
   ])
 );
+const rowMetadata = input.collection<string, { readonly note: string }>();
 const mode = input<'compact' | 'full'>('compact');
 const labels = derive.keyed(
   rows,
@@ -82,6 +83,27 @@ const labels = derive.keyed(
       ? dependencies.entity?.label
       : `${dependencies.entity?.label ?? ''}:${row.value}`
 );
+const sameKeyNotes = derive.keyed(
+  rows,
+  { metadata: { source: rowMetadata } },
+  (_row, _rowId, dependencies) => dependencies.metadata?.note
+);
+
+declare const rowIdBrand: unique symbol;
+declare const entityIdBrand: unique symbol;
+type RowId = string & { readonly [rowIdBrand]: true };
+type EntityId = string & { readonly [entityIdBrand]: true };
+const brandedRows = input.collection<RowId, number>();
+const broadMetadata = input.collection<string, number>();
+const exactMetadata = input.collection<RowId, number>();
+const incompatibleMetadata = input.collection<EntityId, number>();
+derive.keyed(brandedRows, { broad: { source: broadMetadata } }, value => value);
+derive.keyed(brandedRows, { exact: { source: exactMetadata } }, value => value);
+// @ts-expect-error same-key dependency requires DriverKey to be assignable to SourceKey
+derive.keyed(brandedRows, { incompatible: { source: incompatibleMetadata } }, value => value);
+const broadRows = input.collection<string, number>();
+// @ts-expect-error a broad driver key cannot safely index a narrower branded source
+derive.keyed(broadRows, { metadata: { source: exactMetadata } }, value => value);
 const rowKeys = derive.keyed.keys(rows);
 const rowValues = derive.keyed.values(rows);
 const rowEntries = derive.keyed.entries(rows);
@@ -160,6 +182,7 @@ const portableGroupResult: IncrementalGroupResult<PortableGroupShape> = group;
 const runtime = createProjectionRuntime();
 runtime.read(count);
 runtime.read(labels);
+runtime.read(sameKeyNotes);
 runtime.read(rowKeys);
 runtime.read(rowValues);
 runtime.read(rowEntries);
@@ -209,6 +232,7 @@ void collectionChange.keys(incrementalChange);
 void (undefined as unknown as RootCollectionChange<string, number>);
 void keyedRows;
 void keyedLabels;
+void sameKeyNotes;
 void keyedGroupValues;
 void rowEntries;
 void rowsFromValues;

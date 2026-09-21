@@ -29,8 +29,14 @@ export const portableRows = input.collection<
   { readonly value: number; readonly entityId: string }
 >();
 export const portableEntities = input.collection<string, { readonly label: string }>();
+export const portableMetadata = input.collection<string, { readonly note: string }>();
 
 export const portableSelected = derive.keyed(portableRows, row => row.value);
+export const portableSameKeyJoined = derive.keyed(
+  portableRows,
+  { metadata: { source: portableMetadata } },
+  (row, _rowId, dependencies) => `${row.value}:${dependencies.metadata?.note ?? ''}`
+);
 export const portableKeys = derive.keyed.keys(portableRows);
 export const portableValues = derive.keyed.values(portableRows);
 export const portableEntries = derive.keyed.entries(portableRows);

@@ -115,22 +115,25 @@ const cards = derive.keyed(
   items,
   {
     density,
+    metadata: { source: metadataByItemId },
     record: { source: records, key: item => item.recordId },
     related: { source: records, keys: item => item.relatedRecordIds },
   },
-  (item, itemId, { density, record, related }) => renderCard(itemId, item, density, record, related)
+  (item, itemId, { density, metadata, record, related }) =>
+    renderCard(itemId, item, density, metadata, record, related)
 );
 ```
 
 Dependency forms:
 
 - ordinary `Projection<T>`: global dependency; when it changes, relevant driver work is invalidated as a whole;
+- `{ source }`: same-key lookup; driver key directly selects the source key and resolves to `V | undefined`;
 - `{ source, key }`: singular driver-key → source-key binding; resolved value is `V | undefined`;
 - `{ source, keys }`: ordered duplicate-free driver-key → source-keys binding; resolved value is `ReadonlyMap<K,V>` in requested-key order, containing currently present entries only.
 
-The Runtime owns forward binding and reverse invalidation. A missing selected source entry still keeps the binding, so a later source add invalidates the dependent driver key correctly.
+The same-key form requires `DriverKey extends SourceKey`; this preserves branded-key safety while allowing a narrower driver domain to read a broader source domain. It has no selector or relation map: source entry changes invalidate the driver entry with the same key directly. The Runtime owns forward binding and reverse invalidation for mapped forms. A missing selected source entry still keeps the binding, so a later source add invalidates the dependent driver key correctly.
 
-Source-only order change does not invalidate singular/plural keyed lookup because dependency identity is by selected key, not by source-global order.
+Source-only order change does not invalidate same/singular/plural keyed lookup because dependency identity is by selected key, not by source-global order.
 
 `keys(...)` selectors must return duplicate-free key arrays. Treat duplicate keys as invalid input rather than as a hidden deduplication feature.
 

@@ -269,15 +269,17 @@ Use projection input for Runtime-local UI/application state. Keep it out of the 
 const cards = derive.keyed(
   items,
   {
+    metadata: { source: metadataByItemId },
     record: { source: records, key: item => item.recordId },
     related: { source: records, keys: item => item.relatedRecordIds },
     density,
   },
-  (item, itemId, { record, related, density }) => buildCard(itemId, item, record, related, density)
+  (item, itemId, { metadata, record, related, density }) =>
+    buildCard(itemId, item, metadata, record, related, density)
 );
 ```
 
-The Runtime owns reverse invalidation. Do not subscribe to `records` and manually maintain `recordId -> itemIds` just for dependency routing.
+Use `{ source }` when the dependency uses the same key as the driver; it replaces identity selectors such as `key: (_value, id) => id`. Use `{ source, key }` for one mapped key and `{ source, keys }` for several mapped keys. The Runtime owns invalidation routing. Do not subscribe to sources and manually maintain reverse maps just for dependency routing.
 
 ## Ordered keyed entries as a scalar value
 
