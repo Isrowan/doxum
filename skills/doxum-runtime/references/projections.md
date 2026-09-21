@@ -204,6 +204,8 @@ const recordsBySection = derive.keyed.groupBy(records, record => record.sectionI
 
 Selector returns one group key or a readonly group-key array. Output is `KeyedProjection<GroupKey, readonly SourceKey[]>`. Each group's members follow source formal order. The Runtime incrementally maintains reverse membership for added/updated/removed/order/reset.
 
+Group-key output order is also defined. Rank each group by the pair `(firstSourceIndex, selectorIndex)`: `firstSourceIndex` is the position of the earliest current source member that belongs to the group, and `selectorIndex` is that group's position in the selector result for that earliest member. Groups therefore follow first appearance in formal source order; when several groups first appear on the same source member, they follow the selector's returned group-key order for that member. If source order or membership changes, group keys may reorder according to the newly computed ranks.
+
 Use this for domain-neutral reverse indexing such as record→sections, node→edges, group→item ids. Keep domain names outside Doxum itself.
 
 ### `singleton`

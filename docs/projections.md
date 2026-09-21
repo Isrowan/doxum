@@ -79,9 +79,11 @@ and appear if the source later adds them, while duplicate ordered keys are inval
 `compact` treats selected `undefined` as absence and applies optional per-entry equality
 to present values. `filter` and `compact` reuse the normal named dependency and dynamic
 keyed lookup protocol. `groupBy` is the one-to-many reverse-index primitive: a source
-entry may belong to one or several groups, bucket members follow source order, and group
-order follows first appearance in source order. `singleton` converts an optional scalar
-projection to a zero-or-one keyed projection.
+entry may belong to one or several groups and bucket members follow source order. Group
+keys are ranked by the earliest current source member that belongs to them; when several
+groups first appear on the same source member, they follow that member's selector-result
+order. Source membership/order changes may therefore reorder group keys. `singleton`
+converts an optional scalar projection to a zero-or-one keyed projection.
 
 Dynamic keyed dependencies declare how one output key selects a key from another
 keyed projection:

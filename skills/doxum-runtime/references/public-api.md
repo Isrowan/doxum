@@ -336,6 +336,8 @@ derive.keyed.groupBy(source, dependencies, selector): KeyedProjection<GroupKey, 
 derive.keyed.singleton(sourceProjection, keyOf, equality?): KeyedProjection<K,V>
 ```
 
+`groupBy` has deterministic order on both axes. Every bucket value contains source keys in formal source order. Output group keys are ordered by the earliest current source member that belongs to each group; if multiple groups first occur on the same source member, their order is the selector's group-key order for that member. Source membership/order changes can therefore reorder group keys even when the set of groups is unchanged.
+
 Dynamic keyed dependency entries are either ordinary global `Projection`s or:
 
 ```ts

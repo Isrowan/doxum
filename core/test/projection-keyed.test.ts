@@ -523,7 +523,7 @@ describe('keyed projection evolution', () => {
     runtime.dispose();
   });
 
-  it('groups by snapshot-deterministic source order and updates only semantic grouping changes', () => {
+  it('orders group keys by earliest source member and that member selector order', () => {
     const rows = input.collection(
       new Map([
         ['a', { groups: ['x'] as readonly string[] }],

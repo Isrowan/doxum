@@ -320,8 +320,10 @@ named global/dynamic keyed dependency object as ordinary `derive.keyed`.
 
 `groupBy` is the general reverse-index primitive. A source entry may return one group
 key or several; each output bucket contains source keys in the source's formal order,
-and group order follows first appearance in that same order. `singleton` converts an
-optional scalar projection into a zero-or-one keyed projection.
+and group keys are ordered by the earliest current source member that belongs to them.
+If several groups first appear on the same source member, they follow that member's
+selector-result order. Source membership/order changes may therefore reorder group keys.
+`singleton` converts an optional scalar projection into a zero-or-one keyed projection.
 
 All keyed projection producers use the public `KeyedProjection<K,V>` handle, including
 collection `observe`, `derive.keyed`, `incremental.collection`, and collection leaves

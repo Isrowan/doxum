@@ -304,6 +304,8 @@ const recordIdsBySection = derive.keyed.groupBy(records, record => record.sectio
 
 Output is keyed by section id; each value is ordered source record ids. Use this instead of maintaining a global reverse-index Map in application code.
 
+Group keys follow first appearance in the source's formal order. If one source record returns several groups, those groups use the selector's returned order for that record when they first appear together.
+
 ## Optional scalar to keyed singleton
 
 ```ts
