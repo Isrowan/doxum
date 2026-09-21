@@ -210,33 +210,35 @@ const reconstructBefore = (
 
 const sealMembers = (fact: MemberGroup, changes: Change[]): void => {
   const members: MemberChange[] = [];
-  for (const member of fact.members?.values() ?? []) {
-    if (!member) continue;
-    const key = address.memberKey(fact, member.key);
-    const present = Object.hasOwn(fact.parent, key);
-    const value = (fact.parent as Record<string | number, unknown>)[key];
-    if (member.node.kind === 'field') {
-      const change = transition(
-        member.node,
-        member.key,
-        member.present,
-        member.value,
-        present,
-        value
-      );
-      if (change) members.push(change);
-    } else
-      diffMember(
-        changes,
-        members,
-        member.node,
-        fact.at,
-        member.key,
-        member.present,
-        member.value,
-        present,
-        value
-      );
+  if (fact.members) {
+    for (const member of fact.members.values()) {
+      if (!member) continue;
+      const key = address.memberKey(fact, member.key);
+      const present = Object.hasOwn(fact.parent, key);
+      const value = (fact.parent as Record<string | number, unknown>)[key];
+      if (member.node.kind === 'field') {
+        const change = transition(
+          member.node,
+          member.key,
+          member.present,
+          member.value,
+          present,
+          value
+        );
+        if (change) members.push(change);
+      } else
+        diffMember(
+          changes,
+          members,
+          member.node,
+          fact.at,
+          member.key,
+          member.present,
+          member.value,
+          present,
+          value
+        );
+    }
   }
   let order: { before: readonly string[]; after: readonly string[] } | undefined;
   if (fact.order) {
@@ -324,7 +326,7 @@ export class ChangeRecorder {
   ): unknown {
     const index = this.indexGroups();
     const children: RestoreFact[] = [];
-    index.query(fact => {
+    index.forEachOverlap(at, fact => {
       if (fact.kind === 'members') {
         // An ancestor group can contribute only its one directly addressed member.
         if (fact.at.length < at.length) {
@@ -336,14 +338,16 @@ export class ChangeRecorder {
         }
         if (fact.order && relation.contains(at, fact.at))
           children.push({ kind: 'order', at: fact.at, group: fact });
-        for (const member of fact.members?.values() ?? []) {
-          if (!member) continue;
-          const memberAt = fact.at.concat(member.key);
-          if (relation.contains(at, memberAt))
-            children.push({ kind: 'member', at: memberAt, group: fact, member });
+        if (fact.members) {
+          for (const member of fact.members.values()) {
+            if (!member) continue;
+            const compared = relation.compareExtended(fact.at, member.key, at);
+            if (compared !== 'equal' && compared !== 'descendant') continue;
+            children.push({ kind: 'member', at: fact.at.concat(member.key), group: fact, member });
+          }
         }
       } else if (relation.contains(at, fact.at)) children.push(fact);
-    })(at);
+    });
     if (present) value = reconstructBefore(node, value, children, at.length);
     this.releaseCovered(children);
     return value;
@@ -363,9 +367,9 @@ export class ChangeRecorder {
         this.unregister(child);
       }
     }
-    for (const group of changedGroups ?? []) {
-      if (emptyGroup(group)) {
-        this.unregister(group);
+    if (changedGroups) {
+      for (const group of changedGroups) {
+        if (emptyGroup(group)) this.unregister(group);
       }
     }
   }

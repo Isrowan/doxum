@@ -1,4 +1,7 @@
+import { sameArray, snapshotArray } from '@/value/array';
+
 export type KeyRelation = {
+  replaceOne(left: string, right: string | undefined): boolean;
   replace(left: string, right: readonly string[]): boolean;
   delete(left: string): boolean;
   forward(left: string): readonly string[] | undefined;
@@ -30,16 +33,30 @@ export const createKeyRelation = (): KeyRelation => {
   };
 
   return {
+    replaceOne(left, right) {
+      const previous = forward.get(left);
+      if (right === undefined) {
+        if (!previous) return false;
+        detach(left, previous);
+        forward.delete(left);
+        return true;
+      }
+      if (previous?.length === 1 && previous[0] === right) return false;
+      if (previous) detach(left, previous);
+      const next = Object.freeze([right]);
+      forward.set(left, next);
+      attach(left, next);
+      return true;
+    },
     replace(left, right) {
-      const previous = forward.get(left) ?? Object.freeze([]);
-      if (previous.length === right.length && previous.every((key, index) => key === right[index]))
-        return false;
-      detach(left, previous);
+      const previous = forward.get(left);
+      if (previous ? sameArray(previous, right) : right.length === 0) return false;
+      if (previous) detach(left, previous);
       if (!right.length) {
         forward.delete(left);
         return true;
       }
-      const next = Object.freeze([...right]);
+      const next = snapshotArray(right);
       forward.set(left, next);
       attach(left, next);
       return true;

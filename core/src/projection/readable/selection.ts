@@ -1,6 +1,6 @@
 import type { Unsubscribe } from '@/runtime/contract';
 import {
-  collectionChange,
+  collectionChangeIntersects,
   collectionHasStructuralChange,
   diffCollection,
 } from '@/projection/collection/change';
@@ -94,8 +94,7 @@ const selectionAffects = (
   if (!change || change.kind === 'reset') return true;
   if (selection.all) return true;
   if (selection.structure && collectionHasStructuralChange(change)) return true;
-  for (const key of collectionChange.keys(change)) if (selection.keys.has(key)) return true;
-  return false;
+  return collectionChangeIntersects(change, selection.keys);
 };
 
 export const createDirectReadable = <T>(source: ProjectionReadableSource<T>): Readable<T> =>
@@ -143,7 +142,7 @@ export const createSelectorReadable = <T, R>(
       activeTracker = previousTracker;
     }
     const nextSelection: Selection = Object.freeze({
-      keys: new Set(tracker.keys),
+      keys: tracker.keys,
       all: tracker.all || (isMapLike(current) && tracker.keys.size === 0 && !tracker.structure),
       structure: tracker.structure,
     });

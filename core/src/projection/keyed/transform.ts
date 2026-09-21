@@ -98,8 +98,7 @@ export const createKeyedTransform = <K extends string, V, T, State = undefined>(
           if (evaluation.reset) {
             dependencies.clearBindings();
             const ids = driver.read.ids();
-            const present = new Set(ids);
-            for (const key of [...states.keys()]) if (!present.has(key)) states.delete(key);
+            for (const key of states.keys()) if (!driver.read.has(key)) states.delete(key);
             for (const key of ids) project(key);
             output.output.order(ids.filter(key => output.next.has(key)));
             dependencies.remember(evaluation.sources);

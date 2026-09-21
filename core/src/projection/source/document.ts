@@ -247,18 +247,25 @@ export const createDocumentSourceRegistry = (scheduler: Scheduler) => {
       const replacement = createDocumentDirty();
       if (pending.reset) markDocumentReplace(replacement, []);
 
+      let cachedIds: readonly string[] | undefined;
+
       const ids = (): readonly string[] => {
         assertScope(active);
+        if (cachedIds) return cachedIds;
         if (treeNodes)
-          return node?.kind === 'tree' && isRecord(value) && isRecord(value.nodes)
-            ? Object.freeze(Object.keys(value.nodes))
-            : Object.freeze([]);
-        if (node?.kind === 'map' && isRecord(value)) return Object.freeze(Object.keys(value));
+          return (cachedIds =
+            node?.kind === 'tree' && isRecord(value) && isRecord(value.nodes)
+              ? Object.freeze(Object.keys(value.nodes))
+              : Object.freeze([]));
+        if (node?.kind === 'map' && isRecord(value))
+          return (cachedIds = Object.freeze(Object.keys(value)));
         if (node?.kind === 'table' && isRecord(value) && Array.isArray(value.ids))
-          return Object.freeze([...(value.ids as string[])]);
+          return (cachedIds = Object.freeze([...(value.ids as string[])]));
         if (node?.kind === 'list' && Array.isArray(value))
-          return Object.freeze(sequence.toArray(sequence.indexedKeys(value, node.keyOf)));
-        return Object.freeze([]);
+          return (cachedIds = Object.freeze(
+            sequence.toArray(sequence.indexedKeys(value, node.keyOf))
+          ));
+        return (cachedIds = Object.freeze([]));
       };
 
       const has = (key: string): boolean => {

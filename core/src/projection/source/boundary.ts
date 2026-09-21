@@ -188,20 +188,35 @@ const stageCollectionRead = <K extends string, V>(
     evaluation.output.order(ids);
   } else {
     const previous = state.current();
-    const keys = options.candidates
-      ? [...options.candidates]
-      : [...new Set([...previous.ids(), ...read.ids()])];
-    if (!options.candidates) profile.collectionView.idsScanned(keys.length);
-    for (const key of keys) {
-      if (read.has(key)) {
-        profile.collectionView.mapped();
-        evaluation.output.set(key, read.get(key) as V);
-      } else evaluation.output.remove(key);
+    let currentIds: readonly K[] | undefined;
+    const ids = (): readonly K[] => (currentIds ??= read.ids());
+    if (options.candidates) {
+      for (const key of options.candidates) {
+        if (read.has(key)) {
+          profile.collectionView.mapped();
+          evaluation.output.set(key, read.get(key) as V);
+        } else evaluation.output.remove(key);
+      }
+    } else {
+      const previousIds = previous.ids();
+      const nextIds = ids();
+      profile.collectionView.idsScanned(previousIds.length + nextIds.length);
+      for (const key of previousIds) {
+        if (read.has(key)) {
+          profile.collectionView.mapped();
+          evaluation.output.set(key, read.get(key) as V);
+        } else evaluation.output.remove(key);
+      }
+      for (const key of nextIds)
+        if (!previous.has(key)) {
+          profile.collectionView.mapped();
+          evaluation.output.set(key, read.get(key) as V);
+        }
     }
     if (options.orderMayChange || !options.candidates) {
-      const ids = read.ids();
-      if (options.candidates) profile.collectionView.idsScanned(ids.length);
-      evaluation.output.order(ids);
+      const nextIds = ids();
+      if (options.candidates) profile.collectionView.idsScanned(nextIds.length);
+      evaluation.output.order(nextIds);
     }
   }
   return state.seal(options.reset, options.isEqual ?? Object.is);

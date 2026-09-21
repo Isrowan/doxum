@@ -1,5 +1,8 @@
 import type { Synchronous } from '@/runtime/contract';
-import { collectionChange, collectionHasStructuralChange } from '@/projection/collection/change';
+import {
+  collectionChangeTouchesKey,
+  collectionHasStructuralChange,
+} from '@/projection/collection/change';
 import type { SourceContext } from '@/projection/contract';
 import {
   defineProcessor,
@@ -20,6 +23,7 @@ import {
 } from '@/projection/keyed/dependency';
 import { createKeyedTransform, keyedAbsent } from '@/projection/keyed/transform';
 import { createKeyRelation } from '@/projection/keyed/relation';
+import { sameArray } from '@/value/array';
 
 type Equality<T> = (previous: T, next: T) => boolean;
 
@@ -242,11 +246,7 @@ const createKeyedGet = <K extends string, V>(
             const change = collection.change;
             if (!change || change.kind === 'reset') affected = true;
             else if (selected !== undefined)
-              for (const changedKey of collectionChange.keys(change))
-                if (changedKey === selected) {
-                  affected = true;
-                  break;
-                }
+              affected = collectionChangeTouchesKey(change, selected);
           }
           if (affected)
             output.output.set(
@@ -565,7 +565,7 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
         equality: (previous: unknown, next: unknown) => {
           const left = previous as readonly string[];
           const right = next as readonly string[];
-          return left.length === right.length && left.every((key, index) => key === right[index]);
+          return sameArray(left, right);
         },
       },
     ],
@@ -635,13 +635,14 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
       const publishGroupOrder = (
         output: Extract<OutputEvaluation, { kind: 'collection' }>
       ): void => {
-        const order = [...groupRanks.entries()]
-          .sort(([leftKey, left], [rightKey, right]) => {
-            if (left.source !== right.source) return left.source - right.source;
-            if (left.selector !== right.selector) return left.selector - right.selector;
-            return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
-          })
-          .map(([group]) => group);
+        const order = [...groupRanks.keys()];
+        order.sort((leftKey, rightKey) => {
+          const left = groupRanks.get(leftKey)!;
+          const right = groupRanks.get(rightKey)!;
+          if (left.source !== right.source) return left.source - right.source;
+          if (left.selector !== right.selector) return left.selector - right.selector;
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        });
         output.output.order(order);
       };
 

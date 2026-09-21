@@ -1,7 +1,8 @@
 import type { Readable } from '@/readable';
 import type { Unsubscribe } from '@/runtime/contract';
 import { ProjectionDisposedError, type CollectionChange } from '@/projection/contract';
-import { notifyProjectionListeners } from './listeners';
+import { iterableMatchesArray } from '@/value/array';
+import { notifyProjectionListenerSnapshot } from './listeners';
 import type { ProjectionReadableSource } from './selection';
 
 export type ProjectionItems<K extends string, V> = {
@@ -23,9 +24,6 @@ type ItemState<K extends string, V> = {
   value: V | undefined;
   revision: number;
 };
-
-const sameKeys = <K extends string>(previous: readonly K[], next: readonly K[]): boolean =>
-  previous.length === next.length && previous.every((key, index) => key === next[index]);
 
 /** Runtime-owned keyed consumer family over one materialized collection output. */
 export const createProjectionItems = <K extends string, V>(
@@ -53,8 +51,11 @@ export const createProjectionItems = <K extends string, V>(
     for (const listener of listeners) notifications.push(listener);
   };
   const flushNotifications = (): void => {
-    const pending = notifications.splice(0);
-    notifyProjectionListeners(pending, 'Projection item listeners failed.');
+    try {
+      notifyProjectionListenerSnapshot(notifications, 'Projection item listeners failed.');
+    } finally {
+      notifications.length = 0;
+    }
   };
 
   const unregisterWaiting = (state: ItemState<K, V>): void => {
@@ -103,17 +104,11 @@ export const createProjectionItems = <K extends string, V>(
     state.ended = true;
   };
 
-  const statesFor = (key: K): readonly ItemState<K, V>[] => {
-    const result: ItemState<K, V>[] = [];
-    const canonical = active.get(key);
-    if (canonical) result.push(canonical);
-    const extra = followers.get(key);
-    if (extra) result.push(...extra);
-    return result;
-  };
-
   const terminateKey = (key: K): void => {
-    for (const state of statesFor(key)) terminateState(state);
+    const canonical = active.get(key);
+    if (canonical) terminateState(canonical);
+    const extra = followers.get(key);
+    if (extra) for (const state of extra) terminateState(state);
     active.delete(key);
     followers.delete(key);
   };
@@ -126,13 +121,15 @@ export const createProjectionItems = <K extends string, V>(
   };
 
   const updateKey = (key: K, value: V | undefined): void => {
-    for (const state of statesFor(key)) publishState(state, value);
+    const canonical = active.get(key);
+    if (canonical) publishState(canonical, value);
+    const extra = followers.get(key);
+    if (extra) for (const state of extra) publishState(state, value);
   };
 
   const updateKeys = (current: ReadonlyMap<K, V>): void => {
-    const next = Object.freeze([...current.keys()]) as readonly K[];
-    if (sameKeys(keysValue, next)) return;
-    keysValue = next;
+    if (iterableMatchesArray(current.keys(), keysValue)) return;
+    keysValue = Object.freeze([...current.keys()]) as readonly K[];
     keysRevision++;
     notify(keyListeners);
   };
@@ -180,11 +177,11 @@ export const createProjectionItems = <K extends string, V>(
   };
 
   const reconcile = (current: ReadonlyMap<K, V>): void => {
-    for (const key of [...active.keys()]) {
+    for (const key of active.keys()) {
       if (!current.has(key)) terminateKey(key);
       else updateKey(key, current.get(key) as V);
     }
-    for (const key of [...waiting.keys()])
+    for (const key of waiting.keys())
       if (current.has(key)) activateWaiting(key, current.get(key) as V);
     updateKeys(current);
   };

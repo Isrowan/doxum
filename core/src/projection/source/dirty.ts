@@ -26,10 +26,16 @@ export const clearDocumentDirty = (dirty: DocumentDirty): void => {
   dirty.children.clear();
 };
 
-const locate = (dirty: DocumentDirty, path: readonly string[]): DocumentDirty | undefined => {
+const locateRange = (
+  dirty: DocumentDirty,
+  path: readonly string[],
+  start: number,
+  tail?: string
+): DocumentDirty | undefined => {
   let current = dirty;
-  for (const key of path) {
+  for (let index = start; index < path.length; index++) {
     if (current.replace) return undefined;
+    const key = path[index];
     let child = current.children.get(key);
     if (!child) {
       child = createDocumentDirty();
@@ -37,11 +43,23 @@ const locate = (dirty: DocumentDirty, path: readonly string[]): DocumentDirty | 
     }
     current = child;
   }
-  return current;
+  if (tail === undefined) return current;
+  if (current.replace) return undefined;
+  let child = current.children.get(tail);
+  if (!child) {
+    child = createDocumentDirty();
+    current.children.set(tail, child);
+  }
+  return child;
 };
 
-export const markDocumentReplace = (dirty: DocumentDirty, path: readonly string[]): void => {
-  const current = locate(dirty, path);
+const replaceAt = (
+  dirty: DocumentDirty,
+  path: readonly string[],
+  start: number,
+  tail?: string
+): void => {
+  const current = locateRange(dirty, path, start, tail);
   if (!current) return;
   current.replace = true;
   current.order = false;
@@ -50,21 +68,30 @@ export const markDocumentReplace = (dirty: DocumentDirty, path: readonly string[
   current.children.clear();
 };
 
-const markDocumentOrder = (dirty: DocumentDirty, path: readonly string[]): void => {
-  const current = locate(dirty, path);
+export const markDocumentReplace = (dirty: DocumentDirty, path: readonly string[]): void => {
+  replaceAt(dirty, path, 0);
+};
+
+const markDocumentOrderRange = (
+  dirty: DocumentDirty,
+  path: readonly string[],
+  start: number
+): void => {
+  const current = locateRange(dirty, path, start);
   if (current && !current.replace) current.order = true;
 };
 
 const markDocumentTree = (
   dirty: DocumentDirty,
   path: readonly string[],
+  start: number,
   root: boolean,
-  nodes: Iterable<string>
+  nodes: readonly { readonly id: string }[]
 ): void => {
-  const current = locate(dirty, path);
+  const current = locateRange(dirty, path, start);
   if (!current || current.replace) return;
   current.treeRoot ||= root;
-  for (const id of nodes) current.treeNodes.add(id);
+  for (const node of nodes) current.treeNodes.add(node.id);
 };
 
 type DocumentCollectionPending = {
@@ -109,27 +136,21 @@ export const mergeValueChanges = (
   const at = selector.address;
   for (const change of changes.changes) {
     if (change.kind === 'reset') {
-      markDocumentReplace(dirty, []);
+      replaceAt(dirty, at, at.length);
       return;
     }
     if (change.kind === 'members') {
       for (const member of change.members) {
-        const changed = [...change.at, member.key];
-        if (relation.contains(changed, at)) markDocumentReplace(dirty, []);
-        else if (relation.contains(at, changed))
-          markDocumentReplace(dirty, changed.slice(at.length));
+        const compared = relation.compareExtended(change.at, member.key, at);
+        if (compared === 'ancestor' || compared === 'equal') replaceAt(dirty, at, at.length);
+        else if (compared === 'descendant') replaceAt(dirty, change.at, at.length, member.key);
       }
       if (change.order && relation.contains(at, change.at))
-        markDocumentOrder(dirty, change.at.slice(at.length));
+        markDocumentOrderRange(dirty, change.at, at.length);
       continue;
     }
     if (relation.contains(at, change.at))
-      markDocumentTree(
-        dirty,
-        change.at.slice(at.length),
-        change.before !== change.after,
-        change.nodes.map(node => node.id)
-      );
+      markDocumentTree(dirty, change.at, at.length, change.before !== change.after, change.nodes);
   }
 };
 
@@ -149,15 +170,15 @@ export const mergeCollectionChanges = (
     if (selector.tree?.kind === 'nodes') {
       if (change.kind === 'members') {
         for (const member of change.members) {
-          const changed = [...change.at, member.key];
-          if (relation.contains(changed, at)) {
+          const compared = relation.compareExtended(change.at, member.key, at);
+          if (compared === 'ancestor' || compared === 'equal') {
             resetCollectionPending(pending);
             return;
           }
         }
       } else if (change.at.length === at.length && relation.contains(change.at, at)) {
         for (const node of change.nodes) {
-          markDocumentReplace(dirtyEntry(pending, node.id), []);
+          replaceAt(dirtyEntry(pending, node.id), at, at.length);
           pending.order ||= node.kind !== 'updated';
         }
       } else if (relation.contains(change.at, at)) {
@@ -169,40 +190,43 @@ export const mergeCollectionChanges = (
 
     if (change.kind === 'members') {
       for (const member of change.members) {
-        const changed = [...change.at, member.key];
-        if (relation.contains(changed, at)) {
+        const compared = relation.compareExtended(change.at, member.key, at);
+        if (compared === 'ancestor' || compared === 'equal') {
           resetCollectionPending(pending);
           return;
         }
-        if (!relation.contains(at, changed)) continue;
-        const relative = changed.slice(at.length);
-        if (!relative.length) {
-          resetCollectionPending(pending);
-          return;
+        if (compared !== 'descendant') continue;
+        if (at.length === change.at.length) {
+          replaceAt(dirtyEntry(pending, member.key), change.at, change.at.length);
+          if (member.kind !== 'updated') pending.order = true;
+        } else {
+          const entry = dirtyEntry(pending, change.at[at.length]);
+          replaceAt(entry, change.at, at.length + 1, member.key);
         }
-        const entry = dirtyEntry(pending, relative[0]);
-        markDocumentReplace(entry, relative.slice(1));
-        if (relative.length === 1 && member.kind !== 'updated') pending.order = true;
       }
       if (change.order && relation.contains(at, change.at)) {
-        const relative = change.at.slice(at.length);
-        if (!relative.length) pending.order = true;
-        else markDocumentOrder(dirtyEntry(pending, relative[0]), relative.slice(1));
+        if (change.at.length === at.length) pending.order = true;
+        else
+          markDocumentOrderRange(
+            dirtyEntry(pending, change.at[at.length]),
+            change.at,
+            at.length + 1
+          );
       }
       continue;
     }
 
     if (!relation.contains(at, change.at)) continue;
-    const relative = change.at.slice(at.length);
-    if (!relative.length) {
+    if (change.at.length === at.length) {
       resetCollectionPending(pending);
       return;
     }
     markDocumentTree(
-      dirtyEntry(pending, relative[0]),
-      relative.slice(1),
+      dirtyEntry(pending, change.at[at.length]),
+      change.at,
+      at.length + 1,
       change.before !== change.after,
-      change.nodes.map(node => node.id)
+      change.nodes
     );
   }
 };

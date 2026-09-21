@@ -1,7 +1,6 @@
 import type { Synchronous } from '@/runtime/contract';
 import { isPlainObject } from '@/value/record';
 import { collectionView, mapRead } from '@/projection/collection/view';
-import { collectionChange } from '@/projection/collection/change';
 import type { SourceContext } from '@/projection/contract';
 import { readNamedDependencyEntries, snapshotDependencyValue } from '@/projection/dependency';
 import {
@@ -174,32 +173,37 @@ export const compileKeyedDependencies = (
   });
 };
 
+const selectedKey = (
+  dependency: Extract<CompiledDynamicKeyedDependency, { readonly kind: 'one' }>,
+  value: unknown,
+  key: string
+): string | undefined => {
+  const result = dependency.select(value, key);
+  assertSynchronous(result);
+  if (result === undefined) return undefined;
+  if (typeof result !== 'string')
+    throw new TypeError('Dynamic keyed dependency key must be a string or undefined.');
+  return result;
+};
+
 const selectedKeys = (
-  dependency: CompiledDynamicKeyedDependency,
+  dependency: Extract<CompiledDynamicKeyedDependency, { readonly kind: 'many' }>,
   value: unknown,
   key: string
 ): readonly string[] => {
   const result = dependency.select(value, key);
   assertSynchronous(result);
-  if (dependency.kind === 'one') {
-    if (result === undefined) return Object.freeze([]);
-    if (typeof result !== 'string')
-      throw new TypeError('Dynamic keyed dependency key must be a string or undefined.');
-    return Object.freeze([result]);
-  }
   if (!Array.isArray(result))
     throw new TypeError('Dynamic keyed dependency keys must be an array of strings.');
   const seen = new Set<string>();
-  const keys: string[] = [];
   for (const selected of result) {
     if (typeof selected !== 'string')
       throw new TypeError('Dynamic keyed dependency keys must contain only strings.');
     if (seen.has(selected))
       throw new TypeError('Dynamic keyed dependency keys must not contain duplicates.');
     seen.add(selected);
-    keys.push(selected);
   }
-  return Object.freeze(keys);
+  return result as readonly string[];
 };
 
 export type KeyedDependencyRuntime = {
@@ -273,13 +277,14 @@ export const createKeyedDependencyRuntime = (
         const source = sources[state.sourceIndex];
         if (source.kind !== 'collection')
           throw new TypeError('Dynamic keyed dependency resolved to a non-collection source.');
-        const keys = selectedKeys(dependency, driverValue, driverKey);
-        state.relation.replace(driverKey, keys);
         if (dependency.kind === 'one') {
-          const selected = keys[0];
+          const selected = selectedKey(dependency, driverValue, driverKey);
+          state.relation.replaceOne(driverKey, selected);
           values[dependency.name] = selected === undefined ? undefined : source.read.get(selected);
           continue;
         }
+        const keys = selectedKeys(dependency, driverValue, driverKey);
+        state.relation.replace(driverKey, keys);
         const selected = new Map<string, unknown>();
         for (const key of keys) if (source.read.has(key)) selected.set(key, source.read.get(key));
         values[dependency.name] = collectionView(mapRead(selected));
@@ -303,8 +308,12 @@ export const createKeyedDependencyRuntime = (
           all = true;
           continue;
         }
-        for (const sourceKey of collectionChange.keys(source.change))
-          for (const dependent of state.relation.reverse(sourceKey) ?? []) dirty.add(dependent);
+        for (const entry of source.change.added)
+          for (const dependent of state.relation.reverse(entry.key) ?? []) dirty.add(dependent);
+        for (const entry of source.change.updated)
+          for (const dependent of state.relation.reverse(entry.key) ?? []) dirty.add(dependent);
+        for (const entry of source.change.removed)
+          for (const dependent of state.relation.reverse(entry.key) ?? []) dirty.add(dependent);
       }
       return all;
     },

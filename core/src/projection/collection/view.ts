@@ -1,16 +1,20 @@
 import type { CollectionRead } from '@/projection/contract';
 
-export const mapRead = <K extends string, V>(value: ReadonlyMap<K, V>): CollectionRead<K, V> => ({
-  get: key => value.get(key),
-  has: key => value.has(key),
-  ids: () => Object.freeze([...value.keys()]),
-});
+export const mapRead = <K extends string, V>(value: ReadonlyMap<K, V>): CollectionRead<K, V> => {
+  let ids: readonly K[] | undefined;
+  return {
+    get: key => value.get(key),
+    has: key => value.has(key),
+    ids: () => (ids ??= Object.freeze([...value.keys()])),
+  };
+};
 
 /** Immutable map-like view over a CollectionRead. */
 export const collectionView = <K extends string, V>(
-  read: CollectionRead<K, V>
+  read: CollectionRead<K, V>,
+  knownIds?: readonly K[]
 ): ReadonlyMap<K, V> => {
-  const ids = read.ids();
+  const ids = knownIds ?? read.ids();
   const entries = function* (): IterableIterator<[K, V]> {
     for (const key of ids) yield [key, read.get(key) as V];
   };
@@ -41,5 +45,5 @@ export const snapshotCollectionView = <K extends string, V>(
   const ids = read.ids();
   const values = new Map<K, V>();
   for (const key of ids) values.set(key, read.get(key) as V);
-  return collectionView(mapRead(values));
+  return collectionView(mapRead(values), ids);
 };

@@ -1,6 +1,7 @@
 import { profile } from '@/profile';
 import { createCollectionChange } from '@/projection/collection/change';
 import { PersistentKeyedIndex } from '@/projection/collection/index';
+import { sameArray, snapshotArray } from '@/value/array';
 import type {
   CollectionChange,
   CollectionContext,
@@ -61,17 +62,15 @@ const createPublishedCollection = <K extends string, V>(): PublishedCollection<K
     },
     publish: (staged, nextIds, reset) => {
       if (reset) {
-        const entries: [K, V][] = [];
-        for (const [key, entry] of staged) if (entry.present) entries.push([key, entry.value]);
-        index = PersistentKeyedIndex.from(entries);
         values.clear();
+        for (const [key, entry] of staged) if (entry.present) values.set(key, entry.value);
+        index = PersistentKeyedIndex.from(values);
       } else {
-        for (const [key, entry] of staged)
+        for (const [key, entry] of staged) {
           index = entry.present ? index.set(key, entry.value) : index.remove(key);
-      }
-      for (const [key, entry] of staged) {
-        if (entry.present) values.set(key, entry.value);
-        else values.delete(key);
+          if (entry.present) values.set(key, entry.value);
+          else values.delete(key);
+        }
       }
       ids = nextIds;
     },
@@ -111,7 +110,7 @@ export const createCollectionOutput = <K extends string, V>(
   binding: CollectionOutputBinding
 ): CollectionOutputState<K, V> => {
   const published = createPublishedCollection<K, V>();
-  let staged = new Map<K, Entry<V>>();
+  const staged = new Map<K, Entry<V>>();
   let nextIds = published.ids();
   let change: CollectionChange<K, V> | undefined;
   let initialized = false;
@@ -136,15 +135,16 @@ export const createCollectionOutput = <K extends string, V>(
         : published.get(key);
   };
 
-  const deriveIds = (): readonly K[] => {
-    const result = cleared ? [] : published.ids().filter(hasNext);
+  const deriveIds = (): K[] => {
+    const result: K[] = [];
+    if (!cleared) for (const key of published.ids()) if (hasNext(key)) result.push(key);
     for (const [key, entry] of staged)
       if (entry.present && (cleared || !published.has(key))) result.push(key);
     return result;
   };
 
   const begin = (active: () => boolean, initialize: boolean): CollectionOutputEvaluation<K, V> => {
-    staged = new Map();
+    staged.clear();
     nextIds = published.ids();
     change = undefined;
     explicitOrder = undefined;
@@ -161,9 +161,9 @@ export const createCollectionOutput = <K extends string, V>(
       },
       ids: () => {
         assertScope(active);
-        return next
-          ? Object.freeze(explicitOrder ? [...explicitOrder] : [...deriveIds()])
-          : published.ids();
+        if (!next) return published.ids();
+        if (explicitOrder) return explicitOrder;
+        return Object.freeze(deriveIds());
       },
     });
     const output: CollectionDraft<K, V> = {
@@ -178,7 +178,7 @@ export const createCollectionOutput = <K extends string, V>(
       },
       order: order => {
         assertScope(active);
-        explicitOrder = Object.freeze([...order]);
+        explicitOrder = snapshotArray(order);
       },
     };
     return { previous: read(false), next: read(true), output };
@@ -189,8 +189,6 @@ export const createCollectionOutput = <K extends string, V>(
       for (const key of published.keys()) if (!staged.has(key)) staged.set(key, { present: false });
 
     profile.projection('touchedKeys', staged.size);
-    const added = new Set<K>();
-    const removed = new Set<K>();
     const addedEntries: { readonly key: K; readonly after: V }[] = [];
     const updatedEntries: { readonly key: K; readonly before: V; readonly after: V }[] = [];
     const removedEntries: { readonly key: K; readonly before: V }[] = [];
@@ -198,7 +196,6 @@ export const createCollectionOutput = <K extends string, V>(
       const existed = published.has(key);
       if (entry.present) {
         if (!existed) {
-          added.add(key);
           addedEntries.push({ key, after: entry.value });
           continue;
         }
@@ -208,25 +205,28 @@ export const createCollectionOutput = <K extends string, V>(
         continue;
       }
       if (existed) {
-        removed.add(key);
         removedEntries.push({ key, before: published.get(key) as V });
       } else staged.delete(key);
     }
 
     const ids = published.ids();
-    if (explicitOrder || added.size || removed.size) {
-      const order = explicitOrder ?? [...ids.filter(key => !removed.has(key)), ...added];
-      const seen = new Set(order);
-      if (
-        seen.size !== order.length ||
-        order.length !== published.size() + added.size - removed.size ||
-        order.some(key => !hasNext(key))
-      )
+    if (explicitOrder) {
+      const expectedLength = published.size() + addedEntries.length - removedEntries.length;
+      const seen = new Set<K>();
+      for (const key of explicitOrder) {
+        if (seen.has(key) || !hasNext(key))
+          throw new TypeError('Projection order must contain every key exactly once.');
+        seen.add(key);
+      }
+      if (seen.size !== expectedLength)
         throw new TypeError('Projection order must contain every key exactly once.');
-      nextIds =
-        ids.length === order.length && ids.every((key, index) => key === order[index])
-          ? ids
-          : Object.freeze([...order]);
+      nextIds = sameArray(ids, explicitOrder) ? ids : explicitOrder;
+    } else if (addedEntries.length || removedEntries.length) {
+      const order = new Array<K>(published.size() + addedEntries.length - removedEntries.length);
+      let index = 0;
+      for (const key of ids) if (hasNext(key)) order[index++] = key;
+      for (const entry of addedEntries) order[index++] = entry.key;
+      nextIds = sameArray(ids, order) ? ids : Object.freeze(order);
     } else nextIds = ids;
 
     profile.projection(

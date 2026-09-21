@@ -157,10 +157,16 @@ const normalizeChanges = (changes: Change[]): Change[] => {
         orders.add(change.at, true);
       }
       for (const member of change.members) {
-        const at = change.at.concat(member.key);
-        if (replacements.overlaps(at) || orders.hasDescendant(at))
-          return issue.fail(at, 'invalid-changes', 'Overlapping member transitions.');
-        replacements.add(at, true);
+        if (
+          replacements.overlaps(change.at, member.key) ||
+          orders.hasDescendant(change.at, member.key)
+        )
+          return issue.fail(
+            change.at.concat(member.key),
+            'invalid-changes',
+            'Overlapping member transitions.'
+          );
+        replacements.add(change.at, true, member.key);
       }
     } else if (change.kind === 'tree') {
       if (replacements.overlaps(change.at) || orders.hasDescendant(change.at))

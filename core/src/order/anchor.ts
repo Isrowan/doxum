@@ -24,15 +24,44 @@ export const moveSelection = (
     selected.add(key);
   }
   const moved: string[] = [];
-  const remaining: string[] = [];
-  for (const key of current) (selected.has(key) ? moved : remaining).push(key);
+  let remainingLength = 0;
+  let anchorIndex = -1;
+  const anchoredKey =
+    position &&
+    ('before' in position ? position.before : 'after' in position ? position.after : undefined);
+  for (const key of current) {
+    if (selected.has(key)) {
+      moved.push(key);
+      continue;
+    }
+    if (key === anchoredKey) anchorIndex = remainingLength;
+    remainingLength++;
+  }
   if (moved.length !== selected.size) return { kind: 'missing' };
-  if (!valid(remaining, position)) return { kind: 'invalid-anchor' };
-  const insertion = index(remaining, position);
-  return {
-    kind: 'ok',
-    order: [...remaining.slice(0, insertion), ...moved, ...remaining.slice(insertion)],
-  };
+  let insertion: number;
+  if (!position || ('at' in position && position.at === 'end')) insertion = remainingLength;
+  else if ('at' in position) {
+    if (position.at !== 'start') return { kind: 'invalid-anchor' };
+    insertion = 0;
+  } else {
+    if (anchorIndex < 0) return { kind: 'invalid-anchor' };
+    insertion = 'before' in position ? anchorIndex : anchorIndex + 1;
+  }
+  const order = new Array<string>(current.length);
+  let outputIndex = 0;
+  let remainingIndex = 0;
+  let inserted = false;
+  for (const key of current) {
+    if (selected.has(key)) continue;
+    if (!inserted && remainingIndex === insertion) {
+      for (const movedKey of moved) order[outputIndex++] = movedKey;
+      inserted = true;
+    }
+    order[outputIndex++] = key;
+    remainingIndex++;
+  }
+  if (!inserted) for (const movedKey of moved) order[outputIndex++] = movedKey;
+  return { kind: 'ok', order };
 };
 
 export const index = (keys: OrderedKeys, anchor?: DocumentAnchor): number => {

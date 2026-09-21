@@ -25,21 +25,18 @@ export class AddressIndex<T> {
   delete(address: DocumentAddress, value: T, member?: string): void {
     const parents: AddressIndexNode<T>[] = [];
     let node = this.root;
-    const segments = member === undefined ? address : [...address, member];
-    for (const segment of segments) {
+    const length = address.length + (member === undefined ? 0 : 1);
+    for (let index = 0; index < length; index++) {
+      const segment = index < address.length ? address[index] : member!;
       const child = node.children.get(segment);
       if (!child) return;
       parents.push(node);
       node = child;
     }
     node.values.delete(value);
-    for (
-      let index = segments.length - 1;
-      index >= 0 && !node.values.size && !node.children.size;
-      index--
-    ) {
+    for (let index = length - 1; index >= 0 && !node.values.size && !node.children.size; index--) {
       node = parents[index];
-      node.children.delete(segments[index]);
+      node.children.delete(index < address.length ? address[index] : member!);
     }
   }
 
@@ -75,10 +72,12 @@ export class AddressIndex<T> {
     }
   }
 
-  overlaps(address: DocumentAddress): boolean {
+  overlaps(address: DocumentAddress, member?: string): boolean {
     let node = this.root;
-    for (const segment of address) {
+    const length = address.length + (member === undefined ? 0 : 1);
+    for (let index = 0; index < length; index++) {
       if (node.values.size) return true;
+      const segment = index < address.length ? address[index] : member!;
       const child = node.children.get(segment);
       if (!child) return false;
       node = child;
@@ -86,14 +85,32 @@ export class AddressIndex<T> {
     return node.values.size > 0 || node.children.size > 0;
   }
 
-  hasDescendant(address: DocumentAddress): boolean {
+  hasDescendant(address: DocumentAddress, member?: string): boolean {
     let node = this.root;
-    for (const segment of address) {
+    const length = address.length + (member === undefined ? 0 : 1);
+    for (let index = 0; index < length; index++) {
+      const segment = index < address.length ? address[index] : member!;
       const child = node.children.get(segment);
       if (!child) return false;
       node = child;
     }
     return node.values.size > 0 || node.children.size > 0;
+  }
+
+  /** Visit one address' ancestors and descendants without batch de-duplication state. */
+  forEachOverlap(address: DocumentAddress, visit: (value: T) => void): void {
+    let node = this.root;
+    for (const segment of address) {
+      node.values.forEach(visit);
+      const child = node.children.get(segment);
+      if (!child) return;
+      node = child;
+    }
+    const descend = (current: AddressIndexNode<T>): void => {
+      current.values.forEach(visit);
+      current.children.forEach(descend);
+    };
+    descend(node);
   }
 
   query(
