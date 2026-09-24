@@ -59,7 +59,7 @@ type SameKeyConstraint<DriverKey extends string, Dependency> = Dependency extend
 }
   ? Dependency extends { readonly key: unknown } | { readonly keys: unknown }
     ? unknown
-    : DriverKey extends SourceKey
+    : [DriverKey] extends [SourceKey]
       ? unknown
       : never
   : unknown;
@@ -335,7 +335,6 @@ export const createKeyedDependencyRuntime = (
       for (const state of states) {
         const source = sources[state.sourceIndex];
         if (state.revision === source.revision) continue;
-        const dependency = state.entry;
         if (state.kind === 'global') {
           all = true;
           continue;

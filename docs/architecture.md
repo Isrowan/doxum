@@ -360,13 +360,17 @@ static; missing selected keys remain bound and source order-only changes do not 
 lookup dependencies.
 
 `projection/keyed/transform.ts` owns the shared driver-keyed evaluation lifecycle:
-driver membership/order reconciliation, dirty-key planning, dependency routing and
+driver membership/order reconciliation, dependency routing and
 optional per-membership retained state. Plain `derive.keyed`, `filter`, `compact` and
 advanced `incremental.keyed` reuse that owner instead of maintaining parallel binding or
 dirty protocols. `incremental.keyed` specializes the transform to driver-preserving
 membership/order; removal drops per-key state, reset intersections retain it, and
 processor recovery recreates the transform-local state through the normal scheduler
 lifecycle.
+
+`projection/keyed/invalidation.ts` centralizes driver deltas and dependency invalidation for transform, groupBy and flatMap. It owns no revision or membership cache; revision/binding state remains in the dependency runtime. Each consumer reconciles only its own retained data on rebuild.
+
+`projection/keyed/flat-map.ts` owns ordered parent-child segments and a unique output-key-to-parent index. It retains no child value mirror. An evaluation checks proposed keys against all replaced parents before staging removals and final values, so transfers do not depend on parent processing order. Output sealing owns net membership and equality. Processor recovery releases and recreates segment/binding state; there is no second transaction or recovery owner.
 
 `projection/keyed/composition.ts` owns keyed construction/composition whose output
 membership/order is not exclusively driven by one keyed source: scalar/static `from`,
@@ -407,13 +411,12 @@ cannot be materialized by another scope or by the root, and root definitions can
 depend on scoped definitions. Root materialization seals a definition's root ownership;
 `scope.own` cannot reclassify it afterward. The root projection Runtime therefore does not
 depend on advanced factory implementations.
-Collection inputs are source producers: their synchronous `update` draft stages
-keyed set/remove
-commands and publishes a net `CollectionChange` at the Runtime batch boundary.
-The callback and every per-entry equality check complete against a local overlay before
-the Runtime-local keyed state is installed. Callback/equality failure therefore leaves
-both the published value and the next draft unchanged. Downstream settlement is a
-separate post-install phase rather than an input rollback boundary.
+Inputs are source producers. `source/input.ts` owns their latest accepted values and the internal `InputAccess` capability; `runtime.ts` resolves access through the existing materialization records. `runtime.batch(read => ...)` creates a callback-local borrowed reader with Runtime/scope checks. Its `finally` expires the reader before scheduler settlement; it adds no registry or state mirror. Returned collection snapshots belong to the source version, not to the batch callback lifetime.
+
+Scalar assignment and collection drafts validate equality against both latest accepted and published values before installation, canonicalizing equivalent references. Input publication then uses `Object.is`; external/document boundaries keep their own equality policies. A collection draft stores final entries and final append order, not a per-write replay log. Failure installs nothing from that edit. Batch still settles previous successes on callback failure. Downstream settlement is a separate post-install phase.
+
+The scheduler's input-callback phase protects drafts and acceptance equality from reentrant source reads/writes and document writes through existing guards. The batch command callback itself stays in the command phase so nested batches and normal updates remain legal.
+
 Collection values are immutable
 map-like snapshots, while keyed storage, output revisions and transition indexes
 remain private to the runtime. A readable exposes only its own publication
@@ -473,9 +476,10 @@ Projection implementation ownership is deliberately split by semantic layer:
 state, revision, listeners and graph-facing consumer capability. Source boundaries and
 processors use that same output object rather than constructing mirror output records;
 the scheduler alone attaches and detaches processor dependency edges.
+`collection/state.ts` owns current keyed storage and version snapshots, shared by collection input acceptance and collection output publication. The two instances represent distinct latest/published states, not independent authorities for the same version. Storage installs already validated member/order changes and knows nothing of equality, graph revisions or notifications.
 `collection/index.ts` owns the immutable keyed lookup; `collection/change.ts` owns
 the exact added/updated/removed/common-order algebra; and `collection/view.ts` owns
-`CollectionRead`/`ReadonlyMap` boundary views. `source/boundary.ts` owns the common
+`CollectionRead`/`ReadonlyMap` boundary views, including owner checks on structural access and iterator steps. Collection output sealing retains equivalent published entry references during reset as well as normal updates. `source/boundary.ts` owns the common
 source prepare/publish/fault lifecycle, while `source/document.ts` owns document
 connections and document-specific reads.
 `source/materialization.ts` remains a pure previous/current/dirty structural-sharing

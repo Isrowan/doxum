@@ -43,7 +43,12 @@ export function useProjection<T, R>(
 export function useInput<T>(input: Input<T>): readonly [T, (value: T) => void];
 export function useInput<K extends string, V>(
   input: CollectionInput<K, V>
-): readonly [ReadonlyMap<K, V>, (run: (draft: CollectionInputDraft<K, V>) => void) => void];
+): readonly [
+  ReadonlyMap<K, V>,
+  <R>(
+    run: (draft: CollectionInputDraft<K, V>) => R extends PromiseLike<unknown> ? never : R
+  ) => void,
+];
 export function useInput(input: Projection<unknown>): readonly [unknown, (next: never) => void] {
   const context = useContext(ProjectionContext);
   const owner = context;

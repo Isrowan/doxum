@@ -45,11 +45,13 @@ Follow these choices unless the requirement says otherwise:
 4. Use `observe` to bring a document/readable/external source into the projection graph.
 5. Use named-object `derive` for pure aggregate values.
 6. Use `derive.keyed.from` to turn an ordered scalar/static collection into a keyed projection. Use `derive.keyed.merge` to compose multiple keyed projections; for base + sparse overrides, use `{ conflict: 'last' }`.
-7. Use `derive.keyed` when one keyed source owns output membership/order. Prefer its built-in `keys`, `values`, `entries`, `get`, `from`, `merge`, `subset`, `filter`, `compact`, `groupBy`, and `singleton` primitives over hand-written incremental collection patches.
+7. Use `derive.keyed` when one keyed source owns output membership/order. Prefer its built-in `keys`, `values`, `entries`, `get`, `from`, `merge`, `subset`, `filter`, `compact`, `groupBy`, `flatMap`, and `singleton` primitives over hand-written incremental collection patches.
 8. Express per-output-key joins through `{ source }` for same-key lookup, `{ source, key }` for one mapped key, or `{ source, keys }` for several mapped keys. Let the Runtime own binding and reverse invalidation; do not maintain an application `Map` just to route dependency changes.
 9. Use `runtime.items(keyedProjection)` or `scope.items(...)` for stable per-membership item `Readable`s.
 10. Use `incremental.keyed` for independent retained state per driver key. Use `incremental.collection` or `incremental.group` only when direct incremental output patching or shared retained state is required.
 11. Use `ProjectionScope` only for lifecycle ownership. Define projections normally, then `scope.own(...)` before that definition is first materialized as a root.
+
+Use `runtime.read` for ordinary published reads. For batch read-modify-write commands, use `runtime.batch(read => ...)`; its borrowed reader accepts only inputs and sees the latest successful writes. Commands intended for composition may themselves use nested batches. Keep derived values in derive instead of synchronizing an input mirror. Use `derive.keyed.flatMap` for synchronous pure one-to-many output with global child keys; do not hand-maintain child membership in advanced state.
 
 ## Failure and lifecycle rules
 
@@ -57,7 +59,7 @@ Follow these choices unless the requirement says otherwise:
 - `TransactionRejected` expresses expected application rejection; ordinary thrown exceptions roll back and rethrow unchanged.
 - A committed document write remains committed even if projection or listener notification later fails; observer errors are reported on the result or through projection error handling.
 - `CollectionChange` is an advanced processor transport contract. Reset, membership transitions, value updates, and order are distinct facts.
-- `input.collection` has a strong exception boundary: callback or equality failure installs no partial next state.
+- Input acceptance has a strong exception boundary: assignment equality or collection callback/equality failure installs no partial next state. A batch is not a transaction and retains earlier successful writes.
 - Dispose the owning `ProjectionRuntime`, `ProjectionScope`, and `LocalSync` with the application/service lifecycle that created them.
 
 ## Completion contract

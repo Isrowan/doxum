@@ -1,4 +1,16 @@
-import { derive, field, input, list, map, object, optional, table, tree, variant } from 'doxum';
+import {
+  createProjectionRuntime,
+  derive,
+  field,
+  input,
+  list,
+  map,
+  object,
+  optional,
+  table,
+  tree,
+  variant,
+} from 'doxum';
 import { collectionChange, incremental } from 'doxum/advanced';
 
 const entity = object({
@@ -136,3 +148,16 @@ export const portableGroup = incremental.group(
 export const portableGroupValues = portableGroup.values;
 export const portableGroupCount = portableGroup.summary.count;
 export const portableChangeKeys = collectionChange.keys;
+
+export const portableFlatMap = derive.keyed.flatMap(portableRows, row => [
+  [row.entityId, row.value],
+]);
+export const portableFlatMapDependencies = derive.keyed.flatMap(
+  portableRows,
+  { entity: { source: portableEntities, key: row => row.entityId } },
+  (row, key, dependencies) => [[key, { value: row.value, label: dependencies.entity?.label }]]
+);
+const portableRuntime = createProjectionRuntime();
+export const portableBatchValue = portableRuntime.batch(read => read(portableOptional));
+export const portableBatchRows = portableRuntime.batch(read => read(portableEntities));
+portableRuntime.dispose();

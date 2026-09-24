@@ -15,22 +15,34 @@ export const collectionView = <K extends string, V>(
   knownIds?: readonly K[]
 ): ReadonlyMap<K, V> => {
   const ids = knownIds ?? read.ids();
-  const entries = function* (): IterableIterator<[K, V]> {
-    for (const key of ids) yield [key, read.get(key) as V];
+  const iterate = <T>(select: (key: K) => T): IterableIterator<T> => {
+    read.ids();
+    let index = 0;
+    return {
+      next() {
+        read.ids();
+        if (index === ids.length) return { done: true, value: undefined };
+        return { done: false, value: select(ids[index++]) };
+      },
+      [Symbol.iterator]() {
+        return this;
+      },
+    };
   };
-  const values = function* (): IterableIterator<V> {
-    for (const key of ids) yield read.get(key) as V;
-  };
+  const entries = (): IterableIterator<[K, V]> => iterate(key => [key, read.get(key) as V]);
+  const values = (): IterableIterator<V> => iterate(key => read.get(key) as V);
   const view: ReadonlyMap<K, V> = {
     get: key => read.get(key),
     has: key => read.has(key),
     get size() {
+      read.ids();
       return ids.length;
     },
-    keys: () => ids[Symbol.iterator](),
+    keys: () => iterate(key => key),
     values,
     entries,
     forEach: (callback, thisArg) => {
+      read.ids();
       for (const key of ids) callback.call(thisArg, read.get(key) as V, key, view);
     },
     [Symbol.iterator]: entries,

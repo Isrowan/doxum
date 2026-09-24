@@ -121,7 +121,7 @@ editSelection(draft => {
 });
 ```
 
-`useInput` writes through the provided Runtime/scope. The input definition must belong to that owner.
+`useInput` writes through the provided Runtime/scope. The input definition must belong to that owner. Scalar setter arguments are always values, including functions; they do not use React's updater-function convention. Collection edit callbacks must be synchronous. For compound domain commands, call the Core Runtime/scope's `batch(read => ...)`; its borrowed reader sees latest input state while React continues consuming published views. Do not implement a React-side source mirror or per-child flatMap cache.
 
 ### Document selectors
 

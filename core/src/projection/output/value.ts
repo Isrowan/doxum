@@ -2,6 +2,7 @@ import { profile } from '@/profile';
 import type { ValueContext } from '@/projection/contract';
 import {
   assertScope,
+  assertSynchronous,
   type OutputListener,
   type OutputRecord,
   type ProcessorRecord,
@@ -71,7 +72,9 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
       return false;
     }
     const candidate = staged;
-    changed = !initialized || !isEqual(value, candidate);
+    const equal = initialized ? isEqual(value, candidate) : false;
+    assertSynchronous(equal);
+    changed = !equal;
     next = changed ? candidate : value;
     reset = nextReset;
     return changed;

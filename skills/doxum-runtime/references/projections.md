@@ -287,6 +287,33 @@ Semantics:
 
 Use this instead of adapter/business code subscribing to keys and maintaining its own `Map<K,Readable<V>>`.
 
+### One-to-many keyed expansion
+
+```ts
+const lines = derive.keyed.flatMap(orders, order =>
+  order.lines.map(line => [line.id, line] as const)
+);
+
+const errors = derive.keyed.flatMap(
+  forms,
+  { rules, fields: { source: fieldsById, keys: form => form.fieldIds } },
+  (form, formId, dependencies) =>
+    validateForm(form, dependencies).map(
+      error => [JSON.stringify([formId, error.fieldId, error.code]), error] as const
+    )
+);
+```
+
+The synchronous selector returns a finite readonly array of readonly `[outputKey, value]` tuples. The output is a `KeyedProjection<OutputKey, Value>`. Both overloads accept optional per-entry equality as the last argument. Named global and dynamic same/one/many keyed dependencies use the existing driver-key protocol. Callbacks stay value-first.
+
+Output order concatenates each parent's returned key sequence in formal parent order. Only invalidated parents run the selector on a normal successful update; parent order-only changes run no selectors. A global dependency may invalidate every parent. Membership or order changes may rebuild the complete formal output order: selector locality does not imply every operation is O(changes).
+
+Output keys must be globally unique strings. Duplicate keys within a parent or across final parent results are processor errors, never silent overwrites. Use an unambiguous application key encoding for locally unique child IDs; there is no default delimiter or generated index identity. For identity across parent transfers, use a global child ID independent of the parent. `[]` means no members; `[[key, undefined]]` means a present member with an undefined value.
+
+Equality defaults to `Object.is` and only controls an existing key's value update, preserving the previous published reference when equal, including reset/recovery. It cannot suppress membership or order. If one global key moves between parents in a single settlement, its final membership is continuous and `runtime.items(...).get(key)` retains its identity. A real removal in an earlier settlement ends that membership.
+
+Selector/key-construction, tuple validation, duplicate-key and equality failures publish no partial collection and use normal processor recovery. Recovery can rerun selectors for all parents, so selectors must be pure. A persistent fault blocks dependents and reads throw until recovery. Definitions are lazy and reusable; caches are isolated per Runtime and released with their owner. Derive additional keyed views from the result normally. Async loading, recursive traversal and dynamically creating projections are outside this primitive; retained spatial/search indexes still belong in advanced processors.
+
 ## Projection inputs
 
 Scalar local state:
@@ -310,7 +337,7 @@ Inputs belong to one materializing Runtime/scope. They are not canonical documen
 
 `input.collection` edit callbacks are synchronous borrowed sessions. If the callback throws, nothing is installed. Entry equality is also evaluated before the next local state is formally installed; if equality throws, published state and the next edit baseline remain unchanged.
 
-An equality-equivalent `set` retains the previously published value reference and publishes no entry update.
+An equality-equivalent `set` retains the latest accepted value reference; candidates equivalent to the published baseline reuse its reference. See Batch source reads for net-change and exception rules.
 
 ## ProjectionScope
 
@@ -347,6 +374,37 @@ Projection batching defers projection graph settlement/listeners until the batch
 Reads of projections inside the batch see the last published projection state, not an eagerly settled draft. Batch the whole application action before its first source update when one settled projection publication is required.
 
 There is no cross-document transaction or rollback implied by `runtime.batch`.
+
+### Batch source reads
+
+`runtime.read(projection)` and `Readable.current()` always return published state. Outside a batch, a successful input update settles synchronously, so ordinary commands can use `runtime.read`. Inside `runtime.batch(read => ...)`, the supplied `read` reads the most recently accepted value of an `Input` or `CollectionInput` without settling the graph:
+
+```ts
+const count = input(0);
+const doubled = derive({ count }, ({ count }) => count * 2);
+
+runtime.batch(read => {
+  runtime.update(count, read(count) + 1);
+  runtime.update(count, read(count) + 1);
+  read(count); // 2
+  runtime.read(count); // 0: last published value
+});
+runtime.read(doubled); // 4
+```
+
+Use the same reader for commands spanning several independent inputs. Values entirely determined by other sources belong in `derive`, not in a manually synchronized input. Scalar updates always assign their second argument, including function values; there is no updater-function overload.
+
+The reader only accepts inputs, never derived or observed projections. It belongs to its callback and Runtime/scope: it expires on return, throw, or a rejected asynchronous return, and cannot be reused by a later batch. Nested callbacks have separate readers; the outer reader remains valid and sees successful inner updates. The outermost batch controls settlement. Existing zero-argument callbacks, synchronous return values and `cause` options remain supported. `scope.batch` applies the same rules and its normal ownership checks.
+
+Commands that may be called inside another batch should themselves use `batch(read => ...)`; nesting lets the same command work alone or as part of a larger action. Do not use a closed-over published `runtime.read` value for a batch read-modify-write.
+
+Collection reads return immutable version snapshots, not the internal mutable Map. Repeated reads of the same accepted version reuse the view. A returned snapshot outlives the callback and stays unchanged after later edits; its owning input/Runtime lifecycle still applies. The reader itself does not outlive the callback. Payloads remain readonly by ownership contract; compute a new value instead of mutating a read result.
+
+Borrowed reads and writes are rejected during processing, notification, error reporting, input draft callbacks and input equality. Read across inputs in the outer command, then pass those values into a draft. Borrowed drafts expire when their edit callback ends. Batch and edit callbacks must be synchronous; assigning a Promise as a scalar payload is distinct from returning a Promise from a command. Reading an unmaterialized input only initializes that source. A newly materialized derive in the batch still sees published dependencies.
+
+Input acceptance validates equality before installing any state. It first compares a candidate with the latest accepted value, retaining that reference when equal; otherwise it compares with the published baseline when different and reuses that published reference if equal. This applies to scalar values and collection entries, including removed/re-added keys. All comparisons for one edit complete before installation. Equality must be pure, synchronous and a stable equivalence relation. Publication uses the already normalized references without invoking input equality again.
+
+A failed edit leaves its latest accepted baseline unchanged and throws synchronously; it does not fault the input or roll back earlier successful edits. An outer command exception still settles previous successes, preserving the original exception if error reporting also fails. A batch is not a cross-input or cross-document transaction. A→B→an equivalent A retains the original published reference and produces no value notification; collection order changes still publish. Downstream processor/listener errors after acceptance do not undo source writes. Unrelated subscriptions need not be notified.
 
 ## Collection change protocol
 

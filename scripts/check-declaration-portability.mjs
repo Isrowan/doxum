@@ -20,6 +20,7 @@ const failures = forbidden
   .map(([label]) => `generated consumer declaration references ${label}`);
 
 const required = [
+  ['flatMap result', 'portableFlatMap: import("doxum").KeyedProjection<string, number>;'],
   ['portable schema handle', 'portableSchema: import("doxum").ObjectSchema<'],
   ['keyed derive result', 'portableSelected: import("doxum").KeyedProjection<string, number>;'],
   ['keyed join result', 'portableJoined: import("doxum").KeyedProjection<string, string>;'],

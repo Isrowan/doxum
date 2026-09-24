@@ -1,3 +1,5 @@
+import { collectKeyedInvalidation } from '@/projection/keyed/invalidation';
+import { createKeyedFlatMap } from '@/projection/keyed/flat-map';
 import type { Synchronous } from '@/runtime/contract';
 import {
   collectionChangeTouchesKey,
@@ -697,46 +699,32 @@ function createKeyedGroupBy<K extends string, V, G extends string>(
           const output = evaluation.outputs[0];
           if (driver.kind !== 'collection' || output.kind !== 'collection')
             throw new Error('derive.keyed.groupBy requires collection input and output.');
-          dependencies.prepare(evaluation.sources, evaluation.reset);
-
-          if (evaluation.reset) {
+          const invalidation = collectKeyedInvalidation(
+            driver,
+            evaluation.sources,
+            dependencies,
+            evaluation.reset
+          );
+          dependencies.prepare(evaluation.sources, invalidation.rebuild);
+          if (invalidation.rebuild) {
             rebuild(driver, evaluation.sources, output);
             dependencies.remember(evaluation.sources);
             return;
           }
 
-          const dirty = new Set<string>();
           const affected = new Set<G>();
-          let all = false;
-          let structural = false;
-          let orderDirty = false;
-          if (dependencies.driverChanged(driver)) {
-            const change = driver.change;
-            if (!change || change.kind === 'reset') {
-              rebuild(driver, evaluation.sources, output);
-              dependencies.remember(evaluation.sources);
-              return;
-            } else {
-              for (const entry of change.removed) {
-                const changed = removeSourceKey(entry.key, affected);
-                orderDirty ||= changed;
-                dependencies.remove(entry.key);
-                dirty.delete(entry.key);
-              }
-              for (const entry of change.added) dirty.add(entry.key);
-              for (const entry of change.updated) dirty.add(entry.key);
-              structural = Boolean(change.added.length || change.removed.length || change.order);
-              orderDirty ||= structural;
-              if (structural) refreshOrderIndex(driver);
-            }
+          let orderDirty = invalidation.structural;
+          for (const entry of invalidation.removed) {
+            const changed = removeSourceKey(entry.key, affected);
+            orderDirty ||= changed;
+            dependencies.remove(entry.key);
           }
-          all ||= dependencies.collectInvalidated(evaluation.sources, dirty);
-          if (all) for (const key of driver.read.ids()) dirty.add(key);
-          for (const key of dirty) {
+          if (invalidation.structural) refreshOrderIndex(driver);
+          for (const key of invalidation.keys) {
             const changed = selectGroups(driver, evaluation.sources, key, affected);
             orderDirty ||= changed;
           }
-          if (structural) markAllGroups(output, affected);
+          if (invalidation.structural) markAllGroups(output, affected);
           publishAffected(affected, output, orderDirty);
           dependencies.remember(evaluation.sources);
         },
@@ -761,6 +749,7 @@ export const keyedDerive = Object.assign(createKeyedDerive, {
   from: createKeyedFrom,
   merge: createKeyedMerge,
   groupBy: createKeyedGroupBy,
+  flatMap: createKeyedFlatMap,
   singleton: createKeyedSingleton,
   subset: createKeyedSubset,
   filter: createKeyedFilter,

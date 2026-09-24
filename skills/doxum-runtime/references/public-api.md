@@ -328,6 +328,7 @@ The keyed family:
 | `get`       | Scalar dynamic lookup into one current keyed entry               |
 | `from`      | Ordered scalar/static collection → keyed projection              |
 | `merge`     | Multiple keyed projections → union with explicit conflict policy |
+| `flatMap`   | Ordered pure one-to-many keyed expansion                         |
 | `groupBy`   | One-to-many reverse index                                        |
 | `singleton` | Optional scalar → zero-or-one keyed projection                   |
 | `subset`    | Externally ordered keyed subset                                  |
@@ -353,6 +354,9 @@ derive.keyed.filter(source, predicate): KeyedProjection<K,V>
 derive.keyed.filter(source, dependencies, predicate): KeyedProjection<K,V>
 derive.keyed.compact(source, selector, equality?): KeyedProjection<K,T>
 derive.keyed.compact(source, dependencies, selector, equality?): KeyedProjection<K,T>
+derive.keyed.flatMap(source, select, equality?): KeyedProjection<OutputKey, Value>
+derive.keyed.flatMap(source, dependencies, select, equality?): KeyedProjection<OutputKey, Value>
+// select(value, driverKey, dependencies?) returns readonly (readonly [OutputKey, Value])[]
 derive.keyed.groupBy(source, selector): KeyedProjection<GroupKey, readonly K[]>
 derive.keyed.groupBy(source, dependencies, selector): KeyedProjection<GroupKey, readonly K[]>
 derive.keyed.singleton(sourceProjection, keyOf, equality?): KeyedProjection<K,V>
@@ -367,6 +371,8 @@ Merged formal order is always `stableUnique(S0.ids() ++ S1.ids() ++ ... ++ Sn.id
 `merge` equality compares the final effective value. Value-only changes only recompute affected keys; source membership/order changes may rebuild formal merged order. Present `undefined` is valid in both `from` and `merge`; membership is never inferred from `get(key) !== undefined`.
 
 `groupBy` has deterministic order on both axes. Every bucket value contains source keys in formal source order. Output group keys are ordered by the earliest current source member that belongs to each group; if multiple groups first occur on the same source member, their order is the selector's group-key order for that member. Source membership/order changes can therefore reorder group keys even when the set of groups is unchanged.
+
+`flatMap` concatenates parent child-tuples in formal parent order. Keys are globally unique strings; duplicates are processor errors, and `undefined` is a legal present value. Equality retains published entry references without suppressing membership/order. Same-settlement parent transfers preserve global-key membership; order-only parent changes do not rerun selectors. It shares the named dependency protocol and processor recovery. Structural output maintenance may scan full order.
 
 Dynamic keyed dependency entries are either ordinary global `Projection`s or:
 
@@ -387,14 +393,20 @@ const runtime = createProjectionRuntime({
 ```
 
 ```ts
+// BatchRead and Synchronous are signature notation here, not additional root exports.
+type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+type BatchRead = {
+  <T>(input: Input<T>): T;
+  <K extends string, V>(input: CollectionInput<K, V>): ReadonlyMap<K, V>;
+};
 type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;
   select<T>(projection: Projection<T>): Readable<T>;
   select<T,R>(projection: Projection<T>, selector: (value: T) => R, equality?): Readable<R>;
   items<K,V>(projection: KeyedProjection<K,V>): ProjectionItems<K,V>;
-  update<T>(input: Input<T>, value: T): void;
-  update<K,V>(input: CollectionInput<K,V>, run: (draft: CollectionInputDraft<K,V>) => void): void;
-  batch<T>(run: () => T, options?: { cause?: unknown }): T;
+  update<T>(input: Input<T>, value: NoInfer<T>): void;
+  update<K,V,R>(input: CollectionInput<K,V>, run: (draft: CollectionInputDraft<K,V>) => Synchronous<R>): void;
+  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { cause?: unknown }): T;
   scope(): ProjectionScope;
   dispose(): void;
 };
@@ -416,6 +428,8 @@ type CollectionInputDraft<K,V> = {
   remove(key: K): void;
 };
 ```
+
+The batch callback's reader is borrowed and input-only. Normal reads remain published; batch reads see the latest accepted source state without graph settlement. Zero-argument callbacks remain supported. Nested readers have separate lifetimes, and only the outermost batch settles. Reader/draft escape and asynchronous callbacks are rejected. Input equality runs before acceptance, failures do not roll back earlier batch successes, and collection results are immutable version snapshots. See [Batch source reads](projections.md#batch-source-reads) for the complete lifecycle and exception contract.
 
 ### External projection sources
 
@@ -597,7 +611,7 @@ Every declared output must be returned from the static output tree exactly once.
 useProjection(projection): T
 useProjection(projection, selector, equality?): R
 useInput(input): readonly [T, (value: T) => void]
-useInput(collectionInput): readonly [ReadonlyMap<K,V>, (edit: (draft: CollectionInputDraft<K,V>) => void) => void]
+useInput(collectionInput): readonly [ReadonlyMap<K,V>, <R>(edit: (draft: CollectionInputDraft<K,V>) => Synchronous<R>) => void]
 useDocumentSelector(document, selector, equality?): R
 useReadable(readable): T
 useHistory(history): HistoryState & { undo(): OperationResult<C>; redo(): OperationResult<C> }

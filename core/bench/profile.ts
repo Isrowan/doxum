@@ -1,3 +1,4 @@
+import { profileKeyedExpansion } from './projection-flat-map.profile';
 import { performance } from 'node:perf_hooks';
 import {
   createDocument,
@@ -195,3 +196,5 @@ for (const [name, edit] of [...edits, ['root-reset', undefined] as const]) {
     runtime.dispose();
   }
 }
+
+profileKeyedExpansion();

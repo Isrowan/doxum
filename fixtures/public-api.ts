@@ -215,6 +215,79 @@ scope.read(scoped);
 void scope.items(rows).get('a').current();
 // @ts-expect-error scopes own definitions but do not copy derive factories
 scope.derive({ count }, ({ count }: { count: number }) => count);
+// Batch source reads preserve input value/key types and synchronous command results.
+const batchCount = input(0);
+const batchRows = input.collection<string, number>();
+const batchResult: number = runtime.batch(read => {
+  const current: number = read(batchCount);
+  const currentRows: ReadonlyMap<string, number> = read(batchRows);
+  runtime.update(batchCount, current + currentRows.size);
+  // @ts-expect-error source reads reject derived projections
+  read(count);
+  // @ts-expect-error source reads reject observed document projections
+  read(rows);
+  return read(batchCount);
+});
+const scopedBatchResult: number = scope.batch(read => read(batchCount));
+// @ts-expect-error batch commands must be synchronous
+runtime.batch(async read => read(batchCount));
+// @ts-expect-error scope commands must be synchronous
+scope.batch(async read => read(batchCount));
+// @ts-expect-error union Promise returns must not weaken the synchronous contract
+runtime.batch(() => (Math.random() > 0.5 ? 1 : Promise.resolve(1)));
+// @ts-expect-error collection editors must be synchronous
+runtime.update(batchRows, async draft => draft.set('a', 1));
+// @ts-expect-error scope collection editors must be synchronous
+scope.update(batchRows, async draft => draft.set('a', 1));
+// @ts-expect-error union Promise editor results are rejected
+runtime.update(batchRows, () => (Math.random() > 0.5 ? undefined : Promise.resolve()));
+// @ts-expect-error scalar updates do not widen the declared value type
+runtime.update(batchCount, 'wrong');
+const batchFunction = input<(value: number) => number>(value => value);
+runtime.batch(read => {
+  const previous = read(batchFunction);
+  runtime.update(batchFunction, value => previous(value) + 1);
+});
+const [, editHookRows] = useInput(batchRows);
+// @ts-expect-error React editors preserve the core synchronous contract
+editHookRows(async draft => draft.set('a', 1));
+
+const flatChildren: KeyedProjection<string, number> = derive.keyed.flatMap(rows, row => [
+  ['child', row.value],
+]);
+const flatDependencies: KeyedProjection<string, string> = derive.keyed.flatMap(
+  rows,
+  { entity: { source: entities, key: row => row.entityId } },
+  (row, key, dependencies) => [[key, `${row.value}:${dependencies.entity?.label}`]]
+);
+const flatUndefined: KeyedProjection<string, undefined> = derive.keyed.flatMap(
+  rows,
+  (_row, key) => [[key, undefined]]
+);
+const flatEmpty = derive.keyed.flatMap(rows, () => []);
+const childKey = 'child' as RowId;
+const flatBranded: KeyedProjection<RowId, number> = derive.keyed.flatMap(rows, row => [
+  [childKey, row.value],
+]);
+// @ts-expect-error flatMap must return ordered keyed tuples
+derive.keyed.flatMap(rows, row => [row.value]);
+// @ts-expect-error flatMap selectors must be synchronous
+derive.keyed.flatMap(rows, async row => [['child', row.value] as const]);
+// @ts-expect-error output keys must be strings
+derive.keyed.flatMap(rows, row => [[1, row.value]]);
+const unionDriver = input.collection<'a' | 'b', number>();
+const narrowLookup = input.collection<'a', number>();
+// @ts-expect-error same-key lookup must cover every driver key
+derive.keyed.flatMap(unionDriver, { item: { source: narrowLookup } }, (_value, key) => [[key, 1]]);
+// @ts-expect-error the shared same-key protocol rejects partially overlapping key unions
+derive.keyed(unionDriver, { item: { source: narrowLookup } }, value => value);
+void batchResult;
+void scopedBatchResult;
+void flatChildren;
+void flatDependencies;
+void flatUndefined;
+void flatEmpty;
+void flatBranded;
 scope.dispose();
 runtime.dispose();
 

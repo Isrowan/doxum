@@ -280,6 +280,29 @@ exposes `read`, `select`, `items`, `update`, `batch`, `scope` and `dispose`.
 `ProjectionScope` mirrors `read`, `select`, `items`, `update`, `batch` and `dispose`, plus
 `own(definitionOrTree)` for lifecycle ownership of lazy projection definitions.
 
+### Commands inside a batch
+
+Ordinary reads use `runtime.read`. A batch can read the latest accepted input state through its callback while projection readers keep the last published view:
+
+```ts
+const count = input(0);
+const doubled = derive({ count }, ({ count }) => count * 2);
+
+function increment() {
+  runtime.batch(read => {
+    runtime.update(count, read(count) + 1);
+  });
+}
+
+runtime.batch(() => {
+  increment();
+  increment();
+});
+runtime.read(doubled); // 4
+```
+
+The borrowed reader supports scalar and collection inputs and expires with its callback. Nested batches settle at the outer boundary. Cross-input commands can read several latest source values without mirrors. Input equality is checked before acceptance; a failed edit leaves earlier successes intact. A batch is not a transaction. See [batch source reads](docs/projections.md#batch-source-reads) for snapshots, errors and lifecycle.
+
 ### Keyed projection
 
 `derive.keyed` preserves a keyed driver's membership and order while deriving entries
@@ -399,6 +422,16 @@ item. Removal publishes `undefined` to that generation and retires it; adding th
 key later creates a new generation. A subscribed missing item stays latent and activates
 if the key is later added. Runtime batches follow the net published membership, so a
 remove/add collapsed to an update does not create a false lifecycle break.
+
+### One-to-many keyed derivation
+
+```ts
+const lines = derive.keyed.flatMap(orders, order =>
+  order.lines.map(line => [line.id, line] as const)
+);
+```
+
+Each parent returns ordered `[globalKey, value]` tuples, including zero entries. `flatMap` reuses named/dynamic keyed dependencies and only recomputes invalidated parents. Formal output order follows parent order then child order; parent-only reordering runs no selectors. Duplicate final output keys are errors, and present `undefined` is valid. Same-batch transfers preserve a global key's membership identity. Structural changes can rebuild full order; this is not a claim that every operation costs only the changed entries.
 
 ### Runtime-local keyed state
 

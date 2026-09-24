@@ -57,7 +57,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   let depth = 0;
   let batchSequence = 0;
   let activeBatch: BatchContext | undefined;
-  let phase: 'idle' | 'compute' | 'notify' = 'idle';
+  let phase: 'idle' | 'input' | 'compute' | 'notify' = 'idle';
   let sequence = 0;
   const sources = new Set<SourceBoundaryRecord>();
   const processors = new Set<ProcessorRecord>();
@@ -76,7 +76,9 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   const assertIdle = () => {
     assertActive();
     if (phase !== 'idle')
-      throw new Error('Projection cannot be re-entered during processing or notification.');
+      throw new Error(
+        'Projection cannot be re-entered during input callbacks, processing or notification.'
+      );
   };
   const lock = (value: boolean) => guards.forEach(guard => guard(value));
 
@@ -390,6 +392,17 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     },
     releaseProducer,
     order: () => sequence++,
+    acceptInput<T>(callback: () => T): T {
+      assertIdle();
+      phase = 'input';
+      lock(true);
+      try {
+        return callback();
+      } finally {
+        lock(false);
+        phase = 'idle';
+      }
+    },
     initialize<T>(callback: () => T): T {
       assertIdle();
       phase = 'compute';

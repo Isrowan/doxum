@@ -524,3 +524,35 @@ await sync.dispose();
 ```
 
 Local-sync provides browser durability and leadership. Keep network collaboration, server authorization, and distributed merge policy in a separate boundary.
+
+## Composable input commands
+
+```ts
+const count = input(0);
+const doubled = derive({ count }, ({ count }) => count * 2);
+function increment() {
+  runtime.batch(read => runtime.update(count, read(count) + 1));
+}
+runtime.batch(() => {
+  increment();
+  increment();
+});
+```
+
+For a command spanning independent inputs, use `runtime.batch(read => { ... })` to read each latest source value, write with `runtime.update`, then read the accepted result for the next step. Keep the borrowed reader inside the callback. Use existing collection drafts for selection edits. Do not maintain a synchronous input mirror, or manually publish a derived value such as doubled into another input. A failed step does not undo earlier accepted steps.
+
+## Ordered child records and validation errors
+
+```ts
+const lines = derive.keyed.flatMap(orders, order =>
+  order.lines.map(line => [line.id, line] as const)
+);
+const errors = derive.keyed.flatMap(forms, { rules }, (form, formId, dependencies) =>
+  validateForm(form, dependencies.rules).map(
+    error => [JSON.stringify([formId, error.fieldId, error.code]), error] as const
+  )
+);
+const labels = derive.keyed(lines, line => line.label);
+```
+
+Choose globally unique child IDs or an unambiguous composite encoding. A parent-based composite key intentionally changes identity when its parent changes. Duplicate final keys fail rather than overwrite. Use `[]` for no children and `[key, undefined]` for a present undefined child. For retained R-tree/search-index state, continue using advanced processors rather than building state into a flatMap selector.

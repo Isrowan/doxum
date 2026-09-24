@@ -1,4 +1,4 @@
-import type { Unsubscribe } from '@/runtime/contract';
+import type { Synchronous, Unsubscribe } from '@/runtime/contract';
 import { collectionView, mapRead, snapshotCollectionView } from '@/projection/collection/view';
 import type { CollectionRead } from './contract';
 import { ProjectionDisposedError } from './contract';
@@ -24,17 +24,23 @@ import {
 } from '@/projection/readable/selection';
 import type { Readable } from '@/readable';
 import {
+  assertScope,
   createScheduler,
   type OutputRecord,
   type ProducerRecord,
 } from '@/projection/graph/scheduler';
 import { createSourceRegistry } from '@/projection/source/registry';
-import type { SourceWrite } from '@/projection/source/boundary';
+import type { InputAccess } from '@/projection/source/boundary';
 import {
   createProjectionItems,
   type ProjectionItems,
   type ProjectionItemsController,
 } from '@/projection/readable/keyed';
+
+type BatchRead = {
+  <T>(input: Input<T>): T;
+  <K extends string, V>(input: CollectionInput<K, V>): ReadonlyMap<K, V>;
+};
 
 export type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;
@@ -45,12 +51,12 @@ export type ProjectionRuntime = {
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
   items<K extends string, V>(projection: KeyedProjection<K, V>): ProjectionItems<K, V>;
-  update<T>(input: Input<T>, value: T): void;
-  update<K extends string, V>(
+  update<T>(input: Input<T>, value: NoInfer<T>): void;
+  update<K extends string, V, R>(
     input: CollectionInput<K, V>,
-    run: (draft: CollectionInputDraft<K, V>) => void
+    run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
-  batch<T>(run: () => T, options?: { readonly cause?: unknown }): T;
+  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { readonly cause?: unknown }): T;
   scope(): ProjectionScope;
   dispose(): void;
 };
@@ -70,19 +76,19 @@ export type ProjectionScope = {
     equality?: (previous: R, next: R) => boolean
   ): Readable<R>;
   items<K extends string, V>(projection: KeyedProjection<K, V>): ProjectionItems<K, V>;
-  update<T>(input: Input<T>, value: T): void;
-  update<K extends string, V>(
+  update<T>(input: Input<T>, value: NoInfer<T>): void;
+  update<K extends string, V, R>(
     input: CollectionInput<K, V>,
-    run: (draft: CollectionInputDraft<K, V>) => void
+    run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
-  batch<T>(run: () => T, options?: { readonly cause?: unknown }): T;
+  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { readonly cause?: unknown }): T;
   dispose(): void;
 };
 
 type MaterializedProducer = {
   readonly record: ProducerRecord;
   readonly outputs: readonly OutputRecord[];
-  readonly write?: SourceWrite;
+  readonly input?: InputAccess;
 };
 
 type ScopeState = {
@@ -167,7 +173,7 @@ export const createProjectionRuntime = (options?: {
       result = Object.freeze({
         record: source.producer,
         outputs: Object.freeze([source.output]),
-        ...(source.write ? { write: source.write } : {}),
+        ...(source.input ? { input: source.input } : {}),
       });
     } else {
       if (
@@ -292,7 +298,9 @@ export const createProjectionRuntime = (options?: {
     return makeReadable(projection, selector, equality);
   }
 
-  const inputWrite = (target: Projection<unknown>, requester?: ScopeState): SourceWrite => {
+  const inputAccess = (target: Projection<unknown>, requester?: ScopeState): InputAccess => {
+    scheduler.assertIdle();
+    if (requester && !requester.active) throw new ProjectionDisposedError();
     const ref = projectionRef(target);
     if (ref.output !== 0 || ref.producer.kind !== 'source')
       throw new TypeError('Projection is not an input.');
@@ -301,9 +309,9 @@ export const createProjectionRuntime = (options?: {
       ref.producer.source.kind !== 'collection-input'
     )
       throw new TypeError('Projection is not an input.');
-    const write = materializeProducer(ref.producer, requester).write;
-    if (!write) throw new TypeError('Projection input is not writable.');
-    return write;
+    const access = materializeProducer(ref.producer, requester).input;
+    if (!access) throw new TypeError('Projection input is not writable.');
+    return access;
   };
 
   const updateInput = (
@@ -311,7 +319,7 @@ export const createProjectionRuntime = (options?: {
     valueOrRun: unknown,
     requester?: ScopeState
   ): void => {
-    const write = inputWrite(target, requester);
+    const write = inputAccess(target, requester);
     if (write.kind === 'value') {
       write.set(valueOrRun);
       return;
@@ -321,17 +329,32 @@ export const createProjectionRuntime = (options?: {
     write.update(valueOrRun as (draft: CollectionInputDraft<string, unknown>) => void);
   };
 
-  function update<T>(target: Input<T>, value: T): void;
-  function update<K extends string, V>(
+  function update<T>(target: Input<T>, value: NoInfer<T>): void;
+  function update<K extends string, V, R>(
     target: CollectionInput<K, V>,
-    run: (draft: CollectionInputDraft<K, V>) => void
+    run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
   function update(target: Projection<unknown>, valueOrRun: unknown): void {
     updateInput(target, valueOrRun);
   }
 
-  const batch = <T>(run: () => T, options?: { readonly cause?: unknown }): T =>
-    scheduler.batch(run, options);
+  const batch = <T>(
+    run: (read: BatchRead) => Synchronous<T>,
+    options?: { readonly cause?: unknown },
+    requester?: ScopeState
+  ): T =>
+    scheduler.batch(() => {
+      let active = true;
+      const read = <V>(target: Input<V> | CollectionInput<string, unknown>): V => {
+        assertScope(() => active);
+        return inputAccess(target, requester).read() as V;
+      };
+      try {
+        return run(read);
+      } finally {
+        active = false;
+      }
+    }, options);
 
   const disposeScope = (state: ScopeState): void => {
     if (!state.active) return;
@@ -439,19 +462,22 @@ export const createProjectionRuntime = (options?: {
       });
     }
 
-    function scopeUpdate<T>(target: Input<T>, value: T): void;
-    function scopeUpdate<K extends string, V>(
+    function scopeUpdate<T>(target: Input<T>, value: NoInfer<T>): void;
+    function scopeUpdate<K extends string, V, R>(
       target: CollectionInput<K, V>,
-      run: (draft: CollectionInputDraft<K, V>) => void
+      run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
     ): void;
     function scopeUpdate(target: Projection<unknown>, valueOrRun: unknown): void {
       assertActive();
       updateInput(target, valueOrRun, state);
     }
 
-    function scopeBatch<T>(run: () => T, options?: { readonly cause?: unknown }): T {
+    function scopeBatch<T>(
+      run: (read: BatchRead) => Synchronous<T>,
+      options?: { readonly cause?: unknown }
+    ): T {
       assertActive();
-      return batch(run, options);
+      return batch(run, options, state);
     }
 
     return Object.freeze({

@@ -111,3 +111,7 @@ address accessors, not references to removed canonical objects. Delete/recreate
 and variant replacement must resolve current schema and data before later use.
 Map `get/has/ids` and snapshots register explicit read dependencies. Framework
 reads forbid document writes while evaluating their callback.
+
+## Projection input command reads
+
+`runtime.batch(read => ...)` supplies a synchronous borrowed function for latest accepted input values. The function expires with that callback; returned values are readonly payloads, and collection results are durable version snapshots subject to input owner disposal. Do not mutate a read result; compute a replacement and call `runtime.update`, or use the existing collection draft. There is no deep-proxy rollback for illegal payload mutation. Normal `runtime.read` remains a published read inside and outside batches.

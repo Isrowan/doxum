@@ -1,6 +1,6 @@
 import { profile } from '@/profile';
 import { createCollectionChange } from '@/projection/collection/change';
-import { PersistentKeyedIndex } from '@/projection/collection/index';
+import { createCollectionState, type CollectionEntry } from '@/projection/collection/state';
 import { sameArray, snapshotArray } from '@/value/array';
 import type {
   CollectionChange,
@@ -10,77 +10,12 @@ import type {
 } from '@/projection/contract';
 import {
   assertScope,
+  assertSynchronous,
   type OutputListener,
   type OutputRecord,
   type ProcessorRecord,
   type ProducerRecord,
 } from '@/projection/graph/scheduler';
-
-type Entry<V> = { readonly present: true; readonly value: V } | { readonly present: false };
-
-type PublishedCollection<K extends string, V> = {
-  get(key: K): V | undefined;
-  has(key: K): boolean;
-  keys(): IterableIterator<K>;
-  size(): number;
-  ids(): readonly K[];
-  read(check: () => void): CollectionRead<K, V>;
-  publish(staged: ReadonlyMap<K, Entry<V>>, ids: readonly K[], reset: boolean): void;
-  release(): void;
-};
-
-const createPublishedCollection = <K extends string, V>(): PublishedCollection<K, V> => {
-  // Hot current-generation lookups stay O(1); the persistent index keeps borrowed
-  // reads durable across later publications without copying the whole collection.
-  const values = new Map<K, V>();
-  let ids: readonly K[] = Object.freeze([]);
-  let index = PersistentKeyedIndex.empty<K, V>();
-
-  return {
-    get: key => values.get(key),
-    has: key => values.has(key),
-    keys: () => values.keys(),
-    size: () => values.size,
-    ids: () => ids,
-    read: check => {
-      const snapshotIndex = index;
-      const snapshotIds = ids;
-      return Object.freeze({
-        get: key => {
-          check();
-          return snapshotIndex.get(key);
-        },
-        has: key => {
-          check();
-          return snapshotIndex.has(key);
-        },
-        ids: () => {
-          check();
-          return snapshotIds;
-        },
-      });
-    },
-    publish: (staged, nextIds, reset) => {
-      if (reset) {
-        values.clear();
-        for (const [key, entry] of staged) if (entry.present) values.set(key, entry.value);
-        index = PersistentKeyedIndex.from(values);
-      } else {
-        for (const [key, entry] of staged) {
-          index = entry.present ? index.set(key, entry.value) : index.remove(key);
-          if (entry.present) values.set(key, entry.value);
-          else values.delete(key);
-        }
-      }
-      ids = nextIds;
-    },
-    release: () => {
-      values.clear();
-      ids = Object.freeze([]);
-      index = PersistentKeyedIndex.empty<K, V>();
-    },
-  };
-};
 
 type CollectionOutputEvaluation<K extends string, V> = {
   readonly previous: CollectionRead<K, V>;
@@ -109,8 +44,8 @@ type CollectionOutputBinding = {
 export const createCollectionOutput = <K extends string, V>(
   binding: CollectionOutputBinding
 ): CollectionOutputState<K, V> => {
-  const published = createPublishedCollection<K, V>();
-  const staged = new Map<K, Entry<V>>();
+  const published = createCollectionState<K, V>();
+  const staged = new Map<K, CollectionEntry<V>>();
   let nextIds = published.ids();
   let change: CollectionChange<K, V> | undefined;
   let initialized = false;
@@ -200,8 +135,11 @@ export const createCollectionOutput = <K extends string, V>(
           continue;
         }
         const before = published.get(key) as V;
-        if (!isEqual(before, entry.value)) updatedEntries.push({ key, before, after: entry.value });
-        else if (!nextReset) staged.delete(key);
+        const equal = isEqual(before, entry.value);
+        assertSynchronous(equal);
+        if (!equal) updatedEntries.push({ key, before, after: entry.value });
+        else if (nextReset) staged.set(key, { present: true, value: before });
+        else staged.delete(key);
         continue;
       }
       if (existed) {
@@ -282,7 +220,7 @@ export const createCollectionOutput = <K extends string, V>(
     revision: () => revision,
     reset: () => reset,
     publish: () => {
-      if (change) published.publish(staged, nextIds, change.kind === 'reset');
+      if (change) published.install(staged, nextIds, change.kind === 'reset');
       if (change && initialized) revision++;
       initialized = true;
     },

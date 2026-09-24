@@ -167,6 +167,43 @@ if (missingKeyedMembers.length)
 if (staleKeyedMembers.length)
   fail(`derive.keyed inventory contains non-members: ${staleKeyedMembers.join(', ')}`);
 
+// Keep the callback's source-only contract discoverable without implementation reads.
+const typeAlias = (text, name) => {
+  const source = ts.createSourceFile(
+    'contract.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  return source.statements.find(node => ts.isTypeAliasDeclaration(node) && node.name.text === name);
+};
+const runtimeContract = readFileSync(resolve(root, 'core/src/projection/runtime.ts'), 'utf8');
+const documentedBlocks = [...reference.matchAll(/^```ts\n([\s\S]*?)^```/gm)].map(match => match[1]);
+const actualReader = typeAlias(runtimeContract, 'BatchRead');
+const documentedReader = documentedBlocks.map(block => typeAlias(block, 'BatchRead')).find(Boolean);
+const normalizedType = node => node?.type.getText().replace(/\s+/g, '');
+if (
+  !actualReader ||
+  !documentedReader ||
+  normalizedType(actualReader) !== normalizedType(documentedReader)
+)
+  fail('public-api.md must document the current batch input-reader overloads.');
+const batchCallback = node =>
+  node?.type.members
+    ?.find(member => member.name?.getText() === 'batch')
+    ?.parameters[0]?.type?.getText()
+    .replace(/\s+/g, '');
+const actualRuntime = typeAlias(runtimeContract, 'ProjectionRuntime');
+const documentedRuntime = documentedBlocks
+  .map(block => typeAlias(block, 'ProjectionRuntime'))
+  .find(Boolean);
+if (
+  !batchCallback(actualRuntime) ||
+  batchCallback(actualRuntime) !== batchCallback(documentedRuntime)
+)
+  fail('public-api.md must document the current synchronous batch callback signature.');
+
 const skill = readFileSync(resolve(skillRoot, 'SKILL.md'), 'utf8');
 const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
 if (!frontmatter) fail('SKILL.md is missing YAML frontmatter.');

@@ -1,4 +1,4 @@
-import type { CollectionRead, SourceContext } from '@/projection/contract';
+import { collectKeyedInvalidation } from './invalidation';
 import { defineProcessor, type KeyedProjection } from '@/projection/definition';
 import { assertSynchronous } from '@/projection/graph/scheduler';
 import {
@@ -65,7 +65,13 @@ export const createKeyedTransform = <K extends string, V, T, State = undefined>(
           const output = evaluation.outputs[0];
           if (driver.kind !== 'collection' || output.kind !== 'collection')
             throw new Error(`${definition.name} requires collection input and output.`);
-          dependencies.prepare(evaluation.sources, evaluation.reset);
+          const invalidation = collectKeyedInvalidation(
+            driver,
+            evaluation.sources,
+            dependencies,
+            evaluation.reset
+          );
+          dependencies.prepare(evaluation.sources, invalidation.rebuild);
 
           const stateFor = (key: string, value: V): State => {
             if (states.has(key)) return states.get(key) as State;
@@ -95,51 +101,30 @@ export const createKeyedTransform = <K extends string, V, T, State = undefined>(
             return beforePresent !== output.next.has(key);
           };
 
-          if (evaluation.reset) {
+          if (invalidation.rebuild) {
             dependencies.clearBindings();
             const ids = driver.read.ids();
             for (const key of states.keys()) if (!driver.read.has(key)) states.delete(key);
+            if (!evaluation.reset)
+              for (const key of output.previous.ids())
+                if (!driver.read.has(key)) output.output.remove(key);
             for (const key of ids) project(key);
             output.output.order(ids.filter(key => output.next.has(key)));
             dependencies.remember(evaluation.sources);
             return;
           }
 
-          const dirty = new Set<string>();
-          let all = false;
-          let updateOrder = false;
           let membershipChanged = false;
-          if (dependencies.driverChanged(driver)) {
-            const change = driver.change;
-            if (!change || change.kind === 'reset') {
-              all = true;
-              updateOrder = true;
-              for (const key of output.previous.ids()) {
-                if (driver.read.has(key)) continue;
-                output.output.remove(key);
-                dropState(key);
-                membershipChanged = true;
-              }
-            } else {
-              for (const entry of change.removed) {
-                membershipChanged ||= output.previous.has(entry.key);
-                output.output.remove(entry.key);
-                dropState(entry.key);
-                dirty.delete(entry.key);
-              }
-              for (const entry of change.added) dirty.add(entry.key);
-              for (const entry of change.updated) dirty.add(entry.key);
-              updateOrder = Boolean(change.order);
-            }
+          for (const entry of invalidation.removed) {
+            membershipChanged ||= output.previous.has(entry.key);
+            output.output.remove(entry.key);
+            dropState(entry.key);
           }
-
-          all ||= dependencies.collectInvalidated(evaluation.sources, dirty);
-          if (all) for (const key of driver.read.ids()) dirty.add(key);
-          for (const key of dirty) {
+          for (const key of invalidation.keys) {
             const changedMembership = project(key);
             membershipChanged ||= changedMembership;
           }
-          if (updateOrder || membershipChanged)
+          if (invalidation.structural || membershipChanged)
             output.output.order(driver.read.ids().filter(key => output.next.has(key)));
           dependencies.remember(evaluation.sources);
         },

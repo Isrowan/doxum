@@ -7,17 +7,18 @@ import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '@/projection
 import { createValueOutput, type ValueOutputState } from '@/projection/output/value';
 import type { CollectionInputDraft } from '@/projection/definition';
 
-export type SourceWrite =
-  | { readonly kind: 'value'; set(value: unknown): void }
+export type InputAccess =
+  | { readonly kind: 'value'; read(): unknown; set(value: unknown): void }
   | {
       readonly kind: 'collection';
+      read(): ReadonlyMap<string, unknown>;
       update(run: (draft: CollectionInputDraft<string, unknown>) => void): void;
     };
 
 export type SourceMaterialization = {
   readonly producer: SourceBoundaryRecord;
   readonly output: OutputRecord;
-  readonly write?: SourceWrite;
+  readonly input?: InputAccess;
 };
 
 export type SourceMark = { readonly reset?: boolean; readonly cause?: unknown };
