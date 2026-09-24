@@ -127,10 +127,13 @@ when a change touches addressing, mutation, impact, notifications, or views.
   external listeners; writes remain forbidden while notifying. Observer
   failures are returned on the committed result and must not be rethrown as a
   mutation rejection.
-- Explicit projection store batches defer graph settlement and projection listeners,
-  but not document commits or document listeners. Batch the full application
-  action before its first commit; readers return the last published projection
-  inside the batch. Processor dependencies are explicit, not automatically tracked.
+- Projection batches defer external projection notifications, but not document commits
+  or document listeners. Runtime reads and Readable.current() see current state and
+  advance necessary dirty dependencies on demand. Output owners retain per-consumer
+  unconsumed changes separately from net notification baselines. Keyed member lifecycles
+  finish at the notification boundary. Processor dependencies remain explicit; public
+  reads are forbidden in processor/input callbacks. Retained processors may advance
+  multiple times per batch; invocation counts are not domain events.
 
 ## Testing Expectations
 

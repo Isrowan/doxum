@@ -20,7 +20,8 @@ type ValueOutputEvaluation<T> = {
 export type ValueOutputState<T> = OutputRecord & {
   begin(active: () => boolean, initialize: boolean): ValueOutputEvaluation<T>;
   seal(reset: boolean, isEqual: (previous: T, next: T) => boolean): boolean;
-  publish(): void;
+  publish(forceReset?: boolean): void;
+  baseline(): T;
 };
 
 type ValueOutputBinding = {
@@ -29,7 +30,7 @@ type ValueOutputBinding = {
   cause(): unknown;
 };
 
-/** Owns staged and published state for one scalar Projection output. */
+/** Owns staged and current state for one scalar Projection output. */
 export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputState<T> => {
   let value!: T;
   let staged: T | typeof unset = unset;
@@ -39,7 +40,10 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
   let changed = false;
   let reset = false;
   const listeners = new Set<OutputListener>();
-  const consumers = new Set<ProcessorRecord>();
+  const consumers = new Map<ProcessorRecord, { revision: number; value: T }>();
+  const observers = new Set<OutputListener>();
+  let baseline: T | typeof unset = unset;
+  let resetRevision = -1;
 
   const begin = (active: () => boolean, initialize: boolean): ValueOutputEvaluation<T> => {
     staged = unset;
@@ -71,7 +75,12 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
       next = value;
       return false;
     }
-    const candidate = staged;
+    let candidate = staged;
+    if (baseline !== unset && !Object.is(value, baseline)) {
+      const equivalent = isEqual(baseline, candidate);
+      assertSynchronous(equivalent);
+      if (equivalent) candidate = baseline;
+    }
     const equal = initialized ? isEqual(value, candidate) : false;
     assertSynchronous(equal);
     changed = !equal;
@@ -87,13 +96,13 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
     },
     begin,
     seal,
-    context: active => {
+    context: (active, consumer) => {
       assertScope(active);
       return Object.freeze({
         kind: 'value' as const,
         value: next,
         revision,
-        reset,
+        reset: consumer ? (consumers.get(consumer)?.revision ?? -1) < resetRevision : reset,
         cause: binding.cause(),
       });
     },
@@ -102,19 +111,43 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
       return value;
     },
     revision: () => revision,
-    reset: () => reset,
-    publish: () => {
-      if (changed && initialized) revision++;
+    reset: consumer =>
+      consumer ? (consumers.get(consumer)?.revision ?? -1) < resetRevision : reset,
+    acknowledge: consumer => {
+      if (consumers.has(consumer)) consumers.set(consumer, { revision, value });
+    },
+    pending: consumer => {
+      const previous = consumers.get(consumer);
+      return !previous || previous.revision < resetRevision || !Object.is(previous.value, value);
+    },
+    baseline: () => (baseline === unset ? value : baseline),
+    publish: forceReset => {
+      if (initialized && (changed || forceReset)) {
+        if (baseline === unset) baseline = value;
+        revision++;
+        if (reset) resetRevision = revision;
+      }
       if (changed) value = next;
       initialized = true;
     },
-    emit: call => {
-      profile.materialized.notification();
-      Array.from(listeners).forEach(listener => call(listener, undefined));
+    emit: (call, force) => {
+      for (const listener of [...observers]) call(listener, undefined);
+      if (force || (baseline !== unset && !Object.is(baseline, value))) {
+        profile.materialized.notification();
+        for (const listener of [...listeners]) call(listener, undefined);
+      }
+    },
+    finish: () => {
+      baseline = unset;
+    },
+    observe: listener => {
+      binding.check();
+      observers.add(listener);
+      return () => observers.delete(listener);
     },
     hasConsumers: () => consumers.size > 0,
-    forEachConsumer: run => consumers.forEach(run),
-    attachConsumer: consumer => consumers.add(consumer),
+    forEachConsumer: run => consumers.forEach((_revision, consumer) => run(consumer)),
+    attachConsumer: consumer => consumers.set(consumer, { revision, value }),
     detachConsumer: consumer => consumers.delete(consumer),
     clear: () => {
       staged = unset;
@@ -125,6 +158,8 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
     release: () => {
       listeners.clear();
       consumers.clear();
+      observers.clear();
+      baseline = unset;
       staged = unset;
       value = next = undefined as T;
       initialized = false;

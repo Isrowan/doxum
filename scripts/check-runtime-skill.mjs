@@ -167,7 +167,7 @@ if (missingKeyedMembers.length)
 if (staleKeyedMembers.length)
   fail(`derive.keyed inventory contains non-members: ${staleKeyedMembers.join(', ')}`);
 
-// Keep the callback's source-only contract discoverable without implementation reads.
+// Keep the synchronous batch contract discoverable without implementation reads.
 const typeAlias = (text, name) => {
   const source = ts.createSourceFile(
     'contract.ts',
@@ -180,15 +180,6 @@ const typeAlias = (text, name) => {
 };
 const runtimeContract = readFileSync(resolve(root, 'core/src/projection/runtime.ts'), 'utf8');
 const documentedBlocks = [...reference.matchAll(/^```ts\n([\s\S]*?)^```/gm)].map(match => match[1]);
-const actualReader = typeAlias(runtimeContract, 'BatchRead');
-const documentedReader = documentedBlocks.map(block => typeAlias(block, 'BatchRead')).find(Boolean);
-const normalizedType = node => node?.type.getText().replace(/\s+/g, '');
-if (
-  !actualReader ||
-  !documentedReader ||
-  normalizedType(actualReader) !== normalizedType(documentedReader)
-)
-  fail('public-api.md must document the current batch input-reader overloads.');
 const batchCallback = node =>
   node?.type.members
     ?.find(member => member.name?.getText() === 'batch')

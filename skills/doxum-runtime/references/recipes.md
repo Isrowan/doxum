@@ -531,7 +531,7 @@ Local-sync provides browser durability and leadership. Keep network collaboratio
 const count = input(0);
 const doubled = derive({ count }, ({ count }) => count * 2);
 function increment() {
-  runtime.batch(read => runtime.update(count, read(count) + 1));
+  runtime.update(count, runtime.read(count) + 1);
 }
 runtime.batch(() => {
   increment();
@@ -539,7 +539,7 @@ runtime.batch(() => {
 });
 ```
 
-For a command spanning independent inputs, use `runtime.batch(read => { ... })` to read each latest source value, write with `runtime.update`, then read the accepted result for the next step. Keep the borrowed reader inside the callback. Use existing collection drafts for selection edits. Do not maintain a synchronous input mirror, or manually publish a derived value such as doubled into another input. A failed step does not undo earlier accepted steps.
+For a command spanning independent inputs, use ordinary `runtime.read` and `runtime.update`. Wrap the whole action in `runtime.batch(() => ...)` when it needs a single net notification boundary. Current reads also work for derived projections and may advance their dependencies. Use collection drafts for selection edits. Do not maintain an input mirror or manually synchronize derived values. A failed step does not undo earlier accepted steps.
 
 ## Ordered child records and validation errors
 

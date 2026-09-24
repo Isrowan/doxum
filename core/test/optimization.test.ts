@@ -192,9 +192,7 @@ describe('projection optimization boundaries', () => {
 
     runtime.batch(() => {
       document.update(draft => draft.outline.replace('r', 2));
-      expect(runtime.read(outline)).toBe(beforeOutline);
       document.update(draft => draft.outline.replace('r', 1));
-      expect(runtime.read(outline)).toBe(beforeOutline);
     });
 
     expect(runtime.read(outline)).toBe(beforeOutline);

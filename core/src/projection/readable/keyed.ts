@@ -22,6 +22,7 @@ type ItemState<K extends string, V> = {
   tracked: boolean;
   ended: boolean;
   value: V | undefined;
+  notified: V | undefined;
   revision: number;
 };
 
@@ -39,6 +40,11 @@ export const createProjectionItems = <K extends string, V>(
   const waiting = new Map<K, Set<ItemState<K, V>>>();
   let keysValue = Object.freeze([...source.current().keys()]) as readonly K[];
   let keysRevision = 0;
+  let notifiedKeys = keysValue;
+  let settledRevision = source.revision();
+  let keysSourceRevision = settledRevision;
+  const pendingKeys = new Set<K>();
+  const changedStates = new Set<ItemState<K, V>>();
   const keyListeners = new Set<() => void>();
 
   const check = (): void => {
@@ -79,7 +85,7 @@ export const createProjectionItems = <K extends string, V>(
     }
     state.value = value;
     state.revision++;
-    notify(state.listeners);
+    changedStates.add(state);
   };
 
   const attachActive = (state: ItemState<K, V>, value: V | undefined): void => {
@@ -128,10 +134,14 @@ export const createProjectionItems = <K extends string, V>(
   };
 
   const updateKeys = (current: ReadonlyMap<K, V>): void => {
+    const revision = source.revision();
+    if (keysSourceRevision === revision) return;
+    keysSourceRevision = revision;
     if (iterableMatchesArray(current.keys(), keysValue)) return;
-    keysValue = Object.freeze([...current.keys()]) as readonly K[];
+    keysValue = iterableMatchesArray(current.keys(), notifiedKeys)
+      ? notifiedKeys
+      : (Object.freeze([...current.keys()]) as readonly K[]);
     keysRevision++;
-    notify(keyListeners);
   };
 
   const createItem = (
@@ -144,12 +154,15 @@ export const createProjectionItems = <K extends string, V>(
       tracked: initial !== undefined,
       ended: false,
       value: initial?.value,
+      notified: initial?.value,
       revision: 0,
     } as ItemState<K, V>;
     const ensureObserved = (): void => {
-      if (state.ended || state.tracked) return;
+      if (state.ended) return;
       const current = source.current();
-      if (current.has(key)) attachActive(state, current.get(key) as V);
+      if (source.revision() !== settledRevision) pendingKeys.add(key);
+      if (!state.tracked && current.has(key)) attachActive(state, current.get(key) as V);
+      else if (state.tracked) publishState(state, current.get(key));
     };
     state.readable = Object.freeze({
       current: () => {
@@ -189,26 +202,51 @@ export const createProjectionItems = <K extends string, V>(
   const onChange = (change?: CollectionChange<string, unknown>): void => {
     check();
     const current = source.current();
-    if (!change || change.kind === 'reset') {
-      reconcile(current);
-      flushNotifications();
-      return;
+    if (change?.kind === 'reset') reconcile(current);
+    else {
+      if (change) {
+        for (const entry of change.removed) terminateKey(entry.key as K);
+        for (const entry of change.added) activateWaiting(entry.key as K, entry.after as V);
+        for (const entry of change.updated) updateKey(entry.key as K, entry.after as V);
+        if (change.added.length || change.removed.length || change.order) updateKeys(current);
+      }
+      // Keys observed between advances may have no net membership transition.
+      for (const key of pendingKeys) {
+        if (!current.has(key)) terminateKey(key);
+        else {
+          updateKey(key, current.get(key));
+          activateWaiting(key, current.get(key) as V);
+        }
+      }
     }
-    for (const entry of change.removed) terminateKey(entry.key as K);
-    for (const entry of change.added) activateWaiting(entry.key as K, entry.after as V);
-    for (const entry of change.updated) updateKey(entry.key as K, entry.after as V);
-    if (change.added.length || change.removed.length || change.order) updateKeys(current);
+    pendingKeys.clear();
+    settledRevision = source.revision();
+    for (const state of changedStates) {
+      if (!Object.is(state.notified, state.value)) {
+        state.notified = state.value;
+        notify(state.listeners);
+      }
+    }
+    changedStates.clear();
+    if (keysValue !== notifiedKeys) updateKeys(current);
+    else keysSourceRevision = settledRevision;
+    if (keysValue !== notifiedKeys) {
+      notifiedKeys = keysValue;
+      notify(keyListeners);
+    }
     flushNotifications();
   };
 
-  const stop = source.subscribe(onChange);
+  const stop = source.observe(onChange);
   const keys: Readable<readonly K[]> = Object.freeze({
     current: () => {
       check();
+      updateKeys(source.current());
       return keysValue;
     },
     revision: () => {
       check();
+      updateKeys(source.current());
       return keysRevision;
     },
     subscribe: listener => {
@@ -222,11 +260,12 @@ export const createProjectionItems = <K extends string, V>(
     keys,
     get: (key: K) => {
       check();
+      const current = source.current();
+      if (source.revision() !== settledRevision) pendingKeys.add(key);
       const canonical = active.get(key);
       if (canonical) return canonical.readable;
       const pending = waiting.get(key)?.values().next().value as ItemState<K, V> | undefined;
       if (pending) return pending.readable;
-      const current = source.current();
       if (current.has(key)) {
         const state = createItem(key, { present: true, value: current.get(key) as V });
         active.set(key, state);
@@ -252,6 +291,8 @@ export const createProjectionItems = <K extends string, V>(
       followers.clear();
       waiting.clear();
       notifications.length = 0;
+      pendingKeys.clear();
+      changedStates.clear();
     },
   };
 };

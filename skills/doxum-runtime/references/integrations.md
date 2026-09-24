@@ -14,7 +14,7 @@ type Readable<T> = {
 };
 ```
 
-`select(document, ...)`, `runtime.select(...)`, `runtime.items(...).keys`, item readables, history, and local-sync state all use this contract. Subscription listeners receive no payload; read the latest published value with `current()`.
+`select(document, ...)`, `runtime.select(...)`, `runtime.items(...).keys`, item readables, history, and local-sync state all use this contract. Subscription listeners receive no payload; read the current value with `current()`.
 
 Consumer listener failure does not retroactively roll back the source mutation that caused the notification.
 
@@ -121,7 +121,7 @@ editSelection(draft => {
 });
 ```
 
-`useInput` writes through the provided Runtime/scope. The input definition must belong to that owner. Scalar setter arguments are always values, including functions; they do not use React's updater-function convention. Collection edit callbacks must be synchronous. For compound domain commands, call the Core Runtime/scope's `batch(read => ...)`; its borrowed reader sees latest input state while React continues consuming published views. Do not implement a React-side source mirror or per-child flatMap cache.
+`useInput` writes through the provided Runtime/scope. The input definition must belong to that owner. Scalar setter arguments are always values, including functions; they do not use React's updater-function convention. Collection edit callbacks must be synchronous. For compound domain commands, call the Core Runtime/scope's `batch(() => ...)` and use ordinary `read`. Imperative reads can advance derived values before notifications drive the next React render. Do not implement a React-side source mirror or per-child flatMap cache.
 
 ### Document selectors
 

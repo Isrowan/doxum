@@ -24,23 +24,17 @@ import {
 } from '@/projection/readable/selection';
 import type { Readable } from '@/readable';
 import {
-  assertScope,
   createScheduler,
   type OutputRecord,
   type ProducerRecord,
 } from '@/projection/graph/scheduler';
 import { createSourceRegistry } from '@/projection/source/registry';
-import type { InputAccess } from '@/projection/source/boundary';
+import type { InputWrite } from '@/projection/source/boundary';
 import {
   createProjectionItems,
   type ProjectionItems,
   type ProjectionItemsController,
 } from '@/projection/readable/keyed';
-
-type BatchRead = {
-  <T>(input: Input<T>): T;
-  <K extends string, V>(input: CollectionInput<K, V>): ReadonlyMap<K, V>;
-};
 
 export type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;
@@ -56,7 +50,7 @@ export type ProjectionRuntime = {
     input: CollectionInput<K, V>,
     run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
-  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { readonly cause?: unknown }): T;
+  batch<T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T;
   scope(): ProjectionScope;
   dispose(): void;
 };
@@ -81,14 +75,14 @@ export type ProjectionScope = {
     input: CollectionInput<K, V>,
     run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
-  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { readonly cause?: unknown }): T;
+  batch<T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T;
   dispose(): void;
 };
 
 type MaterializedProducer = {
   readonly record: ProducerRecord;
   readonly outputs: readonly OutputRecord[];
-  readonly input?: InputAccess;
+  readonly input?: InputWrite;
 };
 
 type ScopeState = {
@@ -184,6 +178,7 @@ export const createProjectionRuntime = (options?: {
       const dependencies = definition.dependencies.map(dependency =>
         resolveOutput(dependency, requester)
       );
+      dependencies.forEach(output => scheduler.ensureCurrent(output));
       const processor = createProcessor(scheduler, definition, Object.freeze(dependencies));
       result = Object.freeze({
         record: processor,
@@ -212,6 +207,7 @@ export const createProjectionRuntime = (options?: {
   };
 
   const publicCurrent = (output: OutputRecord): unknown => {
+    scheduler.ensureCurrent(output);
     assertOutput(output);
     const current = output.current();
     const revision = output.revision();
@@ -244,10 +240,12 @@ export const createProjectionRuntime = (options?: {
       kind: output.kind,
       current: () => readProjection(projection, requester),
       revision: () => {
+        scheduler.ensureCurrent(output);
         assertOutput(output);
         return output.revision();
       },
       subscribe: output.subscribe,
+      observe: output.observe,
     });
   };
 
@@ -265,6 +263,7 @@ export const createProjectionRuntime = (options?: {
       readableSource(projection as Projection<ReadonlyMap<K, V>>, requester),
       () => {
         if (requester && !requester.active) throw new ProjectionDisposedError();
+        scheduler.ensureCurrent(output);
         assertOutput(output);
       }
     );
@@ -298,7 +297,7 @@ export const createProjectionRuntime = (options?: {
     return makeReadable(projection, selector, equality);
   }
 
-  const inputAccess = (target: Projection<unknown>, requester?: ScopeState): InputAccess => {
+  const inputAccess = (target: Projection<unknown>, requester?: ScopeState): InputWrite => {
     scheduler.assertIdle();
     if (requester && !requester.active) throw new ProjectionDisposedError();
     const ref = projectionRef(target);
@@ -338,23 +337,8 @@ export const createProjectionRuntime = (options?: {
     updateInput(target, valueOrRun);
   }
 
-  const batch = <T>(
-    run: (read: BatchRead) => Synchronous<T>,
-    options?: { readonly cause?: unknown },
-    requester?: ScopeState
-  ): T =>
-    scheduler.batch(() => {
-      let active = true;
-      const read = <V>(target: Input<V> | CollectionInput<string, unknown>): V => {
-        assertScope(() => active);
-        return inputAccess(target, requester).read() as V;
-      };
-      try {
-        return run(read);
-      } finally {
-        active = false;
-      }
-    }, options);
+  const batch = <T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T =>
+    scheduler.batch(run, options);
 
   const disposeScope = (state: ScopeState): void => {
     if (!state.active) return;
@@ -472,12 +456,9 @@ export const createProjectionRuntime = (options?: {
       updateInput(target, valueOrRun, state);
     }
 
-    function scopeBatch<T>(
-      run: (read: BatchRead) => Synchronous<T>,
-      options?: { readonly cause?: unknown }
-    ): T {
+    function scopeBatch<T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T {
       assertActive();
-      return batch(run, options, state);
+      return batch(run, options);
     }
 
     return Object.freeze({

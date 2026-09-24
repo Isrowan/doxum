@@ -51,7 +51,7 @@ Follow these choices unless the requirement says otherwise:
 10. Use `incremental.keyed` for independent retained state per driver key. Use `incremental.collection` or `incremental.group` only when direct incremental output patching or shared retained state is required.
 11. Use `ProjectionScope` only for lifecycle ownership. Define projections normally, then `scope.own(...)` before that definition is first materialized as a root.
 
-Use `runtime.read` for ordinary published reads. For batch read-modify-write commands, use `runtime.batch(read => ...)`; its borrowed reader accepts only inputs and sees the latest successful writes. Commands intended for composition may themselves use nested batches. Keep derived values in derive instead of synchronizing an input mirror. Use `derive.keyed.flatMap` for synchronous pure one-to-many output with global child keys; do not hand-maintain child membership in advanced state.
+Use `runtime.read` or `Readable.current()` for current values both inside and outside batches. `runtime.batch(() => ...)` groups net notifications; demanded dependencies may compute during a read. Ordinary commands compose without another reader API. Keep derived values in derive instead of synchronizing an input mirror. Use `derive.keyed.flatMap` for synchronous pure one-to-many output with global child keys; do not hand-maintain child membership in advanced state.
 
 ## Failure and lifecycle rules
 

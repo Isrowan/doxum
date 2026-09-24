@@ -1,8 +1,8 @@
+import { iterableMatchesArray } from '@/value/array';
 import type { Unsubscribe } from '@/runtime/contract';
 import {
   collectionChangeIntersects,
   collectionHasStructuralChange,
-  diffCollection,
 } from '@/projection/collection/change';
 import type { CollectionChange } from '@/projection/contract';
 import type { Readable } from '@/readable';
@@ -13,6 +13,7 @@ export type ProjectionReadableSource<T> = {
   current(): T;
   revision(): number;
   subscribe(listener: (change?: CollectionChange<string, unknown>) => void): Unsubscribe;
+  observe(listener: (change?: CollectionChange<string, unknown>) => void): Unsubscribe;
 };
 
 type SelectionTracker = {
@@ -113,7 +114,9 @@ export const createSelectorReadable = <T, R>(
   let initialized = false;
   let value!: R;
   let selectedRevision = 0;
+  let notified!: R;
   let sourceRevision = -1;
+  let notificationRevision = -1;
   let selection: Selection = Object.freeze({
     keys: new Set<string>(),
     all: true,
@@ -148,8 +151,9 @@ export const createSelectorReadable = <T, R>(
     });
     const changed = !initialized || !equality(value, next);
     if (changed) {
+      const candidate = unsubscribeSource && equality(notified, next) ? notified : next;
       if (initialized) selectedRevision++;
-      value = next;
+      value = candidate;
     }
     selection = nextSelection;
     initialized = true;
@@ -160,33 +164,56 @@ export const createSelectorReadable = <T, R>(
 
   const ensureCurrent = (): R => {
     const revision = source.revision();
-    if (!initialized || (!unsubscribeSource && sourceRevision !== revision)) evaluate();
+    if (!initialized) evaluate();
+    else if (sourceRevision !== revision) {
+      const current = source.current();
+      let affected = true;
+      if (previousCollection && isMapLike(current) && !selection.all) {
+        affected =
+          selection.structure &&
+          !iterableMatchesArray(current.keys(), [...previousCollection.keys()]);
+        if (!affected)
+          for (const key of selection.keys)
+            if (
+              previousCollection.has(key) !== current.has(key) ||
+              !Object.is(previousCollection.get(key), current.get(key))
+            ) {
+              affected = true;
+              break;
+            }
+      }
+      if (affected) evaluate();
+      else {
+        sourceRevision = revision;
+        updateCollectionSnapshot(current);
+      }
+    }
     return value;
   };
 
   const onProjectionChange = (incoming?: CollectionChange<string, unknown>) => {
-    let change = incoming;
-    if (!change && previousCollection) {
-      const current = source.current();
-      if (isMapLike(current)) {
-        change = diffCollection(previousCollection, current);
-        previousCollection = current;
-        if (!change) {
-          sourceRevision = source.revision();
-          return;
-        }
-      } else previousCollection = undefined;
-    }
-    if (!selectionAffects(selection, change)) {
+    if (
+      sourceRevision === notificationRevision &&
+      sourceRevision !== source.revision() &&
+      incoming &&
+      !selectionAffects(selection, incoming)
+    ) {
       sourceRevision = source.revision();
       updateCollectionSnapshot();
-      return;
+    } else ensureCurrent();
+    notificationRevision = sourceRevision;
+    if (!equality(notified, value)) {
+      notified = value;
+      notifyProjectionListeners(listeners, 'Projection selector listeners failed.');
     }
-    if (evaluate()) notifyProjectionListeners(listeners, 'Projection selector listeners failed.');
   };
 
   const installSource = () => {
-    if (!unsubscribeSource) unsubscribeSource = source.subscribe(onProjectionChange);
+    if (!unsubscribeSource) {
+      notified = value;
+      notificationRevision = sourceRevision;
+      unsubscribeSource = source.observe(onProjectionChange);
+    }
   };
 
   return Object.freeze({

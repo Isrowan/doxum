@@ -45,8 +45,8 @@ export const createExpansionWorkload = (
     },
     selectors: () => selectors,
     update: () =>
-      runtime.batch(read => {
-        const previous = read(source).get('0')!;
+      runtime.batch(() => {
+        const previous = runtime.read(source).get('0')!;
         runtime.update(source, d =>
           d.set(
             '0',

@@ -215,24 +215,24 @@ scope.read(scoped);
 void scope.items(rows).get('a').current();
 // @ts-expect-error scopes own definitions but do not copy derive factories
 scope.derive({ count }, ({ count }: { count: number }) => count);
-// Batch source reads preserve input value/key types and synchronous command results.
+// Current reads preserve projection types; batch commands remain synchronous.
 const batchCount = input(0);
 const batchRows = input.collection<string, number>();
-const batchResult: number = runtime.batch(read => {
-  const current: number = read(batchCount);
-  const currentRows: ReadonlyMap<string, number> = read(batchRows);
+const batchResult: number = runtime.batch(() => {
+  const current: number = runtime.read(batchCount);
+  const currentRows: ReadonlyMap<string, number> = runtime.read(batchRows);
   runtime.update(batchCount, current + currentRows.size);
-  // @ts-expect-error source reads reject derived projections
-  read(count);
-  // @ts-expect-error source reads reject observed document projections
-  read(rows);
-  return read(batchCount);
+  runtime.read(count);
+  runtime.read(rows);
+  return runtime.read(batchCount);
 });
-const scopedBatchResult: number = scope.batch(read => read(batchCount));
+const scopedBatchResult: number = scope.batch(() => scope.read(batchCount));
+// @ts-expect-error batch no longer lends a source-only reader
+runtime.batch((read: (source: typeof batchCount) => number) => read(batchCount));
 // @ts-expect-error batch commands must be synchronous
-runtime.batch(async read => read(batchCount));
+runtime.batch(async () => runtime.read(batchCount));
 // @ts-expect-error scope commands must be synchronous
-scope.batch(async read => read(batchCount));
+scope.batch(async () => runtime.read(batchCount));
 // @ts-expect-error union Promise returns must not weaken the synchronous contract
 runtime.batch(() => (Math.random() > 0.5 ? 1 : Promise.resolve(1)));
 // @ts-expect-error collection editors must be synchronous
@@ -244,8 +244,8 @@ runtime.update(batchRows, () => (Math.random() > 0.5 ? undefined : Promise.resol
 // @ts-expect-error scalar updates do not widen the declared value type
 runtime.update(batchCount, 'wrong');
 const batchFunction = input<(value: number) => number>(value => value);
-runtime.batch(read => {
-  const previous = read(batchFunction);
+runtime.batch(() => {
+  const previous = runtime.read(batchFunction);
   runtime.update(batchFunction, value => previous(value) + 1);
 });
 const [, editHookRows] = useInput(batchRows);

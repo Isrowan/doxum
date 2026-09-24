@@ -282,26 +282,25 @@ exposes `read`, `select`, `items`, `update`, `batch`, `scope` and `dispose`.
 
 ### Commands inside a batch
 
-Ordinary reads use `runtime.read`. A batch can read the latest accepted input state through its callback while projection readers keep the last published view:
+`runtime.read` and `Readable.current()` read current state, including inside a batch. Derived reads evaluate necessary stale dependencies on demand; batch defers external notifications.
 
 ```ts
 const count = input(0);
 const doubled = derive({ count }, ({ count }) => count * 2);
 
 function increment() {
-  runtime.batch(read => {
-    runtime.update(count, read(count) + 1);
-  });
+  runtime.update(count, runtime.read(count) + 1);
 }
 
 runtime.batch(() => {
   increment();
+  runtime.read(doubled); // 2
   increment();
+  runtime.read(doubled); // 4
 });
-runtime.read(doubled); // 4
 ```
 
-The borrowed reader supports scalar and collection inputs and expires with its callback. Nested batches settle at the outer boundary. Cross-input commands can read several latest source values without mirrors. Input equality is checked before acceptance; a failed edit leaves earlier successes intact. A batch is not a transaction. See [batch source reads](docs/projections.md#batch-source-reads) for snapshots, errors and lifecycle.
+Nested batches notify at the outer boundary. Cross-input commands use the same reads without mirrors or borrowed reader parameters. Input equality is checked before acceptance; a failed edit leaves earlier successes intact. A batch is not a transaction, and intermediate reads may advance retained processors more than once. See [current reads and batching](docs/projections.md#current-reads-and-batching) for snapshots, net notifications and lifecycle.
 
 ### Keyed projection
 
@@ -454,7 +453,7 @@ Its state is owned by the `ProjectionRuntime`, not the document, history or pers
 Updates are synchronous and atomic. It publishes exact keyed `CollectionChange`
 transitions and preserves order. The optional per-entry equality defaults to `Object.is`
 and suppresses equivalent `set` operations. Callback and equality failures leave both
-the published value and the next draft unchanged.
+the current value and the next draft unchanged.
 
 The processor-facing `CollectionChange` type and `collectionChange.keys(...)` utility
 are exported by `doxum/advanced`. The utility lazily iterates incremental added,

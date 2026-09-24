@@ -45,10 +45,13 @@ This file is maintainer-only. Application/library consumers should use [Public A
    dependencies through imperative Runtime reads. A scope adds lifecycle ownership only
    through `scope.own`; scoped definitions may depend on root definitions, while root and
    sibling scopes cannot depend on scoped definitions. Notification failures leave commits
-   accepted. Batch defers projection publication, not document commits/listeners.
+   accepted. Public projection reads request current state; batch defers projection
+   notifications, not demand computation or document commits/listeners. Processors use one
+   real retained instance across demanded evaluations.
    Lazy definition metadata does not materialize sources. Input, observe and source
-   materialization remain separate boundaries. One output object owns staged/published
-   state, revision, listeners and graph-facing consumer capability; scheduler alone
+   materialization remain separate boundaries. One output object owns staged/current
+   state, per-consumer unconsumed deltas, notification baselines, revision, listeners
+   and graph-facing consumer capability; scheduler alone
    attaches/detaches dependency edges. Collection-input callback/equality failure installs
    no partial Runtime-local state. Cleanup is exhaustive after ownership is detached;
    initialization failure releases already-created projection resources and preserves the

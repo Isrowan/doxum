@@ -18,11 +18,11 @@ export type CollectionState<K extends string, V> = {
 export const createCollectionState = <K extends string, V>(
   initial?: ReadonlyMap<K, V>
 ): CollectionState<K, V> => {
-  // Hot current-generation lookups stay O(1); the persistent index keeps borrowed
-  // reads durable across later publications without copying the whole collection.
+  // Hot current-generation lookups stay O(1); the persistent index keeps public
+  // reads durable across later advances without copying the whole collection.
   const values = new Map<K, V>(initial);
   let ids: readonly K[] = Object.freeze([...values.keys()]);
-  let index = values.size ? PersistentKeyedIndex.from(values) : PersistentKeyedIndex.empty<K, V>();
+  let index: PersistentKeyedIndex<K, V> | undefined;
 
   return {
     get: key => values.get(key),
@@ -31,7 +31,7 @@ export const createCollectionState = <K extends string, V>(
     size: () => values.size,
     ids: () => ids,
     read: check => {
-      const snapshotIndex = index;
+      const snapshotIndex = (index ??= PersistentKeyedIndex.from(values));
       const snapshotIds = ids;
       return Object.freeze({
         get: key => {
@@ -52,10 +52,10 @@ export const createCollectionState = <K extends string, V>(
       if (reset) {
         values.clear();
         for (const [key, entry] of staged) if (entry.present) values.set(key, entry.value);
-        index = PersistentKeyedIndex.from(values);
+        if (index) index = PersistentKeyedIndex.from(values);
       } else {
         for (const [key, entry] of staged) {
-          index = entry.present ? index.set(key, entry.value) : index.remove(key);
+          if (index) index = entry.present ? index.set(key, entry.value) : index.remove(key);
           if (entry.present) values.set(key, entry.value);
           else values.delete(key);
         }
@@ -65,7 +65,7 @@ export const createCollectionState = <K extends string, V>(
     release: () => {
       values.clear();
       ids = Object.freeze([]);
-      index = PersistentKeyedIndex.empty<K, V>();
+      index = undefined;
     },
   };
 };

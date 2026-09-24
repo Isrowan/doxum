@@ -91,7 +91,9 @@ export const createProcessor = (
     let active = true;
     try {
       const scopeActive = () => active;
-      const sources = Object.freeze(dependencies.map(output => output.context(scopeActive)));
+      const sources = Object.freeze(
+        dependencies.map(output => output.context(scopeActive, processor))
+      );
       const outputs = begin(scopeActive, reset);
       if (recreate && instance) {
         instance.release?.();
@@ -101,17 +103,18 @@ export const createProcessor = (
       profile.materialized[reset ? 'rebuilt' : 'updated']();
       const result = instance.evaluate({ reset, cause: runCause, sources, outputs });
       assertSynchronous(result);
-      return seal(reset);
+      const changed = seal(reset);
+      dependencies.forEach(output => output.acknowledge(processor));
+      return changed;
     } finally {
       active = false;
     }
   };
 
-  const order = scheduler.order();
+  const id = scheduler.nextId();
   processor = {
     kind: 'processor',
-    order,
-    name: definition.name ? `${definition.name} (${order})` : `projection-${order}`,
+    name: definition.name ? `${definition.name} (${id})` : `projection-${id}`,
     dependencies: Object.freeze([...dependencies]),
     outputs: Object.freeze(bound.map(entry => entry.state)),
     fault: undefined,

@@ -158,6 +158,10 @@ export const portableFlatMapDependencies = derive.keyed.flatMap(
   (row, key, dependencies) => [[key, { value: row.value, label: dependencies.entity?.label }]]
 );
 const portableRuntime = createProjectionRuntime();
-export const portableBatchValue = portableRuntime.batch(read => read(portableOptional));
-export const portableBatchRows = portableRuntime.batch(read => read(portableEntities));
+export const portableBatchValue = portableRuntime.batch(() =>
+  portableRuntime.read(portableOptional)
+);
+export const portableBatchRows = portableRuntime.batch(() =>
+  portableRuntime.read(portableEntities)
+);
 portableRuntime.dispose();

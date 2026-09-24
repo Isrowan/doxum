@@ -60,7 +60,7 @@ Output order concatenates each parent's returned key sequence in formal parent o
 
 Output keys must be globally unique strings. Duplicate keys within a parent or across final parent results are processor errors, never silent overwrites. Use an unambiguous application key encoding for locally unique child IDs; there is no default delimiter or generated index identity. For identity across parent transfers, use a global child ID independent of the parent. `[]` means no members; `[[key, undefined]]` means a present member with an undefined value.
 
-Equality defaults to `Object.is` and only controls an existing key's value update, preserving the previous published reference when equal, including reset/recovery. It cannot suppress membership or order. If one global key moves between parents in a single settlement, its final membership is continuous and `runtime.items(...).get(key)` retains its identity. A real removal in an earlier settlement ends that membership.
+Equality defaults to `Object.is` and only controls an existing key's value update, preserving the previous published reference when equal, including reset/recovery. It cannot suppress membership or order. If one global key moves between parents in a single notification interval, its final membership is continuous and `runtime.items(...).get(key)` retains its identity. A real removal in an earlier notification interval ends that membership.
 
 Selector/key-construction, tuple validation, duplicate-key and equality failures publish no partial collection and use normal processor recovery. Recovery can rerun selectors for all parents, so selectors must be pure. A persistent fault blocks dependents and reads throw until recovery. Definitions are lazy and reusable; caches are isolated per Runtime and released with their owner. Derive additional keyed views from the result normally. Async loading, recursive traversal and dynamically creating projections are outside this primitive; retained spatial/search indexes still belong in advanced processors.
 
@@ -246,19 +246,19 @@ runtime.dispose();
 
 Stable verbs:
 
-| API                                        | Meaning                                                         |
-| ------------------------------------------ | --------------------------------------------------------------- |
-| `read(projection)`                         | Read the current published value synchronously.                 |
-| `select(projection, selector?, equality?)` | Create a standard `Readable`.                                   |
-| `items(keyedProjection)`                   | Create a Runtime-owned keyed Readable family.                   |
-| `update(input, value)`                     | Write an `Input<T>`.                                            |
-| `update(collectionInput, draft => ...)`    | Atomically edit keyed Runtime-local state.                      |
-| `batch(run, options?)`                     | Defer graph settlement/listeners across one application action. |
-| `scope()`                                  | Create a local projection lifetime.                             |
-| `dispose()`                                | Release Runtime-owned materialization and attachments.          |
+| API                                        | Meaning                                                       |
+| ------------------------------------------ | ------------------------------------------------------------- |
+| `read(projection)`                         | Read current state, evaluating stale dependencies on demand.  |
+| `select(projection, selector?, equality?)` | Create a standard `Readable`.                                 |
+| `items(keyedProjection)`                   | Create a Runtime-owned keyed Readable family.                 |
+| `update(input, value)`                     | Write an `Input<T>`.                                          |
+| `update(collectionInput, draft => ...)`    | Atomically edit keyed Runtime-local state.                    |
+| `batch(run, options?)`                     | Defer notifications; reads may advance demanded computations. |
+| `scope()`                                  | Create a local projection lifetime.                           |
+| `dispose()`                                | Release Runtime-owned materialization and attachments.        |
 
 A Runtime batch does not delay document commits or document listeners. Projection
-readers inside the batch see the last published projection state until settlement.
+readers see current state and evaluate necessary dependencies on demand.
 Processors settle before external projection listeners. Writes are forbidden during
 processing/notification.
 
@@ -272,36 +272,37 @@ publishes `undefined` and retires that generation; re-adding the same key create
 Readable identity. Subscribed missing keys remain latent and can activate on a later add.
 The family owns one source subscription and is disposed with its Runtime or scope.
 
-### Batch source reads
+### Current reads and batching
 
-`runtime.read(projection)` and `Readable.current()` always return published state. Outside a batch, a successful input update settles synchronously, so ordinary commands can use `runtime.read`. Inside `runtime.batch(read => ...)`, the supplied `read` reads the most recently accepted value of an `Input` or `CollectionInput` without settling the graph:
+`runtime.read(projection)` and `Readable.current()` return current state inside and outside a batch. Inputs reflect the latest successfully accepted writes; derived projections update their necessary dependency chain on demand. Document projections read committed document state, never an uncommitted document draft. Clean repeated reads reuse cached results. `scope.read` has the same semantics with its usual ownership checks.
 
 ```ts
 const count = input(0);
 const doubled = derive({ count }, ({ count }) => count * 2);
 
-runtime.batch(read => {
-  runtime.update(count, read(count) + 1);
-  runtime.update(count, read(count) + 1);
-  read(count); // 2
-  runtime.read(count); // 0: last published value
+function increment() {
+  runtime.update(count, runtime.read(count) + 1);
+}
+
+runtime.batch(() => {
+  increment();
+  runtime.read(doubled); // 2: computes the demanded derived value
+  increment();
+  runtime.read(doubled); // 4
 });
-runtime.read(doubled); // 4
 ```
 
-Use the same reader for commands spanning several independent inputs. Values entirely determined by other sources belong in `derive`, not in a manually synchronized input. Scalar updates always assign their second argument, including function values; there is no updater-function overload.
+`batch` receives a zero-argument synchronous callback. It defers external projection notifications until the outermost batch ends; computations not demanded by reads may also wait until that boundary. A nested batch does not notify early. Commands can compose directly without adding an inner batch solely for fresh reads. Synchronous return values and `cause` remain supported. Batch does not delay document commits/document listeners or provide cross-input/document rollback.
 
-The reader only accepts inputs, never derived or observed projections. It belongs to its callback and Runtime/scope: it expires on return, throw, or a rejected asynchronous return, and cannot be reused by a later batch. Nested callbacks have separate readers; the outer reader remains valid and sees successful inner updates. The outermost batch controls settlement. Existing zero-argument callbacks, synchronous return values and `cause` options remain supported. `scope.batch` applies the same rules and its normal ownership checks.
+Current reads can advance a processor multiple times in one batch. Retained state advances on the real processor instance, and each processor receives the changes since its own previous successful evaluation. Unrelated branches remain unevaluated until demanded or final settlement. Processor invocation counts are not domain events: intermediate reads can affect the sequence of retained-state updates, including internal member removal/recreation. Explicit named/dynamic dependencies remain required. Public reads cannot be used from processor, draft or equality callbacks to bypass declarations or reenter computation. Materialized current values can be read from notification callbacks; writes and new graph materialization remain forbidden there.
 
-Commands that may be called inside another batch should themselves use `batch(read => ...)`; nesting lets the same command work alone or as part of a larger action. Do not use a closed-over published `runtime.read` value for a batch read-modify-write.
+`Readable.revision()` describes current value progress and may advance before its subscriber is notified. It is not a count of subscriber calls. Direct, selector and item readables all stay current when subscribed. Notifications compare the notification interval's initial and final states, so intermediate reads neither emit early nor consume a pending notification. An A→B→A return to the same value/reference produces no value notification; equality-equivalent candidates retain the relevant baseline reference. Identical object contents alone do not imply equality under `Object.is`. Collection membership/order and explicit reset keep their own semantics.
 
-Collection reads return immutable version snapshots, not the internal mutable Map. Repeated reads of the same accepted version reuse the view. A returned snapshot outlives the callback and stays unchanged after later edits; its owning input/Runtime lifecycle still applies. The reader itself does not outlive the callback. Payloads remain readonly by ownership contract; compute a new value instead of mutating a read result.
+`runtime.items()` reads current keys/values while ending member lifecycles at the notification boundary. A temporarily missing existing key can read as `undefined`, then reappear under the same Readable identity in that batch. A handle acquired for a transient newly present key ends if the key is absent at the boundary; a later re-add gets a new handle. Pure value changes never end membership. A previously ended handle stays ended.
 
-Borrowed reads and writes are rejected during processing, notification, error reporting, input draft callbacks and input equality. Read across inputs in the outer command, then pass those values into a draft. Borrowed drafts expire when their edit callback ends. Batch and edit callbacks must be synchronous; assigning a Promise as a scalar payload is distinct from returning a Promise from a command. Reading an unmaterialized input only initializes that source. A newly materialized derive in the batch still sees published dependencies.
+Collection reads are immutable version snapshots; later writes cannot mutate a previously returned view. Repeated reads at the same output revision reuse the view. Views and handles retain their owner's disposal checks. Payloads remain readonly by ownership contract: compute replacements or use the synchronous collection draft instead of mutating a read result. Scalar assignment always stores its second argument, including functions and Promise payloads. Batch/draft callbacks themselves cannot return thenables, and drafts expire when the edit callback returns.
 
-Input acceptance validates equality before installing any state. It first compares a candidate with the latest accepted value, retaining that reference when equal; otherwise it compares with the published baseline when different and reuses that published reference if equal. This applies to scalar values and collection entries, including removed/re-added keys. All comparisons for one edit complete before installation. Equality must be pure, synchronous and a stable equivalence relation. Publication uses the already normalized references without invoking input equality again.
-
-A failed edit leaves its latest accepted baseline unchanged and throws synchronously; it does not fault the input or roll back earlier successful edits. An outer command exception still settles previous successes, preserving the original exception if error reporting also fails. A batch is not a cross-input or cross-document transaction. A→B→an equivalent A retains the original published reference and produces no value notification; collection order changes still publish. Downstream processor/listener errors after acceptance do not undo source writes. Unrelated subscriptions need not be notified.
+Input acceptance checks candidate equality against the latest accepted value and, when distinct, the notification baseline before installation. All comparisons for an edit succeed before any accepted state changes. Equality must be pure, synchronous and stable. A failed assignment/draft/equality leaves the previous acceptance baseline intact and throws synchronously; earlier successes remain. Derived failures discovered by a read throw `ProjectionError` at that read, retain accepted source updates, and recover through the normal processor reset/retry protocol after invalidation. `onError` reporting and external notifications remain at the outer boundary. If the batch callback throws, prior successes still settle and the original exception keeps priority over error-reporter failures.
 
 ## Runtime-local keyed state
 
@@ -320,7 +321,7 @@ runtime.update(selection, draft => {
 The borrowed draft exposes `get`, `has`, `set` and `remove`, and expires when the
 synchronous callback returns. A throwing callback applies none of that edit. Per-entry
 equality is evaluated against the staged edit before Runtime-local state is installed;
-if equality throws, neither the published value nor the next draft is partially updated.
+if equality throws, neither the current value nor the next draft is partially updated.
 `set` preserves an existing key position and appends a new key.
 
 The optional equality is per entry and defaults to `Object.is`. Setting an existing

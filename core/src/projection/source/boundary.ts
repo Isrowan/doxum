@@ -7,18 +7,17 @@ import type { OutputRecord, Scheduler, SourceBoundaryRecord } from '@/projection
 import { createValueOutput, type ValueOutputState } from '@/projection/output/value';
 import type { CollectionInputDraft } from '@/projection/definition';
 
-export type InputAccess =
-  | { readonly kind: 'value'; read(): unknown; set(value: unknown): void }
+export type InputWrite =
+  | { readonly kind: 'value'; set(value: unknown): void }
   | {
       readonly kind: 'collection';
-      read(): ReadonlyMap<string, unknown>;
       update(run: (draft: CollectionInputDraft<string, unknown>) => void): void;
     };
 
 export type SourceMaterialization = {
   readonly producer: SourceBoundaryRecord;
   readonly output: OutputRecord;
-  readonly input?: InputAccess;
+  readonly input?: InputWrite;
 };
 
 export type SourceMark = { readonly reset?: boolean; readonly cause?: unknown };
@@ -29,12 +28,14 @@ type CollectionMark = SourceMark & {
 };
 
 export type ValueBoundary = SourceMaterialization & {
+  readonly baseline: () => unknown;
   readonly mark: (metadata?: SourceMark) => void;
   readonly fail: (cause: unknown) => void;
   readonly detach: (cleanup: Unsubscribe) => void;
 };
 
 export type CollectionBoundary = SourceMaterialization & {
+  readonly baseline: () => CollectionRead<string, unknown>;
   readonly mark: (metadata?: CollectionMark) => void;
   readonly fail: (cause: unknown) => void;
   readonly detach: (cleanup: Unsubscribe) => void;
@@ -89,13 +90,12 @@ export const createValueBoundary = (
         active = false;
       }
     },
-    publish: state.publish,
+    publish: () => state.publish(pendingReset),
     clear: () => {
       const failed = boundary.fault !== undefined;
       state.clear();
       pendingReset = false;
       pendingCause = undefined;
-      contextCause = undefined;
       recovering = false;
       clearSource(failed);
     },
@@ -156,6 +156,7 @@ export const createValueBoundary = (
   return {
     producer: boundary,
     output,
+    baseline: state.baseline,
     mark,
     fail,
     detach: next => {
@@ -188,7 +189,7 @@ const stageCollectionRead = <K extends string, V>(
     }
     evaluation.output.order(ids);
   } else {
-    const previous = state.current();
+    const previous = evaluation.previous;
     let currentIds: readonly K[] | undefined;
     const ids = (): readonly K[] => (currentIds ??= read.ids());
     if (options.candidates) {
@@ -289,7 +290,6 @@ export const createCollectionBoundary = (
       state.clear();
       pendingReset = false;
       pendingCause = undefined;
-      contextCause = undefined;
       recovering = false;
       fullScan = false;
       orderMayChange = false;
@@ -348,7 +348,13 @@ export const createCollectionBoundary = (
     fullScan ||= metadata.fullScan ?? false;
     orderMayChange ||= metadata.orderMayChange ?? false;
     if (metadata.candidates) for (const key of metadata.candidates) candidates.add(key);
-    if (boundary.fault) recovering = true;
+    if (boundary.fault) {
+      recovering = true;
+      // The failed interval was not installed. A later event's candidates alone
+      // cannot describe everything that differs from the last valid output.
+      fullScan = true;
+      orderMayChange = true;
+    }
     scheduler.capture(boundary);
   };
   const fail = (cause: unknown) => {
@@ -359,6 +365,7 @@ export const createCollectionBoundary = (
   return {
     producer: boundary,
     output,
+    baseline: state.baseline,
     mark,
     fail,
     detach: next => {

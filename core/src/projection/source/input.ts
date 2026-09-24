@@ -1,7 +1,5 @@
-import { collectionView } from '@/projection/collection/view';
 import { createCollectionState, type CollectionEntry } from '@/projection/collection/state';
 import type { CollectionRead } from '@/projection/contract';
-import { ProjectionDisposedError } from '@/projection/contract';
 import type { CollectionInputDraft, SourceDefinition } from '@/projection/definition';
 import { assertScope, assertSynchronous, type Scheduler } from '@/projection/graph/scheduler';
 import { sameArray } from '@/value/array';
@@ -41,13 +39,12 @@ export const materializeInputSource = (
       ...boundary,
       input: {
         kind: 'value',
-        read: () => latest,
         set(value) {
           const next = scheduler.acceptInput(() => {
             if (equal(latest, value)) return latest;
             if (source.equality === Object.is) return value;
-            const published = boundary.output.current();
-            return !Object.is(latest, published) && equal(published, value) ? published : value;
+            const baseline = boundary.baseline();
+            return !Object.is(latest, baseline) && equal(baseline, value) ? baseline : value;
           });
           if (Object.is(latest, next)) return;
           latest = next;
@@ -59,7 +56,6 @@ export const materializeInputSource = (
   }
 
   const values = createCollectionState(source.initial);
-  let view: ReadonlyMap<string, unknown> | undefined;
   // This live reader is internal and synchronous; public reads capture a storage version.
   const latest: CollectionRead<string, unknown> = {
     get: values.get,
@@ -75,17 +71,11 @@ export const materializeInputSource = (
   );
   boundary.detach(() => {
     values.release();
-    view = undefined;
   });
-  const check = (): void => {
-    scheduler.assertActive();
-    if (boundary.producer.disposed) throw new ProjectionDisposedError();
-  };
   return {
     ...boundary,
     input: {
       kind: 'collection',
-      read: () => (view ??= collectionView(values.read(check))),
       update(run) {
         const accepted = scheduler.acceptInput(() => {
           const staged = new Map<string, CollectionEntry<unknown>>();
@@ -131,10 +121,10 @@ export const materializeInputSource = (
             active = false;
           }
 
-          const published =
+          const baseline =
             source.equality === Object.is
               ? undefined
-              : (boundary.output.current() as CollectionRead<string, unknown>);
+              : (boundary.baseline() as CollectionRead<string, unknown>);
           for (const [key, entry] of staged) {
             const existed = values.has(key);
             if (!entry.present) {
@@ -144,8 +134,8 @@ export const materializeInputSource = (
             const previous = values.get(key);
             let next = entry.value;
             if (existed && equal(previous, next)) next = previous;
-            else if (published?.has(key)) {
-              const before = published.get(key);
+            else if (baseline?.has(key)) {
+              const before = baseline.get(key);
               if ((!existed || !Object.is(previous, before)) && equal(before, next)) next = before;
             }
             if (existed && Object.is(previous, next)) staged.delete(key);
@@ -164,7 +154,6 @@ export const materializeInputSource = (
         });
         if (!accepted.staged.size && !accepted.structural) return;
         values.install(accepted.staged, accepted.order, false);
-        view = undefined;
         boundary.mark({ candidates: accepted.staged.keys(), orderMayChange: accepted.structural });
         scheduler.run();
       },

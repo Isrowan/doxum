@@ -393,12 +393,8 @@ const runtime = createProjectionRuntime({
 ```
 
 ```ts
-// BatchRead and Synchronous are signature notation here, not additional root exports.
+// Synchronous is signature notation here, not an additional root export.
 type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
-type BatchRead = {
-  <T>(input: Input<T>): T;
-  <K extends string, V>(input: CollectionInput<K, V>): ReadonlyMap<K, V>;
-};
 type ProjectionRuntime = {
   read<T>(projection: Projection<T>): T;
   select<T>(projection: Projection<T>): Readable<T>;
@@ -406,7 +402,7 @@ type ProjectionRuntime = {
   items<K,V>(projection: KeyedProjection<K,V>): ProjectionItems<K,V>;
   update<T>(input: Input<T>, value: NoInfer<T>): void;
   update<K,V,R>(input: CollectionInput<K,V>, run: (draft: CollectionInputDraft<K,V>) => Synchronous<R>): void;
-  batch<T>(run: (read: BatchRead) => Synchronous<T>, options?: { cause?: unknown }): T;
+  batch<T>(run: () => Synchronous<T>, options?: { cause?: unknown }): T;
   scope(): ProjectionScope;
   dispose(): void;
 };
@@ -429,7 +425,7 @@ type CollectionInputDraft<K,V> = {
 };
 ```
 
-The batch callback's reader is borrowed and input-only. Normal reads remain published; batch reads see the latest accepted source state without graph settlement. Zero-argument callbacks remain supported. Nested readers have separate lifetimes, and only the outermost batch settles. Reader/draft escape and asynchronous callbacks are rejected. Input equality runs before acceptance, failures do not roll back earlier batch successes, and collection results are immutable version snapshots. See [Batch source reads](projections.md#batch-source-reads) for the complete lifecycle and exception contract.
+`read` and all projection Readable `current()` methods return current state; stale dependencies compute on demand. `batch` has a zero-argument synchronous callback and defers external notifications until the outermost boundary. Reads may advance retained processors multiple times. Input equality runs before acceptance; failure retains earlier successes. Collection views are immutable version snapshots. See [Current reads and batching](projections.md#current-reads-and-batching) for revisions, net notifications, item lifecycle and recovery.
 
 ### External projection sources
 

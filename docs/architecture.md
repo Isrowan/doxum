@@ -383,12 +383,12 @@ plumbing or construction/composition: ordered `keys` / `values` / `entries` snap
 precise scalar `get`, `subset`, and reverse-index `groupBy`. `groupBy` reuses the shared
 dependency runtime but owns its own grouping/order algorithm. None of these introduces a
 second keyed handle or publication protocol. `projection/output/collection.ts` remains
-the sole owner of published membership, order, per-entry equality, revision, exact
+the sole owner of current membership, order, per-entry equality, revision, exact
 `CollectionChange`, reset publication and stable collection references. Composition
 processors only stage semantic `set` / `remove` / `order` intent into that owner.
 
 `projection/readable/keyed.ts` owns the consumer-side `runtime.items` family. It consumes
-the exact published `CollectionChange` from one materialized collection output, fans one
+the exact net `CollectionChange` at each notification boundary from one materialized collection output, fans one
 source subscription out to ordered keys and per-key Readables, and owns membership
 generation identity/eviction only. `ProjectionRuntime` / `ProjectionScope` own family
 registries and disposal. This cache is intentionally separate from producer-side keyed
@@ -411,17 +411,18 @@ cannot be materialized by another scope or by the root, and root definitions can
 depend on scoped definitions. Root materialization seals a definition's root ownership;
 `scope.own` cannot reclassify it afterward. The root projection Runtime therefore does not
 depend on advanced factory implementations.
-Inputs are source producers. `source/input.ts` owns their latest accepted values and the internal `InputAccess` capability; `runtime.ts` resolves access through the existing materialization records. `runtime.batch(read => ...)` creates a callback-local borrowed reader with Runtime/scope checks. Its `finally` expires the reader before scheduler settlement; it adds no registry or state mirror. Returned collection snapshots belong to the source version, not to the batch callback lifetime.
+Inputs are source producers. `source/input.ts` owns their latest accepted values and the internal `InputWrite` capability; `runtime.ts` resolves writes through existing materialization records. All public projection/readable reads request current output from the scheduler. There is no borrowed batch reader or separate public input read path.
 
-Scalar assignment and collection drafts validate equality against both latest accepted and published values before installation, canonicalizing equivalent references. Input publication then uses `Object.is`; external/document boundaries keep their own equality policies. A collection draft stores final entries and final append order, not a per-write replay log. Failure installs nothing from that edit. Batch still settles previous successes on callback failure. Downstream settlement is a separate post-install phase.
+Scalar assignment and collection drafts validate equality against the latest accepted value and the notification baseline before installation, retaining equivalent references. Input advancement then uses `Object.is`; other boundaries retain their own equality policies. A draft stores final entries and final append order, not a per-write log. A failed edit installs nothing; callback failure still settles earlier successes.
 
-The scheduler's input-callback phase protects drafts and acceptance equality from reentrant source reads/writes and document writes through existing guards. The batch command callback itself stays in the command phase so nested batches and normal updates remain legal.
+The scheduler owns dirty reachability, dependency-first demand advancement, final settlement and notifications. Source writes mark potentially affected descendants; iterative traversal visits each dependency edge once per advancement, including wide fan-in; only actual output changes require processor evaluation. `ensureCurrent` advances the requested producer's necessary dependencies, while final settlement drains remaining dirty work. Repeated clean reads do not recompute. A batch delays notifications, not explicit demand reads. The existing input/compute/notify guards protect document writes and prevent public reads from bypassing processor declarations during compute or acceptance.
 
-Collection values are immutable
-map-like snapshots, while keyed storage, output revisions and transition indexes
-remain private to the runtime. A readable exposes only its own publication
-revision for store integrations. Selector tracking and equality belong to a runtime-owned
-`Readable`, not to a second subscription protocol.
+Outputs own the distinction between current progress and notification progress. Each dependency edge has its own unconsumed interval; scalar edges retain their consumed value/reset revision, and collection edges merge exact net transitions. `collection/changes.ts` is the shared interval accumulator used for both collection consumer edges and outward notifications. It reuses a single transition by identity and allocates a touched-key map only when multiple advances must merge, pruning net-zero keys. Reset absorbs later deltas until consumed. No per-write history or second graph is retained. Only the scheduler attaches/detaches graph edges; processors acknowledge inputs after successful sealing.
+
+All demanded evaluations advance the real retained instance. Evaluation counts can depend on intervening reads and are not domain event counts. Recovery recreates a failed processor through the existing protocol. Current reads surface faults immediately; error reporting and listener delivery occur at the notification boundary. Unconsumed downstream intervals survive another consumer advancing the same output.
+
+Readables expose current values and current revisions, which may advance before notification. Selector readables separately retain their last notified value so intermediate reads cannot swallow callbacks. Items read current keys/values but finalize eviction and membership endings from the notification interval's final collection, including handles for transient new keys. Output settlement observers reconcile these caches even when net outward change is zero. This is internal lifecycle plumbing, not another public subscription API. Collection views remain durable readonly snapshots with owner disposal checks.
+
 `observe` is the single source boundary for documents, Doxum `Readable` values,
 and eventful external value or collection sources; the source `kind` selects the
 internal adapter without adding another public observe function.
@@ -433,13 +434,14 @@ TreeChange or child Runtime. Lists use `keyOf` identity and keep document order 
 collection read; ordinary array-valued fields remain scalar value observations.
 Document source routing uses the same target index as document subscriptions. Each
 source merges only the affected locations from committed groups and settles from the
-previously published snapshot plus the canonical final value. Structural sharing
-copies an affected container at most once per settle and reuses unchanged descendants;
+last computed snapshot plus the canonical current value. Structural sharing
+copies an affected container at most once per advance and reuses unchanged descendants;
 the projection layer does not replay ChangeSets as a second mutation engine. Multiple
-document commits inside one Projection Runtime batch collapse to the exact net
-published value. All pending document sources publish before dependent processors are
-run, which makes root/node tree sources causally atomic without a multi-output source
-protocol.
+document commits before a source is demanded merge into its next advancement. Each
+processor advances all its dependencies before evaluation, so sibling document sources
+are consistent for that evaluation without forcing unrelated branches to compute.
+Intermediate reads may materialize intermediate committed snapshots; outward equality
+uses the output's notification baseline and declared equality policy.
 `projection/source/dirty.ts` owns pending/dirty state and all ChangeSet-to-dirty writes.
 `projection/source/materialization.ts` only reads that state while computing
 previous/current structural sharing. `projection/source/document.ts` owns document
@@ -472,15 +474,15 @@ id sequence; membership or order changes create a new id sequence because order 
 observable. Older `ReadonlyMap` views therefore stay stable without copying every
 unchanged value on each revision.
 Projection implementation ownership is deliberately split by semantic layer:
-`output/value.ts` and `output/collection.ts` each own one output's staged/published
-state, revision, listeners and graph-facing consumer capability. Source boundaries and
+`output/value.ts` and `output/collection.ts` each own one output's staged/current
+state, per-consumer changes, notification baseline, revision, listeners and graph-facing capability. Source boundaries and
 processors use that same output object rather than constructing mirror output records;
 the scheduler alone attaches and detaches processor dependency edges.
-`collection/state.ts` owns current keyed storage and version snapshots, shared by collection input acceptance and collection output publication. The two instances represent distinct latest/published states, not independent authorities for the same version. Storage installs already validated member/order changes and knows nothing of equality, graph revisions or notifications.
+`collection/state.ts` owns current keyed storage and version snapshots, shared by collection input acceptance and collection output publication. The two instances represent accepted source state and computed output state. A persistent index is created only when a durable read is requested; accepted input storage therefore avoids maintaining an unused snapshot index. Storage installs already validated member/order changes and knows nothing of equality, graph revisions or notifications.
 `collection/index.ts` owns the immutable keyed lookup; `collection/change.ts` owns
 the exact added/updated/removed/common-order algebra; and `collection/view.ts` owns
-`CollectionRead`/`ReadonlyMap` boundary views, including owner checks on structural access and iterator steps. Collection output sealing retains equivalent published entry references during reset as well as normal updates. `source/boundary.ts` owns the common
-source prepare/publish/fault lifecycle, while `source/document.ts` owns document
+`CollectionRead`/`ReadonlyMap` boundary views, including owner checks on structural access and iterator steps. Collection output sealing retains equivalent current/baseline entry references during reset as well as normal updates. `source/boundary.ts` owns the common
+source prepare/publish/fault lifecycle (collection recovery reconciles the full source after a failed interval), while `source/document.ts` owns document
 connections and document-specific reads.
 `source/materialization.ts` remains a pure previous/current/dirty structural-sharing
 algorithm and has no mutation-session dependency.
