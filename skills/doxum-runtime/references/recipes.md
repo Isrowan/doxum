@@ -556,3 +556,26 @@ const labels = derive.keyed(lines, line => line.label);
 ```
 
 Choose globally unique child IDs or an unambiguous composite encoding. A parent-based composite key intentionally changes identity when its parent changes. Duplicate final keys fail rather than overwrite. Use `[]` for no children and `[key, undefined]` for a present undefined child. For retained R-tree/search-index state, continue using advanced processors rather than building state into a flatMap selector.
+
+## Form errors from several current inputs
+
+```ts
+const form = input({ title: '', required: true });
+const submitted = input(false);
+const errors = derive.keyed.fromEntries(
+  { form, submitted },
+  ({ form, submitted }) =>
+    submitted && form.required && !form.title.trim()
+      ? [['title.required', { field: 'title', message: 'Title is required' }]]
+      : [],
+  (before, after) => before.field === after.field && before.message === after.message
+);
+const runtime = createProjectionRuntime();
+const errorItems = runtime.items(errors);
+runtime.batch(() => {
+  runtime.update(submitted, true);
+  runtime.read(errors); // current keyed result; notifications remain deferred
+});
+```
+
+The error key is stable across value changes. Each computation returns all current errors, and equality preserves unchanged error objects. For a single source still use `{ form }`. Do not wrap all inputs in a scalar `derive` just to feed `fromEntries`. For per-record expansion over a large keyed form collection use `flatMap`; for an active record use `derive.keyed.get(records, activeId)` as a named input. Do not expect entry-level dependency tracking from arbitrary map lookups inside this callback.

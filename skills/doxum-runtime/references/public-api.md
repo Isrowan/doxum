@@ -320,20 +320,21 @@ The keyed family:
 
 <!-- family:derive.keyed:start -->
 
-| Member      | Purpose                                                          |
-| ----------- | ---------------------------------------------------------------- |
-| `keys`      | Formal ordered membership as a scalar readonly array             |
-| `values`    | Formal ordered values as a scalar readonly array                 |
-| `entries`   | Formal ordered readonly `[key,value]` tuples                     |
-| `get`       | Scalar dynamic lookup into one current keyed entry               |
-| `from`      | Ordered scalar/static collection → keyed projection              |
-| `merge`     | Multiple keyed projections → union with explicit conflict policy |
-| `flatMap`   | Ordered pure one-to-many keyed expansion                         |
-| `groupBy`   | One-to-many reverse index                                        |
-| `singleton` | Optional scalar → zero-or-one keyed projection                   |
-| `subset`    | Externally ordered keyed subset                                  |
-| `filter`    | Predicate-controlled membership preserving source values         |
-| `compact`   | Map values while dropping `undefined` results                    |
+| Member        | Purpose                                                          |
+| ------------- | ---------------------------------------------------------------- |
+| `keys`        | Formal ordered membership as a scalar readonly array             |
+| `values`      | Formal ordered values as a scalar readonly array                 |
+| `entries`     | Formal ordered readonly `[key,value]` tuples                     |
+| `get`         | Scalar dynamic lookup into one current keyed entry               |
+| `fromEntries` | Named projection dependencies → complete ordered keyed result    |
+| `from`        | Ordered scalar/static collection → keyed projection              |
+| `merge`       | Multiple keyed projections → union with explicit conflict policy |
+| `flatMap`     | Ordered pure one-to-many keyed expansion                         |
+| `groupBy`     | One-to-many reverse index                                        |
+| `singleton`   | Optional scalar → zero-or-one keyed projection                   |
+| `subset`      | Externally ordered keyed subset                                  |
+| `filter`      | Predicate-controlled membership preserving source values         |
+| `compact`     | Map values while dropping `undefined` results                    |
 
 <!-- family:derive.keyed:end -->
 
@@ -347,6 +348,8 @@ derive.keyed.entries(source): Projection<readonly (readonly [K,V])[]>
 derive.keyed.get(source, keyProjection, equality?): Projection<V | undefined>
 derive.keyed.from(source: Projection<readonly V[]>, keyOf, equality?): KeyedProjection<K,V>
 derive.keyed.from(source: readonly V[], keyOf, equality?): KeyedProjection<K,V>
+derive.keyed.fromEntries(dependencies, compute, equality?): KeyedProjection<K,V>
+// compute(readonlyNamedValues) returns Synchronous<readonly (readonly [K,V])[]>
 derive.keyed.merge(sources, { conflict: 'error' | 'first' | 'last', equality? }): KeyedProjection<K,V>
 derive.keyed.merge(sources, { conflict: 'resolve', resolve, equality? }): KeyedProjection<K,V>
 derive.keyed.subset(source, orderedKeysOrProjection): KeyedProjection<K,V>
@@ -363,6 +366,8 @@ derive.keyed.singleton(sourceProjection, keyOf, equality?): KeyedProjection<K,V>
 ```
 
 `from` uses `keyOf(value)` as member identity and preserves the input array's formal order. Duplicate keys are processor errors; there is no silent first/last overwrite. Static arrays are shallow-snapshotted at definition creation while `keyOf` remains lazy. For a scalar array projection, each scalar publication is scanned because the source has no per-entry delta. Equality defaults to `Object.is`; an equality-equivalent value under the same key retains the previous published value identity.
+
+`fromEntries` accepts the same named projection object as `derive`, including `{}` and keyed projections. Single inputs use `{ source }`; direct-source, static-array and driver-relative dependency specs are not overloads. The callback receives readonly named values and returns the complete ordered tuple array synchronously. Empty arrays mean no members; missing keys are removed; present `undefined` is valid. Duplicate string keys, malformed tuples and callback/equality failures follow processor error/recovery rules without partial installation. Per-entry equality defaults to `Object.is` and retains equivalent value references without suppressing membership or order. Computation scans the complete old/new result, while downstream publication is incremental. A keyed dependency is a whole collection, not automatically tracked by `get`; compose `derive.keyed.get` for precise scalar lookup. See [Projections](projections.md#keyed-results-from-named-dependencies) for lifecycle, cost and examples.
 
 `merge` has union membership and requires an explicit conflict policy. `first` and `last` use source-list priority. `error` rejects overlapping keys. `resolve` calls `resolve(contributions, key)` only for keys with two or more current contributions; contributions are ordered by source priority and have `{ sourceIndex, value }`. A single contribution passes through unchanged. The source list is fixed at definition time.
 

@@ -374,7 +374,8 @@ lifecycle.
 
 `projection/keyed/composition.ts` owns keyed construction/composition whose output
 membership/order is not exclusively driven by one keyed source: scalar/static `from`,
-multi-source `merge`, and scalar-to-keyed `singleton`. `merge` keeps only source revision
+named-input `fromEntries`, multi-source `merge`, and scalar-to-keyed `singleton`.
+`from` and `fromEntries` share complete ordered-result reconciliation in that owner: unique keys, missing-member removal and formal order, with temporary state only. `fromEntries` is one processor and one collection output, not a chain of tuple-valued intermediate projections. `projection/dependency.ts` owns named dependency types, compilation and readonly value snapshots shared with scalar `derive`; keyed dependencies remain whole-collection snapshots. `keyed/entries.ts` owns the tuple boundary shared with `flatMap`, whose parent segments and uniqueness ownership remain separate. Equality, reference retention and exact output changes remain in the collection output. `merge` keeps only source revision
 bookkeeping between evaluations; current source reads and the collection output are the
 semantic truth. It does not maintain winner, membership, order, or value mirrors.
 

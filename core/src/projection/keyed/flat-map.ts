@@ -12,13 +12,13 @@ import {
   type KeyedDependencyValues,
 } from './dependency';
 import { collectKeyedInvalidation } from './invalidation';
+import { assertKeyedEntry, type KeyedEntries } from './entries';
 
-type Entries<K extends string, V> = readonly (readonly [K, V])[];
 type Equality<V> = (previous: V, next: V) => boolean;
 
 export function createKeyedFlatMap<K extends string, V, O extends string, T>(
   source: KeyedProjection<K, V>,
-  select: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<Entries<O, T>>,
+  select: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<KeyedEntries<O, T>>,
   equality?: Equality<T>
 ): KeyedProjection<O, T>;
 export function createKeyedFlatMap<
@@ -34,14 +34,14 @@ export function createKeyedFlatMap<
     value: NoInfer<V>,
     key: NoInfer<K>,
     dependencies: KeyedDependencyValues<D>
-  ) => Synchronous<Entries<O, T>>,
+  ) => Synchronous<KeyedEntries<O, T>>,
   equality?: Equality<T>
 ): KeyedProjection<O, T>;
 export function createKeyedFlatMap<K extends string, V, O extends string, T>(
   source: KeyedProjection<K, V>,
-  dependenciesOrSelect: KeyedDependencyRecord<K, V> | ((value: V, key: K) => Entries<O, T>),
+  dependenciesOrSelect: KeyedDependencyRecord<K, V> | ((value: V, key: K) => KeyedEntries<O, T>),
   selectOrEquality?:
-    | ((value: V, key: K, dependencies: Readonly<Record<string, unknown>>) => Entries<O, T>)
+    | ((value: V, key: K, dependencies: Readonly<Record<string, unknown>>) => KeyedEntries<O, T>)
     | Equality<T>,
   maybeEquality?: Equality<T>
 ): KeyedProjection<O, T> {
@@ -49,7 +49,7 @@ export function createKeyedFlatMap<K extends string, V, O extends string, T>(
   assertKeyedProjection(source, `${name} source`);
   const specs = typeof dependenciesOrSelect === 'function' ? undefined : dependenciesOrSelect;
   const select = (specs === undefined ? dependenciesOrSelect : selectOrEquality) as
-    | ((value: V, key: K, dependencies: Readonly<Record<string, unknown>>) => Entries<O, T>)
+    | ((value: V, key: K, dependencies: Readonly<Record<string, unknown>>) => KeyedEntries<O, T>)
     | undefined;
   const equality = (specs === undefined ? selectOrEquality : maybeEquality) as
     Equality<T> | undefined;
@@ -105,8 +105,7 @@ export function createKeyedFlatMap<K extends string, V, O extends string, T>(
               throw new TypeError(`${name} selector must return an array of entries.`);
             const keys: string[] = [];
             for (const entry of entries) {
-              if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')
-                throw new TypeError(`${name} entries must be [string key, value] tuples.`);
+              assertKeyedEntry(entry, name);
               const [key, child] = entry;
               const owner = ownerByOutput.get(key);
               if (proposals.has(key) || (owner !== undefined && !replaced.has(owner)))

@@ -1,14 +1,23 @@
 import type { Synchronous } from '@/runtime/contract';
+import { profile } from '@/profile';
 import type { CollectionDraft, SourceContext } from '@/projection/contract';
 import {
   defineProcessor,
   isProjection,
+  type CollectionOutputEvaluation,
   type KeyedProjection,
   type Projection,
 } from '@/projection/definition';
 import { assertSynchronous } from '@/projection/graph/scheduler';
 import { assertKeyedProjection, outputKind } from './dependency';
 import { snapshotArray } from '@/value/array';
+import {
+  compileProjectionDependencies,
+  snapshotProjectionValues,
+  type ProjectionDependencies,
+  type ProjectionValues,
+} from '@/projection/dependency';
+import { assertKeyedEntry, type KeyedEntries } from './entries';
 
 type Equality<T> = (previous: T, next: T) => boolean;
 
@@ -79,6 +88,32 @@ const assertCollectionSources = (sources: readonly SourceContext[], expected: nu
       throw new Error('derive.keyed.merge requires collection inputs.');
 };
 
+/** Complete ordered result reconciliation, without retaining a second member/value cache. */
+const stageKeyedSnapshot = <T>(
+  values: readonly T[],
+  output: CollectionOutputEvaluation,
+  keyOf: (value: T) => Synchronous<string>,
+  valueOf: (value: T) => unknown,
+  name: string
+): void => {
+  const seen = new Set<string>();
+  const order = new Array<string>(values.length);
+  const previous = output.previous.ids();
+  profile.collectionView.idsScanned(values.length + previous.length);
+  for (let index = 0; index < values.length; index++) {
+    const value = values[index];
+    const key = keyOf(value);
+    assertSynchronous(key);
+    if (typeof key !== 'string') throw new TypeError(`${name} key selector must return a string.`);
+    if (seen.has(key)) throw new TypeError(`${name} duplicate key ${JSON.stringify(key)}.`);
+    seen.add(key);
+    order[index] = key;
+    output.output.set(key, valueOf(value));
+  }
+  for (const key of previous) if (!seen.has(key)) output.output.remove(key);
+  output.output.order(order);
+};
+
 function createKeyedFrom<K extends string, V>(
   source: Projection<readonly V[]>,
   keyOf: (value: NoInfer<V>) => Synchronous<K>,
@@ -130,26 +165,47 @@ function createKeyedFrom<K extends string, V>(
         }
         if (!values) throw new Error('derive.keyed.from has no source values.');
 
-        const seen = new Set<K>();
-        const order = new Array<K>(values.length);
-        for (let index = 0; index < values.length; index++) {
-          const value = values[index] as V;
-          const key = keyOf(value);
-          assertSynchronous(key);
-          if (typeof key !== 'string')
-            throw new TypeError('derive.keyed.from key selector must return a string.');
-          if (seen.has(key))
-            throw new TypeError(`derive.keyed.from duplicate key ${JSON.stringify(key)}.`);
-          seen.add(key);
-          order[index] = key;
-          output.output.set(key, value);
-        }
-        for (const previousKey of output.previous.ids())
-          if (!seen.has(previousKey as K)) output.output.remove(previousKey);
-        output.output.order(order);
+        stageKeyedSnapshot(values, output, keyOf, value => value, 'derive.keyed.from');
       },
     }),
     name: 'derive.keyed.from',
+  });
+  return projection as KeyedProjection<K, V>;
+}
+
+function createKeyedFromEntries<const D extends ProjectionDependencies, K extends string, V>(
+  dependencies: D,
+  compute: (values: ProjectionValues<D>) => Synchronous<KeyedEntries<K, V>>,
+  equality?: Equality<NoInfer<V>>
+): KeyedProjection<K, V> {
+  const name = 'derive.keyed.fromEntries';
+  const compiled = compileProjectionDependencies(dependencies, name);
+  if (typeof compute !== 'function') throw new TypeError(`${name} requires a compute callback.`);
+  const outputEquality = assertEquality(equality, name);
+  const [projection] = defineProcessor({
+    dependencies: compiled.projections,
+    outputs: [{ kind: 'collection', equality: outputEquality as Equality<unknown> }],
+    name,
+    create: () => ({
+      evaluate: evaluation => {
+        const output = evaluation.outputs[0];
+        if (output.kind !== 'collection') throw new Error(`${name} requires a collection output.`);
+        const entries = compute(snapshotProjectionValues<D>(compiled.names, evaluation.sources));
+        assertSynchronous(entries);
+        if (!Array.isArray(entries))
+          throw new TypeError(`${name} compute must return an array of entries.`);
+        stageKeyedSnapshot(
+          entries,
+          output,
+          entry => {
+            assertKeyedEntry(entry, name);
+            return entry[0];
+          },
+          entry => entry[1],
+          name
+        );
+      },
+    }),
   });
   return projection as KeyedProjection<K, V>;
 }
@@ -412,4 +468,4 @@ const createKeyedSingleton = <K extends string, V>(
   return projection as KeyedProjection<K, V>;
 };
 
-export { createKeyedFrom, createKeyedMerge, createKeyedSingleton };
+export { createKeyedFrom, createKeyedFromEntries, createKeyedMerge, createKeyedSingleton };

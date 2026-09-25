@@ -44,8 +44,8 @@ Follow these choices unless the requirement says otherwise:
 3. Use `read` for one synchronous document read and `select` for a document `Readable` with dynamic dependency tracking.
 4. Use `observe` to bring a document/readable/external source into the projection graph.
 5. Use named-object `derive` for pure aggregate values.
-6. Use `derive.keyed.from` to turn an ordered scalar/static collection into a keyed projection. Use `derive.keyed.merge` to compose multiple keyed projections; for base + sparse overrides, use `{ conflict: 'last' }`.
-7. Use `derive.keyed` when one keyed source owns output membership/order. Prefer its built-in `keys`, `values`, `entries`, `get`, `from`, `merge`, `subset`, `filter`, `compact`, `groupBy`, `flatMap`, and `singleton` primitives over hand-written incremental collection patches.
+6. Use `derive.keyed.from` to turn an ordered scalar/static collection into a keyed projection. Use `derive.keyed.fromEntries({ inputs }, compute)` when named projections compute a complete keyed result; use `flatMap` when individual keyed parents must recompute independently. Use `derive.keyed.merge` to compose multiple keyed projections; for base + sparse overrides, use `{ conflict: 'last' }`.
+7. Use `derive.keyed` when one keyed source owns output membership/order. Prefer its built-in `keys`, `values`, `entries`, `get`, `from`, `fromEntries`, `merge`, `subset`, `filter`, `compact`, `groupBy`, `flatMap`, and `singleton` primitives over hand-written incremental collection patches.
 8. Express per-output-key joins through `{ source }` for same-key lookup, `{ source, key }` for one mapped key, or `{ source, keys }` for several mapped keys. Let the Runtime own binding and reverse invalidation; do not maintain an application `Map` just to route dependency changes.
 9. Use `runtime.items(keyedProjection)` or `scope.items(...)` for stable per-membership item `Readable`s.
 10. Use `incremental.keyed` for independent retained state per driver key. Use `incremental.collection` or `incremental.group` only when direct incremental output patching or shared retained state is required.

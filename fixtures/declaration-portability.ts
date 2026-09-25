@@ -165,3 +165,8 @@ export const portableBatchRows = portableRuntime.batch(() =>
   portableRuntime.read(portableEntities)
 );
 portableRuntime.dispose();
+
+export const portableFromEntries = derive.keyed.fromEntries(
+  { rows: portableRows, optional: portableOptional },
+  ({ rows, optional }) => [...rows].map(([key, row]) => [key, row.value + (optional?.value ?? 0)])
+);

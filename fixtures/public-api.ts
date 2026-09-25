@@ -324,3 +324,52 @@ void useHistory;
 void useInput;
 void useProjection;
 void useReadable;
+
+const entryProjection: KeyedProjection<string, number | undefined> = derive.keyed.fromEntries(
+  { mode, rows, activeRow },
+  ({ mode, rows, activeRow }) =>
+    mode === 'compact'
+      ? [['active', activeRow?.value]]
+      : [...rows].map(([key, row]) => [key, row.value])
+);
+const entryValue: number | undefined = runtime.items(entryProjection).get('active').current();
+const inferredEntryProjection = derive.keyed.fromEntries(
+  { mode },
+  ({ mode }) => [['a', { mode }]],
+  (left, right) => left.mode === right.mode
+);
+const inferredEntryValue: 'compact' | 'full' | undefined = runtime
+  .read(inferredEntryProjection)
+  .get('a')?.mode;
+const brandedEntries: KeyedProjection<RowId, number> = derive.keyed.fromEntries(
+  { brandedRows },
+  ({ brandedRows }) => [...brandedRows]
+);
+// @ts-expect-error a single projection is not a named dependency object
+derive.keyed.fromEntries(mode, value => []);
+// @ts-expect-error dependency entries must be projections
+derive.keyed.fromEntries({ mode: 'compact' }, () => []);
+// @ts-expect-error dynamic keyed specs are not the pure named projection protocol
+derive.keyed.fromEntries({ rows: { source: rows } }, () => []);
+// @ts-expect-error compute must be synchronous
+derive.keyed.fromEntries({ mode }, async () => [['a', 1]]);
+derive.keyed.fromEntries({ mode }, () =>
+  // @ts-expect-error optional async branches remain forbidden
+  Math.random() ? ([['a', 1]] as const) : Promise.resolve([])
+);
+// @ts-expect-error keyed entry keys must be strings
+derive.keyed.fromEntries({}, () => [[1, 'value']]);
+// @ts-expect-error entries must contain exactly key and value
+derive.keyed.fromEntries({}, () => [['a']]);
+derive.keyed.fromEntries(
+  {},
+  () => [['a', 1]],
+  // @ts-expect-error equality cannot change the computed value type
+  (a: string, b: string) => a === b
+);
+const readonlyEntries = derive.keyed.fromEntries({ mode }, values => {
+  // @ts-expect-error named values are readonly
+  values.mode = 'full';
+  return [['a', values.mode]] as const;
+});
+void [entryValue, inferredEntryValue, brandedEntries, readonlyEntries];

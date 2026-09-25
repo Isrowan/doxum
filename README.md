@@ -432,6 +432,18 @@ const lines = derive.keyed.flatMap(orders, order =>
 
 Each parent returns ordered `[globalKey, value]` tuples, including zero entries. `flatMap` reuses named/dynamic keyed dependencies and only recomputes invalidated parents. Formal output order follows parent order then child order; parent-only reordering runs no selectors. Duplicate final output keys are errors, and present `undefined` is valid. Same-batch transfers preserve a global key's membership identity. Structural changes can rebuild full order; this is not a claim that every operation costs only the changed entries.
 
+### Compute a keyed result from named inputs
+
+```ts
+const errors = derive.keyed.fromEntries(
+  { form: formState, rules: validationRules },
+  ({ form, rules }) => validateForm(form, rules).map(error => [error.id, error]),
+  (before, after) => before.message === after.message && before.field === after.field
+);
+```
+
+`fromEntries` uses the same named dependencies as `derive`, including the single-source form `{ form }`. The synchronous callback returns the complete ordered `[key, value]` array: `[]` is empty, missing keys are removed, and `[key, undefined]` is present. Duplicate keys are errors. Per-entry equality preserves equivalent value references while membership/order changes remain observable. It computes and scans the full result, then publishes exact changes; use `flatMap` for per-parent incremental computation or `derive.keyed.get` as an input for precise active-entry dependencies. See [Projection API](docs/projections.md#keyed-results-from-named-dependencies).
+
 ### Runtime-local keyed state
 
 Use `input.collection` for selection, expanded state, local overrides and other

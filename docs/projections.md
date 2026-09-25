@@ -26,6 +26,7 @@ Public declaration primitives are:
 - `derive(dependencies, compute, equality?)` — pure value derivation.
 - `derive.keyed(...)` — key-preserving per-entry derivation and keyed joins.
 - `derive.keyed.from(...)` — ordered scalar/static collection to keyed projection.
+- `derive.keyed.fromEntries(...)` — named projection dependencies to a complete keyed result.
 - `derive.keyed.merge(...)` — multiple keyed projections to one union projection.
 - `derive.keyed.flatMap(...)` — ordered keyed expansion with globally unique child keys.
 
@@ -36,6 +37,33 @@ writable Runtime-local capability to that keyed handle.
 
 Dependencies are named objects. They are part of the static processor graph; a
 processor never performs imperative Runtime reads to discover new dependencies.
+
+### Keyed results from named dependencies
+
+```ts
+const errors = derive.keyed.fromEntries(
+  { form: formState, rules: validationRules },
+  ({ form, rules }) => validateForm(form, rules).map(error => [error.id, error]),
+  (previous, next) => previous.field === next.field && previous.message === next.message
+);
+```
+
+`fromEntries(dependencies, compute, equality?)` accepts the same named projection dependency object as ordinary `derive`. Use `{ source }` even for a single input; `{}` is valid for a constant lazy computation. There is no direct-source or static-array overload. Dependencies are captured at definition time and must be enumerable string-named data properties containing projections. The callback receives readonly named current values; keyed dependency values are durable readonly map snapshots.
+
+Each synchronous computation returns the **complete** finite `readonly (readonly [K, V])[]` result. The tuple order is formal output order; `[]` removes all members. Keys must be unique strings. `[key, undefined]` is a present member. A key missing from the next result is removed. Reordering alone does not invent value updates.
+
+Equality defaults to `Object.is` and compares values under the same key, not the outer array or tuple objects. Equality-equivalent values retain their existing reference; new value objects require stable references or a suitable equality callback. Equality cannot suppress membership/order. Callback failures, thenables, malformed tuples, duplicate keys and equality failures install no partial output and follow normal initialization/processor recovery semantics. Output definitions are lazy, reusable across runtimes and compatible with scopes and `runtime.items()`.
+
+This is **whole-result computation with incremental output publication**. Each necessary evaluation runs the callback for all inputs and scans the old/new result membership, costing O(old result size + new result size), plus callback work and keyed dependency snapshot costs. A keyed dependency is consumed as a whole: `records.get(activeId)` inside the callback does not establish an entry dependency. For precise dynamic lookup, compose the existing scalar lookup first:
+
+```ts
+const record = derive.keyed.get(records, activeId);
+const entries = derive.keyed.fromEntries({ record, settings }, ({ record, settings }) =>
+  record ? buildEntries(record, settings) : []
+);
+```
+
+Use `from` for existing value arrays plus `keyOf`, `fromEntries` to compute a complete keyed result from named inputs, and `flatMap` to recompute only affected parents of a keyed driver. Driver-relative `{ source, key }` / `{ source, keys }` specs do not belong in `fromEntries`. Public Runtime reads inside the callback remain forbidden. Batch reads may advance the computation more than once; notifications and item lifecycle endings still use the final notification boundary.
 
 ### One-to-many keyed expansion
 

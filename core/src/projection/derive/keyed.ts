@@ -27,6 +27,7 @@ import { createKeyedTransform, keyedAbsent } from '@/projection/keyed/transform'
 import { createKeyRelation } from '@/projection/keyed/relation';
 import {
   createKeyedFrom,
+  createKeyedFromEntries,
   createKeyedMerge,
   createKeyedSingleton,
 } from '@/projection/keyed/composition';
@@ -747,6 +748,7 @@ export const keyedDerive = Object.assign(createKeyedDerive, {
   entries: createKeyedEntries,
   get: createKeyedGet,
   from: createKeyedFrom,
+  fromEntries: createKeyedFromEntries,
   merge: createKeyedMerge,
   groupBy: createKeyedGroupBy,
   flatMap: createKeyedFlatMap,
