@@ -666,6 +666,13 @@ round trips and repeated tree edits to expose costs hidden by commit-only benchm
 Builds produce root `dist` ESM/CJS/declarations for `doxum`,
 `doxum/local-sync`, `doxum/react` and `doxum/advanced`. Source ownership is described in
 [architecture](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+Release builds keep JavaScript readable and omit source maps. Use `pnpm run build:debug`
+to generate a separate `.debug/dist` build with embedded-source maps for source-level
+debugging; it does not replace `dist` and is excluded from publication. Published
+packages include both module formats, their declarations and the runtime skill.
+`pnpm run check:package` inspects the actual npm file list, checks required artifacts
+and reports packed/unpacked sizes. It runs as part of `build`, including releases,
+and rejects accidental debug artifacts or dangling source-map references.
 The runtime shares one transaction lifecycle; complete mutation operations are
 organized by domain under `core/src/mutation/operations`, with access, first-touch
 recording and publication retaining their own responsibilities.

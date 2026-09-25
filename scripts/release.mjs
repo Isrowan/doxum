@@ -6,30 +6,6 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageName = 'doxum';
 const releaseFiles = ['package.json', 'pnpm-lock.yaml'];
-const requiredFiles = [
-  'LICENSE',
-  'README.md',
-  'dist/index.cjs',
-  'dist/index.d.ts',
-  'dist/index.js',
-  'dist/local-sync.cjs',
-  'dist/local-sync.d.ts',
-  'dist/local-sync.js',
-  'dist/react.cjs',
-  'dist/react.d.ts',
-  'dist/react.js',
-  'dist/advanced.cjs',
-  'dist/advanced.d.ts',
-  'dist/advanced.js',
-  'skills/doxum-runtime/SKILL.md',
-  'skills/doxum-runtime/agents/openai.yaml',
-  'skills/doxum-runtime/references/public-api.md',
-  'skills/doxum-runtime/references/document-runtime.md',
-  'skills/doxum-runtime/references/projections.md',
-  'skills/doxum-runtime/references/integrations.md',
-  'skills/doxum-runtime/references/recipes.md',
-  'skills/doxum-runtime/references/invariants.md',
-];
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 const fail = message => {
@@ -125,16 +101,6 @@ const assertManifestContract = manifest => {
   if (!manifest.exports?.['./react']) fail(`${packageName} must export ./react.`);
 };
 
-const assertTarball = () => {
-  const result = output('npm', ['pack', '--dry-run', '--json', '--ignore-scripts']);
-  const [tarball] = JSON.parse(result);
-  if (!tarball || !Array.isArray(tarball.files))
-    fail(`Could not inspect the ${packageName} tarball.`);
-  const files = new Set(tarball.files.map(file => file.path));
-  for (const file of requiredFiles)
-    if (!files.has(file)) fail(`${packageName} tarball is missing '${file}'.`);
-};
-
 const published = version => {
   const result = spawnSync('npm', ['view', `${packageName}@${version}`, 'version', '--json'], {
     cwd: root,
@@ -227,7 +193,6 @@ const run = () => {
     command('pnpm', ['install', '--lockfile-only']);
     command('pnpm', ['run', 'check']);
     command('pnpm', ['run', 'build']);
-    assertTarball();
 
     publishStarted = true;
     publish(version);

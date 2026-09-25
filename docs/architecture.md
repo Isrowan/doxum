@@ -495,6 +495,15 @@ Architecture checks parse TypeScript runtime imports, distinguish type-only edge
 reject runtime SCCs and forbidden dependency directions, and compile a public consumer
 fixture through `doxum`, `doxum/advanced`, `doxum/local-sync` and `doxum/react`.
 The package build also smoke-tests those four ESM and CJS entry points.
+`tsdown.config.ts` owns their shared build configuration. Default builds emit readable
+JavaScript and declarations without source maps; `build:debug` overrides only map
+generation and the output directory (`.debug/dist`). `package.json` lists the allowed
+runtime/declaration extensions and skills explicitly, so debug output is never part of
+the npm package. `scripts/check-package.mjs` is the single tarball-contract owner:
+builds and therefore releases validate required files, reject unintended artifacts and
+source-map references, and report compressed/uncompressed package sizes. ESM/CJS and
+their declaration graphs remain public compatibility boundaries, not duplicate files
+to delete. The tarball size is distinct from a consuming application's bundled code.
 Writes are forbidden while notifying or evaluating document reads. Observer errors
 are attached to an already accepted commit.
 

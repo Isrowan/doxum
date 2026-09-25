@@ -9,7 +9,8 @@ export default defineConfig({
   },
   format: ['esm', 'cjs'],
   dts: true,
-  sourcemap: true,
+  // Published JavaScript remains readable; source maps belong to the debug build.
+  sourcemap: false,
   clean: true,
   platform: 'neutral',
   deps: {

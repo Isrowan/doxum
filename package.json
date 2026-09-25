@@ -57,18 +57,23 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.cts",
     "skills"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsdown --config tsdown.config.ts && node scripts/check-build-exports.mjs && pnpm run check:declaration-portability",
+    "build": "tsdown --config tsdown.config.ts && node scripts/check-build-exports.mjs && pnpm run check:declaration-portability && pnpm run check:package",
+    "build:debug": "tsdown --config tsdown.config.ts --sourcemap --out-dir .debug/dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run check:public-types && pnpm run test && pnpm run check:runtime-skill && pnpm run check:projection-surface && pnpm run check:runtime-imports",
     "check:runtime-skill": "node scripts/check-runtime-skill.mjs",
     "check:projection-surface": "node scripts/check-projection-surface.mjs",
     "check:runtime-imports": "node scripts/check-runtime-imports.mjs",
+    "check:package": "node scripts/check-package.mjs",
     "check:public-types": "tsc -p tsconfig.public-api.json --noEmit",
     "check:declaration-portability": "tsc -p tsconfig.declaration-portability.json && node scripts/check-declaration-portability.mjs",
     "bench": "vitest bench --config vitest.bench.config.ts",
