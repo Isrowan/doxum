@@ -21,6 +21,10 @@ const failures = forbidden
 
 const required = [
   ['fromEntries result', 'portableFromEntries: import("doxum").KeyedProjection<string, number>;'],
+  [
+    'fromEntries union inference with typed equality',
+    'portableInferredPreview: import("doxum").KeyedProjection<"preview", PortablePreview>;',
+  ],
   ['flatMap result', 'portableFlatMap: import("doxum").KeyedProjection<string, number>;'],
   ['portable schema handle', 'portableSchema: import("doxum").ObjectSchema<'],
   ['keyed derive result', 'portableSelected: import("doxum").KeyedProjection<string, number>;'],

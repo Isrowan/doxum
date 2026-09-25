@@ -170,3 +170,14 @@ export const portableFromEntries = derive.keyed.fromEntries(
   { rows: portableRows, optional: portableOptional },
   ({ rows, optional }) => [...rows].map(([key, row]) => [key, row.value + (optional?.value ?? 0)])
 );
+
+export type PortablePreview =
+  | { readonly kind: 'cell'; readonly id: string }
+  | { readonly kind: 'range'; readonly ids: readonly string[] };
+const portablePreviewInput = input<PortablePreview | undefined>(undefined);
+const portablePreviewEquality = (a: PortablePreview, b: PortablePreview) => a.kind === b.kind;
+export const portableInferredPreview = derive.keyed.fromEntries(
+  { preview: portablePreviewInput },
+  ({ preview }) => (preview ? [['preview', preview]] : []),
+  portablePreviewEquality
+);

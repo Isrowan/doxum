@@ -350,6 +350,7 @@ derive.keyed.from(source: Projection<readonly V[]>, keyOf, equality?): KeyedProj
 derive.keyed.from(source: readonly V[], keyOf, equality?): KeyedProjection<K,V>
 derive.keyed.fromEntries(dependencies, compute, equality?): KeyedProjection<K,V>
 // compute(readonlyNamedValues) returns Synchronous<readonly (readonly [K,V])[]>
+// V is inferred from compute and typed equality; equality must accept every emitted variant.
 derive.keyed.merge(sources, { conflict: 'error' | 'first' | 'last', equality? }): KeyedProjection<K,V>
 derive.keyed.merge(sources, { conflict: 'resolve', resolve, equality? }): KeyedProjection<K,V>
 derive.keyed.subset(source, orderedKeysOrProjection): KeyedProjection<K,V>

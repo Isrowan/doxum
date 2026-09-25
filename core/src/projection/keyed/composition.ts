@@ -176,7 +176,7 @@ function createKeyedFrom<K extends string, V>(
 function createKeyedFromEntries<const D extends ProjectionDependencies, K extends string, V>(
   dependencies: D,
   compute: (values: ProjectionValues<D>) => Synchronous<KeyedEntries<K, V>>,
-  equality?: Equality<NoInfer<V>>
+  equality?: Equality<V>
 ): KeyedProjection<K, V> {
   const name = 'derive.keyed.fromEntries';
   const compiled = compileProjectionDependencies(dependencies, name);

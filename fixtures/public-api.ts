@@ -361,15 +361,99 @@ derive.keyed.fromEntries({ mode }, () =>
 derive.keyed.fromEntries({}, () => [[1, 'value']]);
 // @ts-expect-error entries must contain exactly key and value
 derive.keyed.fromEntries({}, () => [['a']]);
-derive.keyed.fromEntries(
-  {},
-  () => [['a', 1]],
-  // @ts-expect-error equality cannot change the computed value type
-  (a: string, b: string) => a === b
-);
+const incompatibleEntryEquality = (a: string, b: string) => a === b;
+// @ts-expect-error compute and equality must accept the same value type
+derive.keyed.fromEntries({}, () => [['a', 1]], incompatibleEntryEquality);
 const readonlyEntries = derive.keyed.fromEntries({ mode }, values => {
   // @ts-expect-error named values are readonly
   values.mode = 'full';
   return [['a', values.mode]] as const;
 });
 void [entryValue, inferredEntryValue, brandedEntries, readonlyEntries];
+
+// Inference is checked after construction: output annotations must not hide a regression.
+type PreviewValue =
+  | { readonly kind: 'cell'; readonly cellId: string }
+  | { readonly kind: 'range'; readonly ids: readonly string[] };
+const previewInput = input<PreviewValue | undefined>(undefined);
+const equalPreview = (left: PreviewValue, right: PreviewValue) => left.kind === right.kind;
+const inferredPreview = derive.keyed.fromEntries(
+  { preview: previewInput },
+  ({ preview }) => (preview ? [['preview', preview]] : []),
+  equalPreview
+);
+const inferredSelection = derive.keyed.fromEntries(
+  { mode },
+  ({ mode }) => {
+    if (mode === 'compact') return [];
+    if (Math.random()) return [['preview', { kind: 'cell' as const, cellId: 'a' }]];
+    return [['preview', { kind: 'range' as const, ids: ['a', 'b'] }]];
+  },
+  equalPreview
+);
+const previewValue: PreviewValue | undefined = runtime.read(inferredPreview).get('preview');
+const selectionValue: PreviewValue | undefined = runtime.read(inferredSelection).get('preview');
+const previewItem = runtime.items(inferredPreview).get('preview').current();
+if (previewItem?.kind === 'cell') {
+  const cellId: string = previewItem.cellId;
+  // @ts-expect-error the inferred union must not degrade to any
+  previewItem.ids;
+  void cellId;
+}
+const brandedPreview = derive.keyed.fromEntries(
+  { id: input<RowId | undefined>(undefined), preview: previewInput },
+  ({ id, preview }) => {
+    if (!id || !preview) return [];
+    return [[id, preview]];
+  },
+  equalPreview
+);
+const brandedPreviewCheck: KeyedProjection<RowId, PreviewValue> = brandedPreview;
+const optionalPreview = derive.keyed.fromEntries(
+  { mode, preview: previewInput },
+  ({ mode, preview }) => (mode === 'compact' ? [] : [['preview', preview]]),
+  (left: PreviewValue | undefined, right: PreviewValue | undefined) => left?.kind === right?.kind
+);
+const optionalPreviewCheck: KeyedProjection<string, PreviewValue | undefined> = optionalPreview;
+
+const broadEntryEquality = (left: unknown, right: unknown) => Object.is(left, right);
+const broadEqualityResult = derive.keyed.fromEntries(
+  { mode },
+  ({ mode }) => (mode === 'compact' ? [] : [['count', 1]]),
+  broadEntryEquality
+);
+const objectIsResult = derive.keyed.fromEntries(
+  { mode },
+  ({ mode }) => (mode === 'compact' ? [] : [['count', 1]]),
+  Object.is
+);
+const broadEntryValue: number | undefined = runtime.read(broadEqualityResult).get('count');
+const objectIsEntryValue: number | undefined = runtime.read(objectIsResult).get('count');
+// @ts-expect-error Object.is must not widen the inferred value to any
+const invalidObjectIsValue: string = runtime.read(objectIsResult).get('count');
+
+const equalCell = (
+  left: Extract<PreviewValue, { kind: 'cell' }>,
+  right: Extract<PreviewValue, { kind: 'cell' }>
+) => left.cellId === right.cellId;
+derive.keyed.fromEntries(
+  { preview: previewInput },
+  // @ts-expect-error equality must support every value variant compute can emit
+  ({ preview }) => (preview ? [['preview', preview]] : []),
+  equalCell
+);
+const annotatedPreview: KeyedProjection<string, PreviewValue> = derive.keyed.fromEntries(
+  { preview: previewInput },
+  ({ preview }) => (preview ? [['preview', preview]] : []),
+  equalPreview
+);
+void [
+  previewValue,
+  selectionValue,
+  brandedPreviewCheck,
+  optionalPreviewCheck,
+  broadEntryValue,
+  objectIsEntryValue,
+  invalidObjectIsValue,
+  annotatedPreview,
+];
