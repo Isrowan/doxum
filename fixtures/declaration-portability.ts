@@ -63,6 +63,17 @@ export const portableResolvedMerge = derive.keyed.merge([portableFrom, portableR
 export const portableActiveKey = input<string | undefined>('row-a');
 export const portableActiveRow = derive.keyed.get(portableRows, portableActiveKey);
 export const portableSubset = derive.keyed.subset(portableRows, ['row-a', 'row-b'] as const);
+export const portableNamedSubset = derive.keyed.subset(
+  portableSelected,
+  { keys: portableKeys },
+  ({ keys }) => keys
+);
+export const portableNamedGet = derive.keyed.get(
+  portableSelected,
+  { key: portableActiveKey },
+  ({ key }) => key
+);
+export const portableStaticGet = derive.keyed.get(portableSelected, 'row-a');
 export const portableFiltered = derive.keyed.filter(portableRows, row => row.value > 0);
 export const portableFilteredWithDependency = derive.keyed.filter(
   portableRows,

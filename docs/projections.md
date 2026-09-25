@@ -111,6 +111,69 @@ without an output annotation. Normal TypeScript literal widening still applies t
 constructed value objects; use a declared value type or `as const` for discriminants
 when needed. Use `fromEntries` when the result can contain more than one member.
 
+### Keyed selection
+
+```ts
+const fixed = derive.keyed.get(nodes, nodeId);
+const active = derive.keyed.get(nodes, activeIdProjection);
+const selected = derive.keyed.subset(nodes, orderedIdsProjection);
+const staticSubset = derive.keyed.subset(nodes, [firstId, secondId]);
+
+const activeNode = derive.keyed.get(
+  nodes,
+  { selection },
+  ({ selection }) => selection.activeNodeId
+);
+const selectedNodes = derive.keyed.subset(
+  nodes,
+  { selection },
+  ({ selection }) => selection.nodeIds
+);
+```
+
+`get(source, dependencies, selectKey, equality?)` computes a string key or `undefined`
+and returns `Projection<V | undefined>`. Static keys and scalar key projections remain
+valid with optional result equality. Undefined selection or an absent selected member
+reads as undefined. A missing key remains requested and reacts when it is later added.
+Equality defaults to `Object.is`; a custom equality retains equivalent result references.
+
+`subset(source, dependencies, selectOrderedKeys)` computes a readonly array of unique
+string keys. `[]` is empty; undefined, non-array results and duplicate keys (even missing
+ones) are errors. Output membership is requested keys intersected with source membership,
+in requested order. Source-only reorder does not change it. Missing requests remain
+latent for later adds. Source values, including present undefined, pass through with
+their original identity. Subset has no value or keys equality option: sequence equality
+is exact, and equal key sequences reuse the existing request even when returned in a new
+array. Static arrays are snapshotted at definition time; computed arrays are captured
+when accepted.
+
+Both named forms use ordinary `ProjectionDependencies`, including `{}`, and receive
+readonly named values. Declarations are captured at definition time. The source owns
+the key and value types: a selector, key projection or equality cannot widen them.
+Use an appropriately typed key array for a branded/literal key source, or declare the
+source's key type as `string` if its actual domain is arbitrary strings. Driver-relative
+dependency specs and public Runtime reads in callbacks are not supported. Callbacks
+must be synchronous. Selection validation/callback failures and get equality failures
+install no partial output and follow the normal processor recovery lifecycle.
+
+Selection callbacks run on initialization, relevant dependency changes or recovery.
+Source-only value/membership changes filter the existing request without rerunning
+callbacks; a source reset rebuilds from that request when selection dependencies have
+not changed. Selection and source changes in one evaluation use current source values,
+even if the newly computed keys equal the old keys. Current batch reads may advance
+these processors more than once; notifications and item lifecycle endings retain their
+normal final-boundary semantics. Definitions are isolated per runtime and support scopes.
+
+Each selection is one processor with one output. An unrelated source update may still
+wake it to inspect source deltas, with O(delta size + selection dependency count) work;
+there is no promise of scheduler-level per-key subscriptions. Source-only changes do
+not scan all source members. Subset structural changes/reset may scan the requested
+keys and prior output; changed selection computation also pays callback, normalization
+and dependency snapshot costs. Keyed named dependencies are whole map snapshots. If
+the queried source is explicitly included in `dependencies`, its changes can rerun the
+selector as a global dependency. Use `get`/`subset` to select existing members and
+`singleton`/`fromEntries` to construct new keyed results.
+
 ### One-to-many keyed expansion
 
 ```ts

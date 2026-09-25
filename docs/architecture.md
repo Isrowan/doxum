@@ -388,9 +388,21 @@ Reconciliation reads the prior key directly from the collection output and stage
 There is no retained member cache, general full-result scan, intermediate scalar
 projection, or separate equality/recovery/lifecycle protocol.
 
-`projection/derive/keyed.ts` owns keyed algorithm semantics that are not generic runtime
-plumbing or construction/composition: ordered `keys` / `values` / `entries` snapshots,
-precise scalar `get`, `subset`, and reverse-index `groupBy`. `groupBy` reuses the shared
+`projection/keyed/selection.ts` owns precise scalar `get` and ordered `subset`.
+Their shared selection compiler handles static inputs, scalar projections and named
+dependency computations. It reuses `projection/dependency.ts` validation/snapshots;
+the snapshot offset keeps the queried source separate without slicing source contexts.
+Each runtime instance retains only its accepted request and selection dependency
+revisions. Subset's ordered keys and membership Set include missing requests, so they
+cannot be reconstructed from output membership. Equal sequences reuse this state.
+Source deltas and selection invalidation are handled independently, preserving current
+values when both change together. Source-only changes do not run selection callbacks;
+the processor may still inspect unrelated deltas. Scheduler edges remain ordinary
+projection dependencies. No intermediate scalar processor or source-value mirror is
+created; output owners retain publication, equality and recovery responsibilities.
+
+`projection/derive/keyed.ts` owns ordered `keys` / `values` / `entries` snapshots and
+reverse-index `groupBy`, and assembles the public keyed family. `groupBy` reuses the shared
 dependency runtime but owns its own grouping/order algorithm. None of these introduces a
 second keyed handle or publication protocol. `projection/output/collection.ts` remains
 the sole owner of current membership, order, per-entry equality, revision, exact

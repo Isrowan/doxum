@@ -322,6 +322,16 @@ const ids = derive.keyed.keys(records);
 const all = derive.keyed.values(records);
 const entries = derive.keyed.entries(records);
 const active = derive.keyed.get(records, activeRecordId);
+const selectedRecords = derive.keyed.subset(
+  records,
+  { selection },
+  ({ selection }) => selection.recordIds
+);
+const selectedRecord = derive.keyed.get(
+  records,
+  { selection },
+  ({ selection }) => selection.activeRecordId
+);
 const rowsFromArray = derive.keyed.from(rowArray, row => row.id);
 const effectiveRows = derive.keyed.merge([baseRows, rowOverrides], { conflict: 'last' });
 const visible = derive.keyed.filter(records, record => record.visible);
@@ -341,6 +351,15 @@ currently missing source keys until they appear. `filter` preserves source value
 source-relative order. `compact` omits keys whose selected value is `undefined` and
 uses its optional equality for present values. `filter` and `compact` support the same
 named global/dynamic keyed dependency object as ordinary `derive.keyed`.
+
+`get` accepts a static key, a key projection, or `(source, dependencies, selectKey, equality?)`.
+`subset` accepts a static ordered key array, a key-array projection, or
+`(source, dependencies, selectOrderedKeys)`. Named selectors run when their declared
+dependencies change; source-only updates use the selected keys to filter deltas.
+Missing requested keys remain live for later adds. Subset preserves source value
+references and requested order, and has no value equality option. Unrelated source
+updates may wake the processor to inspect deltas, but do not rerun selectors or rebuild
+the subset. See [Keyed selection](docs/projections.md#keyed-selection).
 
 `from` turns either a static readonly array or `Projection<readonly V[]>` into a keyed
 projection using `keyOf(value)`. Input order becomes formal keyed order; duplicate keys

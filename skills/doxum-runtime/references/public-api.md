@@ -345,7 +345,9 @@ derive.keyed(source, dependencies, (value, key, dependencies) => result, equalit
 derive.keyed.keys(source): Projection<readonly K[]>
 derive.keyed.values(source): Projection<readonly V[]>
 derive.keyed.entries(source): Projection<readonly (readonly [K,V])[]>
-derive.keyed.get(source, keyProjection, equality?): Projection<V | undefined>
+derive.keyed.get(source, keyOrProjection, equality?): Projection<V | undefined>
+derive.keyed.get(source, dependencies, selectKey, equality?): Projection<V | undefined>
+// selectKey(readonlyNamedValues) returns Synchronous<K | undefined>
 derive.keyed.from(source: Projection<readonly V[]>, keyOf, equality?): KeyedProjection<K,V>
 derive.keyed.from(source: readonly V[], keyOf, equality?): KeyedProjection<K,V>
 derive.keyed.fromEntries(dependencies, compute, equality?): KeyedProjection<K,V>
@@ -354,6 +356,8 @@ derive.keyed.fromEntries(dependencies, compute, equality?): KeyedProjection<K,V>
 derive.keyed.merge(sources, { conflict: 'error' | 'first' | 'last', equality? }): KeyedProjection<K,V>
 derive.keyed.merge(sources, { conflict: 'resolve', resolve, equality? }): KeyedProjection<K,V>
 derive.keyed.subset(source, orderedKeysOrProjection): KeyedProjection<K,V>
+derive.keyed.subset(source, dependencies, selectOrderedKeys): KeyedProjection<K,V>
+// selectOrderedKeys(readonlyNamedValues) returns Synchronous<readonly K[]>
 derive.keyed.filter(source, predicate): KeyedProjection<K,V>
 derive.keyed.filter(source, dependencies, predicate): KeyedProjection<K,V>
 derive.keyed.compact(source, selector, equality?): KeyedProjection<K,T>
@@ -367,6 +371,8 @@ derive.keyed.singleton(sourceProjection, keyOf, equality?): KeyedProjection<K,V>
 derive.keyed.singleton(dependencies, computeEntry, equality?): KeyedProjection<K,V>
 // computeEntry(readonlyNamedValues) returns Synchronous<readonly [K,V] | undefined>
 ```
+
+`get` and `subset` accept named ordinary projection dependencies, including `{}`, to compute one optional key or an ordered key array. Source defines K/V; selectors and equality cannot widen them. Source-only updates filter deltas without rerunning selectors. Missing keys remain requested. Subset preserves source values and requested order, rejects duplicate keys, and has no equality option. Equal key sequences reuse request state. Get's optional result equality defaults to `Object.is`. Callback/validation/equality failure follows normal recovery without partial publication. Processors may inspect unrelated source deltas; this is not scheduler-level key subscription. A keyed named dependency is a whole snapshot, including when it is also the queried source. See [Precise scalar lookup](projections.md#precise-scalar-lookup) and [Subset](projections.md#subset).
 
 `from` uses `keyOf(value)` as member identity and preserves the input array's formal order. Duplicate keys are processor errors; there is no silent first/last overwrite. Static arrays are shallow-snapshotted at definition creation while `keyOf` remains lazy. For a scalar array projection, each scalar publication is scanned because the source has no per-entry delta. Equality defaults to `Object.is`; an equality-equivalent value under the same key retains the previous published value identity.
 

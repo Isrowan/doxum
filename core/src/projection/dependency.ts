@@ -44,11 +44,12 @@ export const snapshotDependencyValue = (source: SourceContext): unknown =>
 /** Builds the same readonly named value boundary for scalar and keyed pure computations. */
 export const snapshotProjectionValues = <D extends ProjectionDependencies>(
   names: readonly string[],
-  sources: readonly SourceContext[]
+  sources: readonly SourceContext[],
+  offset = 0
 ): ProjectionValues<D> => {
   const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (let index = 0; index < names.length; index++)
-    values[names[index]] = snapshotDependencyValue(sources[index]);
+    values[names[index]] = snapshotDependencyValue(sources[offset + index]);
   return Object.freeze(values) as ProjectionValues<D>;
 };
 

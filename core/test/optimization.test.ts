@@ -16,7 +16,7 @@ import { measureProfile } from '@/profile';
 
 describe('projection optimization boundaries', () => {
   it('reorders a keyed subset without restaging unchanged values', () => {
-    const rows = input.collection(
+    const rows = input.collection<string, { readonly value: number }>(
       new Map(
         Array.from({ length: 1_000 }, (_, index) => [`row-${index}`, { value: index }] as const)
       )

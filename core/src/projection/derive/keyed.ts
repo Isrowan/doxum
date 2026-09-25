@@ -1,14 +1,11 @@
 import { collectKeyedInvalidation } from '@/projection/keyed/invalidation';
 import { createKeyedFlatMap } from '@/projection/keyed/flat-map';
 import type { Synchronous } from '@/runtime/contract';
-import {
-  collectionChangeTouchesKey,
-  collectionHasStructuralChange,
-} from '@/projection/collection/change';
+import { collectionHasStructuralChange } from '@/projection/collection/change';
+import { createKeyedGet, createKeyedSubset } from '@/projection/keyed/selection';
 import type { SourceContext } from '@/projection/contract';
 import {
   defineProcessor,
-  isProjection,
   type KeyedProjection,
   type OutputEvaluation,
   type Projection,
@@ -18,7 +15,6 @@ import {
   assertKeyedProjection,
   compileKeyedDependencies,
   createKeyedDependencyRuntime,
-  outputKind,
   type KeyedDependencies as KeyedDeriveDependencies,
   type KeyedDependencyRecord as KeyedDeriveDependencyRecord,
   type KeyedDependencyValues,
@@ -34,20 +30,6 @@ import {
 import { sameArray } from '@/value/array';
 
 type Equality<T> = (previous: T, next: T) => boolean;
-
-const compileOrderedKeys = <K extends string>(
-  value: unknown,
-  role: string
-): { readonly keys: readonly K[]; readonly requested: ReadonlySet<K> } => {
-  if (!Array.isArray(value)) throw new TypeError(`${role} must be an array of string keys.`);
-  const seen = new Set<K>();
-  for (const key of value) {
-    if (typeof key !== 'string') throw new TypeError(`${role} must contain only string keys.`);
-    if (seen.has(key as K)) throw new TypeError(`${role} must not contain duplicate keys.`);
-    seen.add(key as K);
-  }
-  return { keys: value as readonly K[], requested: seen };
-};
 
 function createKeyedDerive<K extends string, V, T>(
   source: KeyedProjection<K, V>,
@@ -217,59 +199,6 @@ const createKeyedEntries = <K extends string, V>(
     Object.freeze([key, value] as const)
   );
 
-const createKeyedGet = <K extends string, V>(
-  source: KeyedProjection<K, V>,
-  key: Projection<NoInfer<K> | undefined>,
-  equality: Equality<V | undefined> = Object.is
-): Projection<V | undefined> => {
-  assertKeyedProjection(source, 'derive.keyed.get source');
-  if (outputKind(key) !== 'value')
-    throw new TypeError('derive.keyed.get key must be a scalar projection.');
-  const [projection] = defineProcessor({
-    dependencies: [source, key],
-    outputs: [{ kind: 'value', equality: equality as Equality<unknown> }],
-    create: () => {
-      let sourceRevision = -1;
-      let keyRevision = -1;
-      let selected: K | undefined;
-      return {
-        evaluate: evaluation => {
-          const collection = evaluation.sources[0];
-          const selectedKey = evaluation.sources[1];
-          const output = evaluation.outputs[0];
-          if (
-            collection.kind !== 'collection' ||
-            selectedKey.kind !== 'value' ||
-            output.kind !== 'value'
-          )
-            throw new Error('derive.keyed.get resolved invalid input/output kinds.');
-          let affected = evaluation.reset;
-          if (evaluation.reset || keyRevision !== selectedKey.revision) {
-            const candidate = selectedKey.value;
-            if (candidate !== undefined && typeof candidate !== 'string')
-              throw new TypeError('derive.keyed.get key must resolve to a string or undefined.');
-            selected = candidate as K | undefined;
-            affected = true;
-          } else if (sourceRevision !== collection.revision) {
-            const change = collection.change;
-            if (!change || change.kind === 'reset') affected = true;
-            else if (selected !== undefined)
-              affected = collectionChangeTouchesKey(change, selected);
-          }
-          if (affected)
-            output.output.set(
-              selected === undefined ? undefined : (collection.read.get(selected) as V | undefined)
-            );
-          sourceRevision = collection.revision;
-          keyRevision = selectedKey.revision;
-        },
-      };
-    },
-    name: 'derive.keyed.get',
-  });
-  return projection as Projection<V | undefined>;
-};
-
 function createKeyedFilter<K extends string, V>(
   source: KeyedProjection<K, V>,
   predicate: (value: NoInfer<V>, key: NoInfer<K>) => Synchronous<boolean>
@@ -386,123 +315,6 @@ function createKeyedCompact<K extends string, V, T>(
     },
   });
 }
-
-const createKeyedSubset = <K extends string, V>(
-  source: KeyedProjection<K, V>,
-  orderedKeys: Projection<readonly K[]> | readonly K[]
-): KeyedProjection<K, V> => {
-  assertKeyedProjection(source, 'Keyed subset source');
-  const keyProjection = isProjection(orderedKeys) ? orderedKeys : undefined;
-  if (keyProjection && outputKind(keyProjection) !== 'value')
-    throw new TypeError('Keyed subset ordered keys must be a value projection.');
-  const staticSelection = keyProjection
-    ? undefined
-    : (() => {
-        const compiled = compileOrderedKeys<K>(orderedKeys, 'Keyed subset ordered keys');
-        return {
-          keys: Object.freeze([...compiled.keys]),
-          requested: compiled.requested,
-        };
-      })();
-  const dependencies: Projection<unknown>[] = keyProjection ? [source, keyProjection] : [source];
-  const [projection] = defineProcessor({
-    dependencies,
-    outputs: [{ kind: 'collection', equality: Object.is }],
-    create: () => {
-      let keys: readonly K[] | undefined = staticSelection?.keys;
-      let requested: ReadonlySet<K> | undefined = staticSelection?.requested;
-      let keyRevision = -1;
-      return {
-        evaluate: evaluation => {
-          const driver = evaluation.sources[0];
-          const output = evaluation.outputs[0];
-          if (driver.kind !== 'collection' || output.kind !== 'collection')
-            throw new Error('derive.keyed.subset requires collection input and output.');
-          let keysChanged = false;
-          if (keyProjection) {
-            const sourceContext = evaluation.sources[1];
-            if (sourceContext?.kind !== 'value')
-              throw new TypeError('Keyed subset ordered keys resolved to a collection.');
-            if (
-              keys === undefined ||
-              sourceContext.reset ||
-              keyRevision !== sourceContext.revision
-            ) {
-              const compiled = compileOrderedKeys<K>(
-                sourceContext.value,
-                'Keyed subset ordered keys'
-              );
-              keys = compiled.keys;
-              requested = compiled.requested;
-              keyRevision = sourceContext.revision;
-              keysChanged = true;
-            }
-          }
-          if (!keys || !requested) throw new Error('Keyed subset keys were not initialized.');
-          const activeKeys = keys;
-          const activeRequested = requested;
-
-          const orderedPresentKeys = (): readonly K[] =>
-            activeKeys.filter(key => driver.read.has(key));
-          const rebuild = (): void => {
-            const nextKeys = orderedPresentKeys();
-            for (const key of nextKeys) output.output.set(key, driver.read.get(key) as V);
-            output.output.order(nextKeys);
-          };
-          const reconcileKeys = (): void => {
-            const nextKeys = orderedPresentKeys();
-            for (const key of output.previous.ids())
-              if (!activeRequested.has(key as K) || !driver.read.has(key))
-                output.output.remove(key);
-            for (const key of nextKeys)
-              if (!output.previous.has(key)) output.output.set(key, driver.read.get(key) as V);
-            output.output.order(nextKeys);
-          };
-
-          const change = driver.change;
-          if (evaluation.reset || change?.kind === 'reset') rebuild();
-          else if (keysChanged) {
-            reconcileKeys();
-            if (change)
-              for (const entry of change.updated) {
-                const key = entry.key as K;
-                if (activeRequested.has(key) && output.previous.has(key))
-                  output.output.set(key, entry.after as V);
-              }
-          } else if (change) {
-            let updateOrder = false;
-            for (const entry of change.removed) {
-              const key = entry.key as K;
-              if (!activeRequested.has(key)) continue;
-              output.output.remove(key);
-              updateOrder = true;
-            }
-            for (const entry of change.added) {
-              const key = entry.key as K;
-              if (!activeRequested.has(key)) continue;
-              output.output.set(key, entry.after as V);
-              updateOrder = true;
-            }
-            for (const entry of change.updated) {
-              const key = entry.key as K;
-              if (activeRequested.has(key)) output.output.set(key, entry.after as V);
-            }
-            if (updateOrder) output.output.order(orderedPresentKeys());
-          }
-        },
-        release: () => {
-          if (keyProjection) {
-            keys = undefined;
-            requested = undefined;
-            keyRevision = -1;
-          }
-        },
-      };
-    },
-    name: 'derive.keyed.subset',
-  });
-  return projection as KeyedProjection<K, V>;
-};
 
 const normalizeGroups = <G extends string>(value: unknown): readonly G[] => {
   const groups = typeof value === 'string' ? [value] : value;

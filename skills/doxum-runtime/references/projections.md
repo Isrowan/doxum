@@ -167,9 +167,26 @@ Produces ordered readonly `[key,value]` tuples. Value-only updates publish corre
 
 ```ts
 const active = derive.keyed.get(rows, activeId);
+const fixed = derive.keyed.get(rows, rowId);
+const selected = derive.keyed.get(rows, { selection }, ({ selection }) => selection.activeRowId);
 ```
 
-`activeId` is a scalar `Projection<K | undefined>`. The derive binds exactly the selected key. If the key is absent, the result is `undefined` while the binding remains live for later add.
+`activeId` may be a static `K | undefined` or scalar `Projection<K | undefined>`.
+Named form accepts ordinary projection dependencies, including `{}`, and a synchronous
+callback returning `K | undefined`. The source owns K/V; callback results, key projections
+and equality must agree with those domains. The result is `Projection<V | undefined>`.
+An absent selected key remains requested for later add; undefined selects no key.
+Optional result equality defaults to `Object.is` and retains equivalent references.
+
+Named selectors run on initialization, declared dependency changes or recovery. Source
+updates inspect deltas for the selected key; source-only reorder is ignored. Unrelated
+updates can wake the processor but do not rerun selectors or change output. Keyed named
+dependencies are whole snapshots: explicitly declaring the queried source as a named
+dependency also makes its changes relevant to the selector. Public Runtime reads and
+driver-relative dependency specs are not allowed inside this protocol. Callback, key
+validation and equality failures follow normal recovery without partial publication.
+Definitions are lazy, scoped and isolated per runtime; current batch reads and deferred
+notifications use the ordinary runtime contract.
 
 Use this for active entity, editor target, selected record, or current-cell lookups.
 
@@ -242,11 +259,32 @@ Value-only source changes only recompute affected keys. Structural or source-ord
 
 ```ts
 const visibleRows = derive.keyed.subset(rows, orderedVisibleIds);
+const selectedRows = derive.keyed.subset(rows, { selection }, ({ selection }) => selection.rowIds);
 ```
 
 Output order is `orderedVisibleIds ∩ source membership`. Missing requested ids remain latent and appear later if the source adds them. Duplicate requested keys are invalid. Values are source values and are not re-derived.
 
-Use `subset` when another projection or static array already owns the requested order.
+The second argument may be a static readonly key array or a scalar key-array projection.
+Named form accepts ordinary projection dependencies (including `{}`) and a synchronous
+callback returning `readonly K[]`. The source owns K/V; selection cannot widen the key
+domain. `[]` is empty; undefined, malformed arrays and duplicate keys (even absent ones)
+are errors. Static arrays are snapshotted at definition time; dynamic arrays are captured
+when accepted. Equal sequences reuse request state, regardless of array identity.
+
+Dependency changes rerun the selector. Source-only updates filter the existing request;
+they do not rerun selectors. Selected values update with the source's original identity,
+missing keys join when added, and source-only reorder is ignored. Subset has no value
+or keys equality option. A selection change and value change in one evaluation both
+take effect, even when the key sequence remains equal. Reset/recovery, scope disposal,
+runtime isolation and notification-boundary item lifecycles follow the normal contract.
+
+Each get/subset uses one processor and one output. Source-delta filtering can cost
+O(delta size + selection dependency count); the processor can wake for unrelated source
+changes. It does not scan all source members. Structural changes/reset may scan requested
+keys and prior output. Selection changes pay callback, normalization and dependency
+snapshot costs. Named keyed dependencies are whole snapshots; including the queried
+source explicitly can rerun the selector on its changes. Use `get`/`subset` to select
+existing members and `singleton`/`fromEntries` to construct new keyed results.
 
 ### `filter`
 

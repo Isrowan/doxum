@@ -576,3 +576,94 @@ void [
   scalarConstantCheck,
   readonlySingleton,
 ];
+
+// The queried source owns both key and value domains for every selection form.
+const selectionRequest = input<{
+  readonly ids: readonly RowId[];
+  readonly active: RowId | undefined;
+}>({ ids: [], active: undefined });
+const computedSubset = derive.keyed.subset(
+  brandedRows,
+  { selection: selectionRequest, mode },
+  ({ selection, mode }) => (mode === 'compact' ? [] : selection.ids)
+);
+const computedGet = derive.keyed.get(
+  brandedRows,
+  { selection: selectionRequest, mode },
+  ({ selection, mode }) => (mode === 'compact' ? undefined : selection.active),
+  (a, b) => a === b
+);
+const selectedSubsetCheck: KeyedProjection<RowId, number> = computedSubset;
+const selectedGetCheck: number | undefined = runtime.read(computedGet);
+const fixedGet = derive.keyed.get(brandedRows, childKey);
+const emptyGet = derive.keyed.get(brandedRows, undefined);
+const fixedSubset = derive.keyed.subset(brandedRows, {}, () => [childKey]);
+const optionalGet = derive.keyed.get(brandedRows, {}, () => (Math.random() ? childKey : undefined));
+const selectedItem: number | undefined = runtime.items(computedSubset).get(childKey).current();
+const broadGet = derive.keyed.get(
+  brandedRows,
+  { selection: selectionRequest },
+  ({ selection }) => selection.active,
+  Object.is
+);
+// @ts-expect-error a broad comparator must not erase the source value type
+const wrongGetValue: string = runtime.read(broadGet);
+const readonlySelection = derive.keyed.subset(
+  brandedRows,
+  { selection: selectionRequest },
+  values => {
+    // @ts-expect-error named values are readonly
+    values.selection = { ids: [], active: undefined };
+    // @ts-expect-error input key arrays remain readonly
+    values.selection.ids.push(childKey);
+    return values.selection.ids;
+  }
+);
+// @ts-expect-error source key domain cannot widen to unbranded strings
+derive.keyed.subset(brandedRows, ['wrong']);
+// @ts-expect-error scalar key arrays must agree with the source domain
+derive.keyed.subset(brandedRows, input<readonly string[]>([]));
+// @ts-expect-error computed keys must agree with the source domain
+derive.keyed.subset(brandedRows, {}, () => ['wrong']);
+// @ts-expect-error static get cannot widen the source key domain
+derive.keyed.get(brandedRows, 'wrong');
+// @ts-expect-error computed get cannot widen the source key domain
+derive.keyed.get(brandedRows, {}, () => 'wrong');
+// @ts-expect-error existing key projections remain constrained by the source
+derive.keyed.get(brandedRows, input<string | undefined>(undefined));
+// @ts-expect-error unrelated branded key domains are rejected
+derive.keyed.subset(brandedRows, {}, () => ['other' as EntityId]);
+// @ts-expect-error subset callback must be synchronous
+derive.keyed.subset(brandedRows, {}, async () => [childKey]);
+// @ts-expect-error get callback must be synchronous
+derive.keyed.get(brandedRows, {}, async () => childKey);
+// @ts-expect-error subset has no value equality option
+derive.keyed.subset(brandedRows, {}, () => [childKey], Object.is);
+// @ts-expect-error subset requires an array, not optional membership
+derive.keyed.subset(brandedRows, {}, () => undefined);
+// @ts-expect-error get requires a string key, not a key array
+derive.keyed.get(brandedRows, {}, () => [childKey]);
+// @ts-expect-error named dependencies must contain projections
+derive.keyed.get(brandedRows, { id: childKey }, ({ id }) => id);
+// @ts-expect-error driver-relative dependency specs do not belong to selection
+derive.keyed.subset(brandedRows, { rows: { source: brandedRows } }, () => [childKey]);
+// @ts-expect-error equality cannot change the source value domain
+derive.keyed.get(brandedRows, childKey, (a: string, b: string) => a === b);
+derive.keyed.get(
+  brandedRows,
+  {},
+  () => childKey,
+  // @ts-expect-error named get equality cannot change the source value domain
+  (a: string, b: string) => a === b
+);
+void [
+  selectedSubsetCheck,
+  selectedGetCheck,
+  fixedGet,
+  emptyGet,
+  fixedSubset,
+  optionalGet,
+  selectedItem,
+  wrongGetValue,
+  readonlySelection,
+];

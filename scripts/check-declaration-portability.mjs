@@ -20,6 +20,9 @@ const failures = forbidden
   .map(([label]) => `generated consumer declaration references ${label}`);
 
 const required = [
+  ['named subset result', 'portableNamedSubset: import("doxum").KeyedProjection<string, number>;'],
+  ['named get result', 'portableNamedGet: import("doxum").Projection<number | undefined>;'],
+  ['static get result', 'portableStaticGet: import("doxum").Projection<number | undefined>;'],
   [
     'singleton constant tuple inference',
     'portableConstantSingleton: import("doxum").KeyedProjection<"constant", 1>;',

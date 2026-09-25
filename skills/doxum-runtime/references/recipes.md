@@ -323,9 +323,30 @@ Shared keys use override values while keeping the first formal position from `ba
 ```ts
 const activeId = input<RowId | undefined>(undefined);
 const activeRow = derive.keyed.get(rows, activeId);
+const selectedRow = derive.keyed.get(rows, { selection }, ({ selection }) => selection.activeRowId);
 ```
 
 The binding remains meaningful while the selected key is absent and reacts if that key appears later.
+
+Use a static key directly for a fixed lookup. Use named dependencies when an existing
+selection projection owns the key; an intermediate scalar derive is unnecessary.
+
+## Ordered selected members
+
+```ts
+const selectedNodes = derive.keyed.subset(
+  graph.node,
+  { selection },
+  ({ selection }) => selection.nodeIds
+);
+```
+
+Output follows `selection.nodeIds` order, including requested members that appear later
+in the source. Selected source values pass through by identity. Source-only updates do
+not rerun the selector; a new selection with equal keys does not produce a fake change.
+Use `[]` to select nothing and avoid duplicate keys. Keep source out of named dependencies
+unless computing the keys actually needs the entire source collection. The processor can
+still inspect unrelated source deltas; it does not rebuild the whole subset for them.
 
 ## Reverse index / groupBy
 
