@@ -331,7 +331,7 @@ The keyed family:
 | `merge`       | Multiple keyed projections → union with explicit conflict policy |
 | `flatMap`     | Ordered pure one-to-many keyed expansion                         |
 | `groupBy`     | One-to-many reverse index                                        |
-| `singleton`   | Optional scalar → zero-or-one keyed projection                   |
+| `singleton`   | Optional scalar or named dependencies → zero-or-one keyed result |
 | `subset`      | Externally ordered keyed subset                                  |
 | `filter`      | Predicate-controlled membership preserving source values         |
 | `compact`     | Map values while dropping `undefined` results                    |
@@ -364,11 +364,15 @@ derive.keyed.flatMap(source, dependencies, select, equality?): KeyedProjection<O
 derive.keyed.groupBy(source, selector): KeyedProjection<GroupKey, readonly K[]>
 derive.keyed.groupBy(source, dependencies, selector): KeyedProjection<GroupKey, readonly K[]>
 derive.keyed.singleton(sourceProjection, keyOf, equality?): KeyedProjection<K,V>
+derive.keyed.singleton(dependencies, computeEntry, equality?): KeyedProjection<K,V>
+// computeEntry(readonlyNamedValues) returns Synchronous<readonly [K,V] | undefined>
 ```
 
 `from` uses `keyOf(value)` as member identity and preserves the input array's formal order. Duplicate keys are processor errors; there is no silent first/last overwrite. Static arrays are shallow-snapshotted at definition creation while `keyOf` remains lazy. For a scalar array projection, each scalar publication is scanned because the source has no per-entry delta. Equality defaults to `Object.is`; an equality-equivalent value under the same key retains the previous published value identity.
 
 `fromEntries` accepts the same named projection object as `derive`, including `{}` and keyed projections. Single inputs use `{ source }`; direct-source, static-array and driver-relative dependency specs are not overloads. The callback receives readonly named values and returns the complete ordered tuple array synchronously. Empty arrays mean no members; missing keys are removed; present `undefined` is valid. Duplicate string keys, malformed tuples and callback/equality failures follow processor error/recovery rules without partial installation. Per-entry equality defaults to `Object.is` and retains equivalent value references without suppressing membership or order. Computation scans the complete old/new result, while downstream publication is incremental. A keyed dependency is a whole collection, not automatically tracked by `get`; compose `derive.keyed.get` for precise scalar lookup. See [Projections](projections.md#keyed-results-from-named-dependencies) for lifecycle, cost and examples.
+
+`singleton` returns at most one member. Scalar form accepts `Projection<V | undefined>`, omits undefined sources and preserves the source value under `keyOf(value)`. Named form uses ordinary `derive` dependencies (including `{}`), returning `[key, value]` or `undefined`; `[key, undefined]` is present. Keys are strings; empty arrays, null, false, malformed tuples and thenables are rejected. Typed equality participates in inference and compares same-key values only, preserving equivalent references. Key changes remain membership changes. Both forms share normal processor recovery and notification-boundary item lifecycles. Keyed named inputs are whole snapshots; compose `derive.keyed.get` for precise lookup. See [Singleton](projections.md#singleton) for examples and costs.
 
 `merge` has union membership and requires an explicit conflict policy. `first` and `last` use source-list priority. `error` rejects overlapping keys. `resolve` calls `resolve(contributions, key)` only for keys with two or more current contributions; contributions are ordered by source priority and have `{ sourceIndex, value }`. A single contribution passes through unchanged. The source list is fixed at definition time.
 

@@ -430,42 +430,85 @@ function createKeyedMerge<K extends string, V>(
   return projection as KeyedProjection<K, V>;
 }
 
-const createKeyedSingleton = <K extends string, V>(
+// A string key is already synchronous. Keep this overload first and its key literal
+// inference explicit so both key-returning and tuple-returning constant callbacks infer.
+function createKeyedSingleton<const K extends string, V>(
   source: Projection<V | undefined>,
-  keyOf: (value: V) => Synchronous<K>,
-  equality: Equality<V> = Object.is
-): KeyedProjection<K, V> => {
-  if (outputKind(source) !== 'value')
-    throw new TypeError('derive.keyed.singleton source must be a scalar projection.');
-  if (typeof keyOf !== 'function')
-    throw new TypeError('derive.keyed.singleton requires a key selector.');
+  keyOf: (value: V) => K,
+  equality?: Equality<V>
+): KeyedProjection<K, V>;
+function createKeyedSingleton<const D extends ProjectionDependencies, K extends string, V>(
+  dependencies: D,
+  computeEntry: (values: ProjectionValues<D>) => Synchronous<readonly [K, V] | undefined>,
+  equality?: Equality<V>
+): KeyedProjection<K, V>;
+function createKeyedSingleton<const D extends ProjectionDependencies, K extends string, V>(
+  sourceOrDependencies: Projection<V | undefined> | D,
+  compute:
+    ((value: V) => K) | ((values: ProjectionValues<D>) => Synchronous<readonly [K, V] | undefined>),
+  equality?: Equality<V>
+): KeyedProjection<K, V> {
+  const name = 'derive.keyed.singleton';
+  const selection = isProjection(sourceOrDependencies)
+    ? {
+        kind: 'scalar' as const,
+        source: sourceOrDependencies,
+        keyOf: compute as (value: V) => K,
+      }
+    : {
+        kind: 'named' as const,
+        compiled: compileProjectionDependencies(sourceOrDependencies, name),
+        computeEntry: compute as (
+          values: ProjectionValues<D>
+        ) => Synchronous<readonly [K, V] | undefined>,
+      };
+  if (selection.kind === 'scalar' && outputKind(selection.source) !== 'value')
+    throw new TypeError(`${name} source must be a scalar projection.`);
+  if (typeof compute !== 'function')
+    throw new TypeError(
+      `${name} requires a ${selection.kind === 'scalar' ? 'key selector' : 'compute callback'}.`
+    );
+  const outputEquality = assertEquality(equality, name);
   const [projection] = defineProcessor({
-    dependencies: [source],
-    outputs: [{ kind: 'collection', equality: equality as Equality<unknown> }],
+    dependencies: selection.kind === 'named' ? selection.compiled.projections : [selection.source],
+    outputs: [{ kind: 'collection', equality: outputEquality as Equality<unknown> }],
     create: () => ({
       evaluate: evaluation => {
-        const scalar = evaluation.sources[0];
         const output = evaluation.outputs[0];
-        if (scalar.kind !== 'value' || output.kind !== 'collection')
-          throw new Error('derive.keyed.singleton resolved invalid input/output kinds.');
-        const previous = output.previous.ids();
-        if (scalar.value === undefined) {
-          for (const key of previous) output.output.remove(key);
-          return;
+        if (output.kind !== 'collection') throw new Error(`${name} requires a collection output.`);
+        let key: K | undefined;
+        let value: unknown;
+        if (selection.kind === 'named') {
+          const entry = selection.computeEntry(
+            snapshotProjectionValues<D>(selection.compiled.names, evaluation.sources)
+          );
+          assertSynchronous(entry);
+          if (entry !== undefined) {
+            assertKeyedEntry(entry, name);
+            key = entry[0];
+            value = entry[1];
+          }
+        } else {
+          const scalar = evaluation.sources[0];
+          if (scalar?.kind !== 'value') throw new Error(`${name} resolved a non-scalar input.`);
+          value = scalar.value;
+          if (value !== undefined) {
+            key = selection.keyOf(value as V);
+            assertSynchronous(key);
+            if (typeof key !== 'string')
+              throw new TypeError(`${name} key selector must return a string.`);
+          }
         }
-        const key = keyOf(scalar.value as V);
-        assertSynchronous(key);
-        if (typeof key !== 'string')
-          throw new TypeError('derive.keyed.singleton key selector must return a string.');
-        for (const previousKey of previous)
-          if (previousKey !== key) output.output.remove(previousKey);
-        output.output.set(key, scalar.value as V);
-        if (previous.length !== 1 || previous[0] !== key) output.output.order([key]);
+
+        // At most one member: the output owner derives formal order from membership.
+        const previousKey = output.previous.ids()[0];
+        if (previousKey !== undefined && previousKey !== key) output.output.remove(previousKey);
+        if (key !== undefined) output.output.set(key, value);
       },
     }),
-    name: 'derive.keyed.singleton',
+    name,
   });
   return projection as KeyedProjection<K, V>;
-};
+}
 
 export { createKeyedFrom, createKeyedFromEntries, createKeyedMerge, createKeyedSingleton };

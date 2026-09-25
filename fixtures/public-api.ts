@@ -457,3 +457,122 @@ void [
   invalidObjectIsValue,
   annotatedPreview,
 ];
+
+const singletonPreview = derive.keyed.singleton(
+  { preview: previewInput },
+  ({ preview }) => (preview === undefined ? undefined : ['preview', preview]),
+  equalPreview
+);
+const singletonSelection = derive.keyed.singleton(
+  { mode },
+  ({ mode }) => {
+    if (mode === 'compact') return undefined;
+    if (Math.random()) return ['preview', { kind: 'cell' as const, cellId: 'a' }];
+    return ['preview', { kind: 'range' as const, ids: ['a'] }];
+  },
+  equalPreview
+);
+const singletonPreviewValue: PreviewValue | undefined = runtime
+  .read(singletonPreview)
+  .get('preview');
+const singletonSelectionValue: PreviewValue | undefined = runtime
+  .read(singletonSelection)
+  .get('preview');
+const singletonItem = runtime.items(singletonPreview).get('preview').current();
+if (singletonItem?.kind === 'cell') {
+  const id: string = singletonItem.cellId;
+  // @ts-expect-error inferred union must not degrade to any
+  singletonItem.ids;
+  void id;
+}
+const brandedSingleton = derive.keyed.singleton(
+  { id: input<RowId | undefined>(undefined), preview: previewInput },
+  ({ id, preview }) => (id === undefined || preview === undefined ? undefined : [id, preview]),
+  equalPreview
+);
+const brandedSingletonCheck: KeyedProjection<RowId, PreviewValue> = brandedSingleton;
+const optionalSingleton = derive.keyed.singleton(
+  { mode, preview: previewInput },
+  ({ mode, preview }) => (mode === 'compact' ? undefined : ['preview', preview]),
+  (left: PreviewValue | undefined, right: PreviewValue | undefined) => left?.kind === right?.kind
+);
+const optionalSingletonCheck: KeyedProjection<string, PreviewValue | undefined> = optionalSingleton;
+const inlineSingleton = derive.keyed.singleton(
+  { mode },
+  ({ mode }) => (mode === 'compact' ? undefined : ['value', { n: 1 }]),
+  (left, right) => left.n === right.n
+);
+const inlineSingletonValue: number | undefined = runtime.read(inlineSingleton).get('value')?.n;
+const objectIsSingleton = derive.keyed.singleton(
+  { mode },
+  ({ mode }) => (mode === 'compact' ? undefined : ['count', 1]),
+  Object.is
+);
+const unknownEqualitySingleton = derive.keyed.singleton(
+  { mode },
+  ({ mode }) => (mode === 'compact' ? undefined : ['count', 1]),
+  broadEntryEquality
+);
+const singletonNumber: number | undefined = runtime.read(objectIsSingleton).get('count');
+const unknownEqualityNumber: number | undefined = runtime
+  .read(unknownEqualitySingleton)
+  .get('count');
+// @ts-expect-error Object.is must not widen output to any
+const invalidSingletonValue: string = runtime.read(objectIsSingleton).get('count');
+const emptySingleton = derive.keyed.singleton({}, () => undefined);
+const undefinedSingleton = derive.keyed.singleton({}, () => ['present', undefined]);
+const undefinedSingletonCheck: KeyedProjection<'present', undefined> = undefinedSingleton;
+const scalarConstantSingleton = derive.keyed.singleton(optionalRow, () => 'only');
+const scalarConstantCheck: KeyedProjection<
+  'only',
+  { readonly id: string; readonly value: number }
+> = scalarConstantSingleton;
+const readonlySingleton = derive.keyed.singleton({ mode }, values => {
+  // @ts-expect-error named dependency values are readonly
+  values.mode = 'full';
+  return ['mode', values.mode] as const;
+});
+// @ts-expect-error callback must be synchronous
+derive.keyed.singleton({ mode }, async () => ['a', 1] as const);
+// @ts-expect-error callback cannot return a promise in one branch
+derive.keyed.singleton({ mode }, ({ mode }) =>
+  mode === 'compact' ? undefined : Promise.resolve(['a', 1] as const)
+);
+// @ts-expect-error scalar form still requires a key selector, not an entry computation
+derive.keyed.singleton(mode, value => ['a', value]);
+// @ts-expect-error scalar key selectors must also be synchronous
+derive.keyed.singleton(mode, async () => 'a');
+// @ts-expect-error named form requires an entry, not a key selector
+derive.keyed.singleton({ mode }, () => 'a');
+// @ts-expect-error dependencies must be projections
+derive.keyed.singleton({ mode: 'compact' }, () => ['a', 1]);
+// @ts-expect-error driver-relative dependency specs are not supported
+derive.keyed.singleton({ rows: { source: rows } }, () => ['a', 1]);
+// @ts-expect-error empty membership is undefined, not an empty tuple
+derive.keyed.singleton({}, () => []);
+// @ts-expect-error entry must have exactly two fields
+derive.keyed.singleton({}, () => ['a', 1, 2]);
+// @ts-expect-error key must be a string
+derive.keyed.singleton({}, () => [1, 'value']);
+// @ts-expect-error equality must support all emitted variants
+derive.keyed.singleton(
+  { preview: previewInput },
+  ({ preview }) => (preview ? ['a', preview] : undefined),
+  equalCell
+);
+// @ts-expect-error incompatible equality is rejected
+derive.keyed.singleton({}, () => ['a', 1], incompatibleEntryEquality);
+void [
+  singletonPreviewValue,
+  singletonSelectionValue,
+  brandedSingletonCheck,
+  optionalSingletonCheck,
+  inlineSingletonValue,
+  singletonNumber,
+  unknownEqualityNumber,
+  invalidSingletonValue,
+  emptySingleton,
+  undefinedSingletonCheck,
+  scalarConstantCheck,
+  readonlySingleton,
+];

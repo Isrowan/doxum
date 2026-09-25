@@ -20,6 +20,18 @@ const failures = forbidden
   .map(([label]) => `generated consumer declaration references ${label}`);
 
 const required = [
+  [
+    'singleton constant tuple inference',
+    'portableConstantSingleton: import("doxum").KeyedProjection<"constant", 1>;',
+  ],
+  [
+    'scalar singleton overload',
+    'portableScalarSingleton: import("doxum").KeyedProjection<"optional", {',
+  ],
+  [
+    'singleton union inference with typed equality',
+    'portableSingletonPreview: import("doxum").KeyedProjection<"preview", PortablePreview>;',
+  ],
   ['fromEntries result', 'portableFromEntries: import("doxum").KeyedProjection<string, number>;'],
   [
     'fromEntries union inference with typed equality',

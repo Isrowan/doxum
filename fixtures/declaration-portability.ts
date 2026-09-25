@@ -181,3 +181,11 @@ export const portableInferredPreview = derive.keyed.fromEntries(
   ({ preview }) => (preview ? [['preview', preview]] : []),
   portablePreviewEquality
 );
+
+export const portableSingletonPreview = derive.keyed.singleton(
+  { preview: portablePreviewInput },
+  ({ preview }) => (preview === undefined ? undefined : ['preview', preview]),
+  portablePreviewEquality
+);
+export const portableScalarSingleton = derive.keyed.singleton(portableOptional, () => 'optional');
+export const portableConstantSingleton = derive.keyed.singleton({}, () => ['constant', 1]);

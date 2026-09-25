@@ -337,13 +337,24 @@ Output is keyed by section id; each value is ordered source record ids. Use this
 
 Group keys follow first appearance in the source's formal order. If one source record returns several groups, those groups use the selector's returned order for that record when they first appear together.
 
-## Optional scalar to keyed singleton
+## Zero or one keyed member
 
 ```ts
 const activeRecordCollection = derive.keyed.singleton(activeRecord, record => record.id);
+
+const preview = derive.keyed.singleton(
+  { record: activeRecord, enabled: previewEnabled },
+  ({ record, enabled }) => (!enabled || record === undefined ? undefined : [record.id, record])
+);
 ```
 
-`undefined` becomes empty membership; present value becomes one keyed member.
+Scalar form turns an undefined source into empty membership. Named form returns a
+tuple for a present member or `undefined` for no member; `[key, undefined]` is present.
+Use the named form when several projections determine the member. Pass a value equality
+callback when constructing equivalent objects; it preserves same-key value references
+but cannot suppress a key change. For a precise dynamic input, obtain `activeRecord`
+with `derive.keyed.get(records, activeId)`. Do not wrap dependencies in an intermediate
+scalar derive or use `fromEntries` solely to wrap one tuple in an array.
 
 ## Stable keyed item Readables
 

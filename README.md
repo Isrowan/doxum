@@ -362,6 +362,20 @@ and group keys are ordered by the earliest current source member that belongs to
 If several groups first appear on the same source member, they follow that member's
 selector-result order. Source membership/order changes may therefore reorder group keys.
 `singleton` converts an optional scalar projection into a zero-or-one keyed projection.
+It also computes an optional member directly from named dependencies:
+
+```ts
+const preview = derive.keyed.singleton(
+  { record: activeRecord, enabled: previewEnabled },
+  ({ record, enabled }) => (!enabled || record === undefined ? undefined : [record.id, record])
+);
+```
+
+The named form returns one readonly `[key, value]` tuple or `undefined` for no member.
+`[key, undefined]` is a present member. Optional equality compares values under the
+same key and preserves equivalent references; it cannot suppress a key change.
+Use `singleton` for zero or one result, and `fromEntries` for a complete result with
+arbitrary membership. See [Singleton](docs/projections.md#zero-or-one-keyed-member).
 
 All keyed projection producers use the public `KeyedProjection<K,V>` handle, including
 collection `observe`, `derive.keyed`, `incremental.collection`, and collection leaves

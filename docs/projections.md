@@ -27,6 +27,7 @@ Public declaration primitives are:
 - `derive.keyed(...)` — key-preserving per-entry derivation and keyed joins.
 - `derive.keyed.from(...)` — ordered scalar/static collection to keyed projection.
 - `derive.keyed.fromEntries(...)` — named projection dependencies to a complete keyed result.
+- `derive.keyed.singleton(...)` — optional scalar or named dependencies to zero or one member.
 - `derive.keyed.merge(...)` — multiple keyed projections to one union projection.
 - `derive.keyed.flatMap(...)` — ordered keyed expansion with globally unique child keys.
 
@@ -65,7 +66,50 @@ const entries = derive.keyed.fromEntries({ record, settings }, ({ record, settin
 );
 ```
 
-Use `from` for existing value arrays plus `keyOf`, `fromEntries` to compute a complete keyed result from named inputs, and `flatMap` to recompute only affected parents of a keyed driver. Driver-relative `{ source, key }` / `{ source, keys }` specs do not belong in `fromEntries`. Public Runtime reads inside the callback remain forbidden. Batch reads may advance the computation more than once; notifications and item lifecycle endings still use the final notification boundary.
+Use `from` for existing value arrays plus `keyOf`, `singleton` for zero or one computed member, `fromEntries` to compute a complete keyed result from named inputs, and `flatMap` to recompute only affected parents of a keyed driver. Driver-relative `{ source, key }` / `{ source, keys }` specs do not belong in `fromEntries`. Public Runtime reads inside the callback remain forbidden. Batch reads may advance the computation more than once; notifications and item lifecycle endings still use the final notification boundary.
+
+### Zero or one keyed member
+
+```ts
+const activeCollection = derive.keyed.singleton(activeRecord, record => record.id);
+
+const preview = derive.keyed.singleton(
+  { record: activeRecord, enabled: previewEnabled },
+  ({ record, enabled }) => (!enabled || record === undefined ? undefined : [record.id, record])
+);
+
+const fixed = derive.keyed.singleton({}, () => ['fixed', 1]);
+```
+
+`singleton(source, keyOf, equality?)` accepts a scalar `Projection<V | undefined>`.
+An undefined source is empty and does not call `keyOf`; otherwise the source value is
+retained as the only member's value. `singleton(dependencies, computeEntry, equality?)`
+accepts the same named projection dependencies as `derive`, including `{}`. The
+synchronous callback receives readonly named current values and returns a readonly
+`[K, V]` tuple or `undefined`. Keys must be strings. `undefined` means empty membership;
+`[key, undefined]` means a present member. `null`, `false`, `[]`, malformed tuples and
+thenables are errors. Formal order is empty or the single returned key.
+
+Equality defaults to `Object.is`, compares values only under the same key, and retains
+equivalent references. It cannot suppress membership: changing the key removes the old
+member and adds the new one even when their values are equal. Callback, key/tuple
+validation and equality failures install no partial output and follow normal processor
+recovery. Definitions are lazy, reusable across runtimes and compatible with scopes.
+Current reads may evaluate multiple times inside a batch; notifications and
+`runtime.items()` membership endings still use the final notification boundary.
+
+The named form captures dependencies at definition time. Keyed dependencies are whole
+readonly map snapshots; use `derive.keyed.get(records, activeId)` as a named input for
+precise dynamic lookup. Driver-relative dependency specs and public Runtime reads
+inside the callback are not supported. One evaluation computes the whole optional
+member; singleton's own membership reconciliation is O(1), in addition to callback and
+dependency snapshot costs. Both forms use one processor and one collection output.
+
+Typed equality participates in value inference, including optional-result branches and
+union values, and must accept every emitted variant. Inline tuple results are inferred
+without an output annotation. Normal TypeScript literal widening still applies to
+constructed value objects; use a declared value type or `as const` for discriminants
+when needed. Use `fromEntries` when the result can contain more than one member.
 
 ### One-to-many keyed expansion
 
@@ -181,7 +225,8 @@ entry may belong to one or several groups and bucket members follow source order
 keys are ranked by the earliest current source member that belongs to them; when several
 groups first appear on the same source member, they follow that member's selector-result
 order. Source membership/order changes may therefore reorder group keys. `singleton`
-converts an optional scalar projection to a zero-or-one keyed projection.
+converts an optional scalar projection or computes a member from named dependencies;
+see [Zero or one keyed member](#zero-or-one-keyed-member).
 
 Dynamic keyed dependencies declare how one output key selects a key from another
 keyed projection:

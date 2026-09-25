@@ -280,9 +280,41 @@ Use this for domain-neutral reverse indexing such as record→sections, node→e
 
 ```ts
 const activeEntity = derive.keyed.singleton(activeRecord, record => record.id);
+
+const preview = derive.keyed.singleton(
+  { record: activeRecord, enabled: previewEnabled },
+  ({ record, enabled }) => (!enabled || record === undefined ? undefined : [record.id, record])
+);
+
+const fixed = derive.keyed.singleton({}, () => ['fixed', 1]);
 ```
 
-Input is `Projection<V | undefined>`. `undefined` becomes empty membership; a present value becomes exactly one keyed entry.
+Scalar form accepts `Projection<V | undefined>` and `keyOf(value)`. Undefined sources
+are empty and skip `keyOf`; present values are preserved as one member. Named form
+accepts ordinary `derive` dependencies, including `{}`, and a synchronous callback
+returning a readonly `[K, V]` tuple or `undefined`. `undefined` means no member;
+`[key, undefined]` is a present member. Keys must be strings. `null`, `false`, `[]`,
+malformed tuples and thenables are errors. Formal order is empty or the sole key.
+
+Optional equality defaults to `Object.is` and compares same-key values, retaining equal
+references. Changing the key removes the old member and adds the new one regardless of
+value equality. Typed equality participates in inference and must accept every emitted
+variant; inline tuples, optional branches and union values do not require an output
+projection annotation. Use a declared value type or `as const` when object discriminants
+would otherwise widen under normal TypeScript rules.
+
+Dependencies are captured at definition time; callback values are readonly. Keyed named
+inputs are whole durable map snapshots. For a precise active-entry dependency, compose
+`derive.keyed.get(records, activeId)` first; driver-relative specs do not belong here.
+Public Runtime reads in callbacks remain forbidden. Callback, validation and equality
+failures install no partial output and follow normal processor recovery. Definitions
+are lazy, isolated per runtime and compatible with scopes. Current reads can evaluate
+multiple times in a batch; item lifecycles end only at the notification boundary.
+
+Both forms use one processor and one collection output. Singleton's member coordination
+is O(1), plus callback and dependency snapshot costs. Use this primitive for optional
+previews, selections and active members instead of manually building zero-or-one arrays
+or staging collection patches. Use `fromEntries` when more than one member is possible.
 
 ## Runtime read/select
 
