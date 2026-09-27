@@ -33,10 +33,10 @@ describe('projection collection algorithms', () => {
       const key = keys[Math.floor(random() * keys.length)];
       if (random() < 0.7) {
         const value = Math.floor(random() * 100_000);
-        index = index.set(key, value);
+        index = index.apply(new Map([[key, { present: true, value }]]));
         model.set(key, value);
       } else {
-        index = index.remove(key);
+        index = index.apply(new Map([[key, { present: false }]]));
         model.delete(key);
       }
       for (const candidate of keys) {

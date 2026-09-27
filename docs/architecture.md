@@ -502,18 +502,39 @@ with its own revision/listeners, and collection leaves additionally publish
 then only consumers of changed leaves are enqueued. The namespace is not a graph
 node, producer, runtime, scheduler, transaction or event bus; every leaf references
 one output of the same processor producer, which is materialized once on first use.
-Published collection snapshots share an internal persistent keyed index. A
-value-only update path-copies only the affected key paths and reuses the immutable
-id sequence; membership or order changes create a new id sequence because order is
-observable. Older `ReadonlyMap` views therefore stay stable without copying every
-unchanged value on each revision.
+Published collection snapshots share an internal persistent AVL keyed index. Each
+storage install applies the complete accepted entry map once. Multi-key batches sort
+only the changed keys and partition that array by old tree keys without recursive
+array copies or per-entry operation wrappers. Unaffected subtrees are reused; pure
+value updates allocate each node in the affected search-path union exactly once and
+reuse the immutable id sequence. Single-key batches bypass sorting. Empty/no-op
+batches preserve the index identity, and order-only installs allocate no index nodes.
+Insertion/removal use height-aware join/concat: whole batches can change child heights
+by more than one, so single-edit AVL repair alone is insufficient. New subtrees are
+built in linear time from sorted accepted additions, skipping absent-key removals.
+Old nodes remain frozen and reachable snapshots are never edited in place. Membership
+or order changes create a new id sequence because order is observable. Internal key
+sorting never defines formal collection order.
+
+The batch unit is one storage install, not the outer Runtime batch: demanded reads
+may advance several durable versions before notification. Sorting costs O(K log K)
+time and O(K) temporary key references; pure value-update node allocation is the
+search-path union size, not universally O(K). Structural edits additionally perform
+join/balance work. Reset retains the full-build path, and no arbitrary change-count
+threshold switches ordinary updates to a full collection scan. Older `ReadonlyMap`
+views therefore stay stable without copying every unchanged value on each revision.
 Projection implementation ownership is deliberately split by semantic layer:
 `output/value.ts` and `output/collection.ts` each own one output's staged/current
 state, per-consumer changes, notification baseline, revision, listeners and graph-facing capability. Source boundaries and
 processors use that same output object rather than constructing mirror output records;
 the scheduler alone attaches and detaches processor dependency edges.
 `collection/state.ts` owns current keyed storage and version snapshots, shared by collection input acceptance and collection output publication. The two instances represent accepted source state and computed output state. A persistent index is created only when a durable read is requested; accepted input storage therefore avoids maintaining an unused snapshot index. Storage installs already validated member/order changes and knows nothing of equality, graph revisions or notifications.
-`collection/index.ts` owns the immutable keyed lookup; `collection/change.ts` owns
+`collection/entry.ts` owns the shared presence/value representation consumed by storage,
+index installation and net transition accumulation. `collection/index.ts` owns immutable
+lookup, batch merge and AVL balancing; it consumes accepted intents without calling
+user equality or handling graph/order/lifecycle semantics. The current Map remains the
+hot lookup owner; the index is its durable version representation, created lazily.
+`collection/change.ts` owns
 the exact added/updated/removed/common-order algebra; and `collection/view.ts` owns
 `CollectionRead`/`ReadonlyMap` boundary views, including owner checks on structural access and iterator steps. Collection output sealing retains equivalent current/baseline entry references during reset as well as normal updates. `source/boundary.ts` owns the common
 source prepare/publish/fault lifecycle (collection recovery reconciles the full source after a failed interval), while `source/document.ts` owns document
@@ -571,9 +592,17 @@ node snapshot references are retained. An aggregate tree still exposes a plain
 references, but it does not rebuild O(N) node structures. `profile.copy.treeNodes`
 measures actual detached tree-node copies. These costs are deliberate and
 instrumented, not hidden behind a constant-time promise.
-Projection collection profiles additionally expose `collectionIndex.nodes`,
-`collectionIndex.builds` and `collectionIndex.builtItems`, separating persistent
-index path-copy work from source mapping and ID scans.
+Projection collection profiles expose `collectionIndex.nodes`, `builds` and
+`builtItems` for actual node allocations and full builds; `batches` counts nonempty
+index applications, `sortedKeys` counts keys submitted to batch sorting, and
+`visitedNodes` counts nonempty node visits in edit/partition and join/concat repair
+(including repeat structural visits, excluding lookups and newly built subtrees).
+`collection-index.profile.ts` separates these costs from selector calls and ID scans
+across 10,000/100,000 members, single/sparse/dense edits, clustered/distributed updates,
+insertions, deletions, mixed batches, no-ops and five-layer keyed propagation.
+`collection-index.bench.ts` measures the same index workload families without profile
+instrumentation enabled. Do not infer elapsed-time improvements from allocation counts
+alone or combine initial materialization costs with steady-state updates.
 Selector dependency de-duplication first buckets targets by the canonical target
 address/kind identity owned by `impact/target.ts`, then applies exact target equality
 only inside a bucket. This preserves schema/tree/membership equality semantics while

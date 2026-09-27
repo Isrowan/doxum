@@ -1,4 +1,5 @@
-import { createCollectionState, type CollectionEntry } from '@/projection/collection/state';
+import { createCollectionState } from '@/projection/collection/state';
+import type { CollectionEntry } from '@/projection/collection/entry';
 import type { CollectionRead } from '@/projection/contract';
 import type { CollectionInputDraft, SourceDefinition } from '@/projection/definition';
 import { assertScope, assertSynchronous, type Scheduler } from '@/projection/graph/scheduler';

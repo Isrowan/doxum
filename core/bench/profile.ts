@@ -1,3 +1,4 @@
+import { profileCollectionIndex } from './collection-index.profile';
 import { profileKeyedExpansion } from './projection-flat-map.profile';
 import { profileCurrentReads } from './projection-current.profile';
 import { profileKeyedSelection } from './projection-selection.profile';
@@ -206,3 +207,5 @@ profileCurrentReads();
 profileKeyedSelection();
 profileKeyRelation();
 profileFromEntries();
+
+profileCollectionIndex();

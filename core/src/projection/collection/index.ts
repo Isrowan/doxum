@@ -1,4 +1,5 @@
 import { profile } from '@/profile';
+import type { CollectionEntry } from './entry';
 
 type IndexNode<K extends string, V> = {
   readonly key: K;
@@ -27,81 +28,160 @@ const node = <K extends string, V>(
   });
 };
 
-const rotateLeft = <K extends string, V>(current: IndexNode<K, V>): IndexNode<K, V> => {
-  const right = current.right!;
-  return node(
-    right.key,
-    right.value,
-    node(current.key, current.value, current.left, right.left),
-    right.right
-  );
-};
-
-const rotateRight = <K extends string, V>(current: IndexNode<K, V>): IndexNode<K, V> => {
-  const left = current.left!;
-  return node(
-    left.key,
-    left.value,
-    left.left,
-    node(current.key, current.value, left.right, current.right)
-  );
-};
-
-const rebalance = <K extends string, V>(current: IndexNode<K, V>): IndexNode<K, V> => {
-  const balance = height(current.left) - height(current.right);
-  if (balance > 1) {
-    if (height(current.left!.left) < height(current.left!.right))
-      return rotateRight(
-        node(current.key, current.value, rotateLeft(current.left!), current.right)
-      );
-    return rotateRight(current);
+/** Local repair after a join descent or a single deletion (height difference at most two). */
+const balance = <K extends string, V>(
+  key: K,
+  value: V,
+  left?: IndexNode<K, V>,
+  right?: IndexNode<K, V>
+): IndexNode<K, V> => {
+  if (height(left) > height(right) + 1) {
+    const heavy = left!;
+    if (height(heavy.left) >= height(heavy.right))
+      return node(heavy.key, heavy.value, heavy.left, node(key, value, heavy.right, right));
+    const middle = heavy.right!;
+    return node(
+      middle.key,
+      middle.value,
+      node(heavy.key, heavy.value, heavy.left, middle.left),
+      node(key, value, middle.right, right)
+    );
   }
-  if (balance < -1) {
-    if (height(current.right!.right) < height(current.right!.left))
-      return rotateLeft(
-        node(current.key, current.value, current.left, rotateRight(current.right!))
-      );
-    return rotateLeft(current);
+  if (height(right) > height(left) + 1) {
+    const heavy = right!;
+    if (height(heavy.right) >= height(heavy.left))
+      return node(heavy.key, heavy.value, node(key, value, left, heavy.left), heavy.right);
+    const middle = heavy.left!;
+    return node(
+      middle.key,
+      middle.value,
+      node(key, value, left, middle.left),
+      node(heavy.key, heavy.value, middle.right, heavy.right)
+    );
   }
-  return current;
+  return node(key, value, left, right);
 };
 
-const setNode = <K extends string, V>(
+/** All left keys precede key, all right keys follow it; heights may differ arbitrarily. */
+const join = <K extends string, V>(
+  key: K,
+  value: V,
+  left?: IndexNode<K, V>,
+  right?: IndexNode<K, V>
+): IndexNode<K, V> => {
+  if (height(left) > height(right) + 1) {
+    profile.collectionIndex.visit();
+    return balance(left!.key, left!.value, left!.left, join(key, value, left!.right, right));
+  }
+  if (height(right) > height(left) + 1) {
+    profile.collectionIndex.visit();
+    return balance(right!.key, right!.value, join(key, value, left, right!.left), right!.right);
+  }
+  return node(key, value, left, right);
+};
+
+const removeMin = <K extends string, V>(current: IndexNode<K, V>): IndexNode<K, V> | undefined => {
+  profile.collectionIndex.visit();
+  if (!current.left) return current.right;
+  return balance(current.key, current.value, removeMin(current.left), current.right);
+};
+
+const concat = <K extends string, V>(
+  left: IndexNode<K, V> | undefined,
+  right: IndexNode<K, V> | undefined
+): IndexNode<K, V> | undefined => {
+  if (!left) return right;
+  if (!right) return left;
+  let first = right;
+  while (first.left) {
+    profile.collectionIndex.visit();
+    first = first.left;
+  }
+  return join(first.key, first.value, left, removeMin(right));
+};
+
+const replace = <K extends string, V>(
+  current: IndexNode<K, V>,
+  entry: CollectionEntry<V> | undefined,
+  left: IndexNode<K, V> | undefined,
+  right: IndexNode<K, V> | undefined
+): IndexNode<K, V> | undefined => {
+  if (entry && !entry.present) return concat(left, right);
+  const value = entry ? entry.value : current.value;
+  if (left === current.left && right === current.right && Object.is(value, current.value))
+    return current;
+  return join(current.key, value, left, right);
+};
+
+const edit = <K extends string, V>(
   current: IndexNode<K, V> | undefined,
   key: K,
-  value: V
-): IndexNode<K, V> => {
-  if (!current) return node(key, value);
-  if (key === current.key) return node(key, value, current.left, current.right);
-  if (key < current.key)
-    return rebalance(
-      node(current.key, current.value, setNode(current.left, key, value), current.right)
-    );
-  return rebalance(
-    node(current.key, current.value, current.left, setNode(current.right, key, value))
-  );
+  entry: CollectionEntry<V>
+): IndexNode<K, V> | undefined => {
+  if (!current) return entry.present ? node(key, entry.value) : undefined;
+  profile.collectionIndex.visit();
+  if (key === current.key) return replace(current, entry, current.left, current.right);
+  // A single edit changes subtree height by at most one; reuse local repair
+  // without paying for a general height-aware join on every search ancestor.
+  if (key < current.key) {
+    const left = edit(current.left, key, entry);
+    return left === current.left
+      ? current
+      : balance(current.key, current.value, left, current.right);
+  }
+  const right = edit(current.right, key, entry);
+  return right === current.right
+    ? current
+    : balance(current.key, current.value, current.left, right);
 };
 
-const minNode = <K extends string, V>(current: IndexNode<K, V>): IndexNode<K, V> =>
-  current.left ? minNode(current.left) : current;
-
-const removeNode = <K extends string, V>(
-  current: IndexNode<K, V> | undefined,
-  key: K
+/** Builds a new subtree in linear time, ignoring removals of absent keys. */
+const buildChanges = <K extends string, V>(
+  keys: readonly K[],
+  changes: ReadonlyMap<K, CollectionEntry<V>>,
+  start: number,
+  end: number
 ): IndexNode<K, V> | undefined => {
-  if (!current) return undefined;
-  if (key < current.key)
-    return rebalance(
-      node(current.key, current.value, removeNode(current.left, key), current.right)
-    );
-  if (key > current.key)
-    return rebalance(
-      node(current.key, current.value, current.left, removeNode(current.right, key))
-    );
-  if (!current.left) return current.right;
-  if (!current.right) return current.left;
-  const next = minNode(current.right);
-  return rebalance(node(next.key, next.value, current.left, removeNode(current.right, next.key)));
+  let count = 0;
+  for (let i = start; i < end; i++) if (changes.get(keys[i])!.present) count++;
+  let cursor = start;
+  const build = (size: number): IndexNode<K, V> | undefined => {
+    if (!size) return undefined;
+    const leftSize = size >> 1;
+    const left = build(leftSize);
+    let key: K;
+    let entry: CollectionEntry<V>;
+    do {
+      key = keys[cursor++];
+      entry = changes.get(key)!;
+    } while (!entry.present);
+    return node(key, entry.value, left, build(size - leftSize - 1));
+  };
+  return build(count);
+};
+
+const applyChanges = <K extends string, V>(
+  current: IndexNode<K, V> | undefined,
+  keys: readonly K[],
+  changes: ReadonlyMap<K, CollectionEntry<V>>,
+  start: number,
+  end: number
+): IndexNode<K, V> | undefined => {
+  if (start === end) return current;
+  if (end - start === 1) return edit(current, keys[start], changes.get(keys[start])!);
+  if (!current) return buildChanges(keys, changes, start, end);
+  profile.collectionIndex.visit();
+  let low = start;
+  let high = end;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (keys[middle] < current.key) low = middle + 1;
+    else high = middle;
+  }
+  const matched = low < end && keys[low] === current.key;
+  const left = applyChanges(current.left, keys, changes, start, low);
+  const right = applyChanges(current.right, keys, changes, matched ? low + 1 : low, end);
+  return replace(current, matched ? changes.get(current.key)! : undefined, left, right);
 };
 
 const fromSorted = <K extends string, V>(
@@ -110,12 +190,12 @@ const fromSorted = <K extends string, V>(
   end = entries.length
 ): IndexNode<K, V> | undefined => {
   if (start >= end) return undefined;
-  const middle = (start + end) >> 1;
+  const middle = (start + end) >>> 1;
   const [key, value] = entries[middle];
   return node(key, value, fromSorted(entries, start, middle), fromSorted(entries, middle + 1, end));
 };
 
-/** Immutable keyed lookup used to keep published collection snapshots durable across revisions. */
+/** Immutable keyed lookup used to keep collection snapshots durable across revisions. */
 export class PersistentKeyedIndex<K extends string, V> {
   private constructor(private readonly root?: IndexNode<K, V>) {}
 
@@ -123,6 +203,7 @@ export class PersistentKeyedIndex<K extends string, V> {
     return new PersistentKeyedIndex<K, V>();
   }
 
+  /** The input must contain unique keys. Formal collection order is owned separately. */
   static from<K extends string, V>(entries: Iterable<readonly [K, V]>): PersistentKeyedIndex<K, V> {
     const sorted = [...entries].sort(([left], [right]) =>
       left < right ? -1 : left > right ? 1 : 0
@@ -149,11 +230,18 @@ export class PersistentKeyedIndex<K extends string, V> {
     return false;
   }
 
-  set(key: K, value: V): PersistentKeyedIndex<K, V> {
-    return new PersistentKeyedIndex(setNode(this.root, key, value));
-  }
-
-  remove(key: K): PersistentKeyedIndex<K, V> {
-    return new PersistentKeyedIndex(removeNode(this.root, key));
+  /** Applies accepted final entry intents together; never calls user equality or changes old roots. */
+  apply(changes: ReadonlyMap<K, CollectionEntry<V>>): PersistentKeyedIndex<K, V> {
+    if (!changes.size) return this;
+    profile.collectionIndex.batch(changes.size > 1 ? changes.size : 0);
+    let root: IndexNode<K, V> | undefined;
+    if (changes.size === 1) {
+      const [key, entry] = changes.entries().next().value!;
+      root = edit(this.root, key, entry);
+    } else {
+      const keys = [...changes.keys()].sort();
+      root = applyChanges(this.root, keys, changes, 0, keys.length);
+    }
+    return root === this.root ? this : new PersistentKeyedIndex(root);
   }
 }

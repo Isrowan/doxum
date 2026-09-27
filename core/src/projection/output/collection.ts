@@ -1,7 +1,8 @@
 import { createCollectionChanges } from '@/projection/collection/changes';
 import { profile } from '@/profile';
 import { createCollectionChange } from '@/projection/collection/change';
-import { createCollectionState, type CollectionEntry } from '@/projection/collection/state';
+import { createCollectionState } from '@/projection/collection/state';
+import type { CollectionEntry } from '@/projection/collection/entry';
 import { sameArray, snapshotArray } from '@/value/array';
 import type {
   CollectionChange,

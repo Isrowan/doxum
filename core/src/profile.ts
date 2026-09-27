@@ -42,7 +42,14 @@ const counters = () => ({
     diffSets: 0,
     diffKeys: 0,
   },
-  collectionIndex: { nodes: 0, builds: 0, builtItems: 0 },
+  collectionIndex: {
+    nodes: 0,
+    builds: 0,
+    builtItems: 0,
+    batches: 0,
+    sortedKeys: 0,
+    visitedNodes: 0,
+  },
   collectionView: { mappedItems: 0, idsScanned: 0, arraysCopied: 0 },
   materialized: { updated: 0, rebuilt: 0, notifications: 0 },
 });
@@ -125,6 +132,15 @@ export const profile = {
     },
   },
   collectionIndex: {
+    batch: (sortedKeys: number) => {
+      if (active) {
+        active.collectionIndex.batches++;
+        active.collectionIndex.sortedKeys += sortedKeys;
+      }
+    },
+    visit: () => {
+      if (active) active.collectionIndex.visitedNodes++;
+    },
     node: () => {
       if (active) active.collectionIndex.nodes++;
     },

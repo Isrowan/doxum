@@ -61,6 +61,16 @@ This file is maintainer-only. Application/library consumers should use [Public A
    initialization failure releases already-created projection resources and preserves the
    original error. Document dirty/pending state has one write owner; structural
    materialization only reads it.
+   Collection storage installs an accepted entry batch through one persistent index
+   application. The index owns AVL batch merge/balance; storage owns the current Map
+   and formal ids; output sealing owns equality and publication. Share untouched
+   subtrees and copy the affected path union once for pure value updates. Batch
+   structural changes require height-aware join/concat, not just single-edit repair.
+   Preserve lazy index creation, durable old snapshots, zero index work for pure
+   reorder, and per-install versions for demanded reads inside a Runtime batch.
+   Sorting changed keys is internal lookup work, never formal order. Count node
+   allocations and sorting separately from selector calls; this is not an O(delta)
+   guarantee for all collection maintenance.
 10. Local sync uses Web Lock leadership and contiguous durable sequence. Writes precede
     asynchronous persistence. Version 5 / format 3 rejects old databases without editing
     them. External replace and remote apply are prohibited while attached.

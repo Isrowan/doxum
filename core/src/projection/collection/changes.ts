@@ -1,6 +1,6 @@
 import type { CollectionChange } from '@/projection/contract';
 import { createCollectionChange } from './change';
-import type { CollectionEntry } from './state';
+import type { CollectionEntry } from './entry';
 
 type Transition<V> = { before: CollectionEntry<V>; after: CollectionEntry<V> };
 

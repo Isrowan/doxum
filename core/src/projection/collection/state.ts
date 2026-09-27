@@ -1,8 +1,6 @@
 import type { CollectionRead } from '@/projection/contract';
 import { PersistentKeyedIndex } from './index';
-
-export type CollectionEntry<V> =
-  { readonly present: true; readonly value: V } | { readonly present: false };
+import type { CollectionEntry } from './entry';
 
 export type CollectionState<K extends string, V> = {
   get(key: K): V | undefined;
@@ -54,11 +52,12 @@ export const createCollectionState = <K extends string, V>(
         for (const [key, entry] of staged) if (entry.present) values.set(key, entry.value);
         if (index) index = PersistentKeyedIndex.from(values);
       } else {
+        const nextIndex = index?.apply(staged);
         for (const [key, entry] of staged) {
-          if (index) index = entry.present ? index.set(key, entry.value) : index.remove(key);
           if (entry.present) values.set(key, entry.value);
           else values.delete(key);
         }
+        index = nextIndex;
       }
       ids = nextIds;
     },

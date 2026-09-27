@@ -13,7 +13,7 @@ describe('projection collection internals', () => {
   bench(
     'persistent index single set in 10000',
     () => {
-      index = index.set('key-5000', ++indexRevision);
+      index = index.apply(new Map([['key-5000', { present: true, value: ++indexRevision }]]));
       index.get('key-5000');
     },
     { iterations: 10, time: 100 }
