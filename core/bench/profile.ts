@@ -1,6 +1,7 @@
 import { profileKeyedExpansion } from './projection-flat-map.profile';
 import { profileCurrentReads } from './projection-current.profile';
 import { profileKeyedSelection } from './projection-selection.profile';
+import { profileKeyRelation } from './key-relation.profile';
 import { profileFromEntries } from './projection-from-entries.profile';
 import { performance } from 'node:perf_hooks';
 import {
@@ -203,4 +204,5 @@ for (const [name, edit] of [...edits, ['root-reset', undefined] as const]) {
 profileKeyedExpansion();
 profileCurrentReads();
 profileKeyedSelection();
+profileKeyRelation();
 profileFromEntries();

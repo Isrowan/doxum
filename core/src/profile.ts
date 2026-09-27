@@ -34,6 +34,14 @@ const counters = () => ({
   },
   impact: { affectsChecks: 0, indexes: 0 },
   dependency: { comparisons: 0, segmentsCompared: 0 },
+  keyRelation: {
+    attachedEdges: 0,
+    detachedEdges: 0,
+    createdBuckets: 0,
+    deletedBuckets: 0,
+    diffSets: 0,
+    diffKeys: 0,
+  },
   collectionIndex: { nodes: 0, builds: 0, builtItems: 0 },
   collectionView: { mappedItems: 0, idsScanned: 0, arraysCopied: 0 },
   materialized: { updated: 0, rebuilt: 0, notifications: 0 },
@@ -49,6 +57,9 @@ const freeze = <T extends object>(value: T): DeepReadonly<T> => {
   return Object.freeze(value) as DeepReadonly<T>;
 };
 export const profile = {
+  keyRelation: (key: keyof Counters['keyRelation'], amount = 1) => {
+    if (active) active.keyRelation[key] += amount;
+  },
   projection: (key: keyof Counters['projection'], amount = 1) => {
     if (active) active.projection[key] += amount;
   },

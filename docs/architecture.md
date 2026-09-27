@@ -351,6 +351,18 @@ cleanup collections.
 The `derive.keyed` family remains ordinary processor producers over the same collection
 output spine. `projection/keyed/relation.ts` owns the Runtime-local domain-neutral
 many-to-many relation shared by keyed dependency routing and `groupBy` membership.
+Callers validate unique string keys. Forward arrays are immutable ordered snapshots;
+reverse buckets are membership sets with no formal iteration order. `replace` trims
+equal prefixes/suffixes, uses reverse membership to identify retained edges, and writes
+only additions/removals. Reorder-only replacements still update forward order and return
+true. Append/truncate, single-key, all-retained and disjoint middles need no difference
+Set; general partial overlap uses one temporary Set for the next middle. `replaceOne`
+shares single-edge attach/detach rules and preserves intersections with prior plural
+bindings. No second persistent membership index or source-value cache is added.
+Sequence examination remains linear; only reverse writes scale with the edge difference.
+The profile records actual edge writes, reverse bucket allocations/deletions, and
+temporary difference-index sizes. Dependency validation/value snapshots and `groupBy`
+group recomputation have separate costs; relation replacement does not make them O(delta).
 `projection/keyed/dependency.ts` owns keyed dependency declaration validation/compilation,
 same-key `{ source }`, singular `{ source, key }`, and plural `{ source, keys }` resolution
 and dirty routing. Same-key dependencies compile to a dedicated identity relation and

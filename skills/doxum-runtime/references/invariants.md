@@ -41,7 +41,11 @@ This file is maintainer-only. Application/library consumers should use [Public A
    remains static. `derive.keyed` declares extra sources in one named dependency object;
    `{ source, key }` members bind one source key and `{ source, keys }` members bind an
    ordered duplicate-free set of source keys for each output key. The materialized Runtime owns those bindings and reverse indexes,
-   including bindings to currently missing source entries. Processors do not create graph
+   including bindings to currently missing source entries. `projection/keyed/relation.ts`
+   owns edge differences and ordered forward snapshots. Keep retained reverse buckets intact;
+   pure reorder changes forward order even with zero edge writes. Callers validate unique
+   string keys, and reverse iteration is not formal order. Sequence comparison and
+   dependency snapshots can still cost O(number of selected keys). Processors do not create graph
    dependencies through imperative Runtime reads. A scope adds lifecycle ownership only
    through `scope.own`; scoped definitions may depend on root definitions, while root and
    sibling scopes cannot depend on scoped definitions. Notification failures leave commits
