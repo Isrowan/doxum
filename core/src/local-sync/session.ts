@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import {
   installRuntimeWriteDriver,
   type RuntimeWriteDriverLease,
@@ -382,10 +383,7 @@ export const attachLocalSync = async <TSchema extends ObjectSchema<object>>(
         revision: () => stateRevision,
         subscribe: (listener: () => void) => {
           if (disposed) throw new LocalSyncError('disposed', 'Local sync has been disposed.');
-          stateListeners.add(listener);
-          return () => {
-            stateListeners.delete(listener);
-          };
+          return addListener(stateListeners, listener);
         },
       }),
       flush: async (): Promise<void> => {

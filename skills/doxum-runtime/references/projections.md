@@ -459,6 +459,28 @@ Rules:
 - the same definition cannot belong to two scopes;
 - `scope.items` has the same membership/readable semantics as `runtime.items` and ends with scope disposal.
 
+`scope.onDispose(cleanup)` and `runtime.onDispose(cleanup)` register synchronous LIFO
+callbacks; the returned function cancels that one registration without executing it.
+Runtime shutdown runs scope callbacks in reverse creation order, then root callbacks,
+while the graph remains readable. All callbacks finish before teardown. Scope-only
+disposal leaves root materialization alive. Read/Readable.current retain normal demand,
+lazy initialization, ownership and fault semantics during cleanup; commands, new
+subscriptions/resources and cleanup registrations are rejected. Connected document
+writes are locked. Cleanup does not flush projection notifications. Business writes
+belong before disposal. Existing source unsubscribe/processor release are teardown,
+not read-capable cleanup callbacks.
+
+All callbacks/releases are attempted even on failure; errors escape after terminal
+closure. `dispose` can be called repeatedly, after an earlier cleanup failure, or on a
+scope already ended by its parent. Unsubscribe and cleanup-registration cancellation
+are idempotent. Each subscription owns a distinct registration even if callbacks are
+identical; old unsubscribe functions cannot detach a newer registration. Normal reads,
+commands, resource creation and existing Readable access still throw after disposal.
+
+For React, use the managed `ProjectionProvider runtime={runtime}`; acquire the current
+scope with `useProjectionScope()`. Read [React ownership and SSR](integrations.md#projection-provider)
+before choosing managed versus externally owned Provider mode.
+
 ## Batching
 
 ```ts

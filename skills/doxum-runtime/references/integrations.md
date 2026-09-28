@@ -88,16 +88,47 @@ React consumes Doxum through `doxum/react` only. Do not duplicate Runtime subscr
 ### Projection provider
 
 ```tsx
-const runtime = useMemo(() => createProjectionRuntime({ onError: report }), []);
-
-return (
-  <ProjectionProvider value={runtime}>
-    <App />
-  </ProjectionProvider>
-);
+// runtime is created and disposed by the application/service outside rendering.
+function ApplicationView({ runtime }: { runtime: ProjectionRuntime }) {
+  return (
+    <ProjectionProvider runtime={runtime} fallback={null}>
+      <App />
+    </ProjectionProvider>
+  );
+}
 ```
 
-The provider accepts a root `ProjectionRuntime` or `ProjectionScope`. The component/service that creates it owns disposal. Do not create a new Runtime on every render.
+`runtime` mode owns a child scope, not the supplied Runtime. Scope acquisition happens
+after commit; first render and SSR show `fallback` (default `null`). Every Effect setup
+uses a fresh scope, including StrictMode replay. A runtime change replaces the scope
+and remounts the child subtree with fresh local definitions/state. Abandoned renders
+acquire no scope. Do not create a disposable scope or Runtime in `useMemo` and rely on
+an Effect to clean up that render-created resource.
+
+For synchronous SSR or externally owned lifetimes, inject the owner explicitly:
+`<ProjectionProvider value={runtimeOrScope}>`. This mode never disposes the supplied
+owner and takes no fallback. Never combine `runtime` and `value`.
+
+`useProjectionScope()` returns an existing context scope. It works inside a managed
+Provider or `value={scope}`, and throws for a missing Provider or `value={runtime}`.
+It does not accept a Runtime argument or allocate another scope. To declare local
+state, memoize a definition owned by the current scope, with the scope as a dependency:
+
+```tsx
+const scope = useProjectionScope();
+const mode = useMemo(() => scope.own(input('all')), [scope]);
+const [value, update] = useInput(mode);
+```
+
+A scope does not adopt root projections merely because a component reads them. Use
+`scope.onDispose` for synchronous finalization that needs projection reads; do not rely
+on React parent/child cleanup order. Cleanup may read and unsubscribe, but may not write,
+batch, subscribe or register more resources. Perform domain commands before disposal.
+Registration returns an idempotent cancellation function suitable for Effect cleanup.
+If work must run on scope shutdown, leave its registration active until that shutdown;
+cancelling it in an earlier component cleanup intentionally prevents it from running.
+Parent Runtime disposal ends its scopes; subsequent React cleanup and unsubscribe are
+safe no-ops. Ordinary reads after disposal still throw.
 
 ### Reading projections
 

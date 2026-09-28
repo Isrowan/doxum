@@ -32,6 +32,8 @@ import {
 } from 'doxum/local-sync';
 import {
   ProjectionProvider,
+  useProjectionScope,
+  type ProjectionProviderProps,
   useDocumentSelector,
   useHistory,
   useInput,
@@ -666,4 +668,33 @@ void [
   selectedItem,
   wrongGetValue,
   readonlySelection,
+];
+
+const cancelRuntimeCleanup: () => void = runtime.onDispose(() => runtime.read(count));
+const cancelScopeCleanup: () => void = scope.onDispose(() => scope.read(scoped));
+// @ts-expect-error disposal cleanup must be synchronous
+runtime.onDispose(async () => {});
+// @ts-expect-error scope cleanup must be synchronous
+scope.onDispose(() => Promise.resolve());
+const managedProvider: ProjectionProviderProps = { runtime, fallback: null };
+const borrowedProvider: ProjectionProviderProps = { value: scope };
+// @ts-expect-error managed and borrowed ownership are mutually exclusive
+const conflictingProvider: ProjectionProviderProps = { runtime, value: scope };
+// @ts-expect-error a scope cannot create another managed scope
+const scopeAsRuntime: ProjectionProviderProps = { runtime: scope };
+// @ts-expect-error no owner was supplied
+const missingOwner: ProjectionProviderProps = { children: null };
+// @ts-expect-error borrowed owners are synchronous and do not take a fallback
+const borrowedFallback: ProjectionProviderProps = { value: scope, fallback: null };
+// @ts-expect-error the hook consumes context; it does not create a scope
+useProjectionScope(runtime);
+void [
+  cancelRuntimeCleanup,
+  cancelScopeCleanup,
+  managedProvider,
+  borrowedProvider,
+  conflictingProvider,
+  scopeAsRuntime,
+  missingOwner,
+  borrowedFallback,
 ];

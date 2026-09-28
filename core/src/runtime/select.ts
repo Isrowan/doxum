@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import { createDependencyTracker } from '@/access/dependency';
 import type { Read } from '@/access/scope';
 import * as target from '@/impact/target';
@@ -58,7 +59,9 @@ export const select = <TSchema extends ObjectSchema<object>, TResult>(
   };
 
   const installSubscription = (): void => {
-    unsubscribeDocument?.();
+    const stop = unsubscribeDocument;
+    unsubscribeDocument = undefined;
+    stop?.();
     unsubscribeDocument =
       dependencies.length > 0
         ? context.notifications.subscribeTargets(dependencies, () => {
@@ -84,15 +87,24 @@ export const select = <TSchema extends ObjectSchema<object>, TResult>(
     },
     subscribe: (listener: () => void) => {
       ensureCurrent();
-      listeners.add(listener);
-      if (listeners.size === 1) installSubscription();
-      return () => {
-        listeners.delete(listener);
+      const unsubscribe = addListener(listeners, listener, () => {
         if (!listeners.size) {
-          unsubscribeDocument?.();
+          const stop = unsubscribeDocument;
           unsubscribeDocument = undefined;
+          stop?.();
         }
-      };
+      });
+      try {
+        if (listeners.size === 1) installSubscription();
+      } catch (error) {
+        try {
+          unsubscribe();
+        } catch {
+          /* Preserve subscription failure. */
+        }
+        throw error;
+      }
+      return unsubscribe;
     },
   });
 };

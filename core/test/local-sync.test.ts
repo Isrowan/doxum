@@ -326,6 +326,45 @@ describe('local sync', () => {
     leaderRuntime.dispose();
     followerRuntime.dispose();
   });
+  it('keeps state subscription registrations independent through repeated cleanup', async () => {
+    const document = runtime();
+    const sync = await attachLocalSync({
+      runtime: document,
+      database: database(),
+      documentId: 'unsubscribe',
+    });
+    let calls = 0;
+    const listener = () => {
+      calls++;
+    };
+    const old = sync.state.subscribe(listener);
+    old();
+    const current = sync.state.subscribe(listener);
+    old();
+    document.update(d => {
+      d.title = 'first-update';
+    });
+    await sync.flush();
+    expect(calls).toBe(1);
+    const duplicate = sync.state.subscribe(listener);
+    current();
+    current();
+    document.update(d => {
+      d.title = 'second-update';
+    });
+    await sync.flush();
+    expect(calls).toBe(2);
+    await sync.dispose();
+    expect(calls).toBe(3);
+    expect(() => {
+      old();
+      current();
+      duplicate();
+      duplicate();
+    }).not.toThrow();
+    document.dispose();
+  });
+
   it('keeps leader runtime writes synchronous and persists their commands in order', async () => {
     const name = database();
     const firstRuntime = runtime();

@@ -420,6 +420,7 @@ type ProjectionRuntime = {
   update<K,V,R>(input: CollectionInput<K,V>, run: (draft: CollectionInputDraft<K,V>) => Synchronous<R>): void;
   batch<T>(run: () => Synchronous<T>, options?: { cause?: unknown }): T;
   scope(): ProjectionScope;
+  onDispose<R>(cleanup: () => Synchronous<R>): Unsubscribe;
   dispose(): void;
 };
 
@@ -600,25 +601,36 @@ incremental.group(
 
 Every declared output must be returned from the static output tree exactly once.
 
+Runtime/scope `onDispose` registers synchronous, cancellable LIFO cleanup. Child scope
+callbacks precede parent Runtime callbacks; projections remain readable until all
+callbacks finish. Cleanup rejects commands/new registrations. Failures do not interrupt
+remaining teardown and are thrown only after closure. `dispose` and unsubscribe are
+idempotent; all normal projection access still throws after disposal. See
+[cleanup and scope ownership](projections.md#projectionscope).
+
 ## `doxum/react`
 
 ### Public symbol inventory
 
 <!-- exports:doxum/react:start -->
 
-| Public export         | Role                                               |
-| --------------------- | -------------------------------------------------- |
-| `ProjectionProvider`  | Provide a `ProjectionRuntime` or `ProjectionScope` |
-| `useDocumentSelector` | React adapter for Core document `select`           |
-| `useReadable`         | Subscribe to any Doxum `Readable`                  |
-| `useHistory`          | Read history state and expose undo/redo callbacks  |
-| `useProjection`       | Read projection or projection selector             |
-| `useInput`            | Read/update scalar or collection projection input  |
+| Public export             | Role                                                      |
+| ------------------------- | --------------------------------------------------------- |
+| `ProjectionProvider`      | Manage a scope from a Runtime or borrow an external owner |
+| `ProjectionProviderProps` | Mutually exclusive managed/borrowed Provider props        |
+| `useProjectionScope`      | Read the current scope from context; never allocate one   |
+| `useDocumentSelector`     | React adapter for Core document `select`                  |
+| `useReadable`             | Subscribe to any Doxum `Readable`                         |
+| `useHistory`              | Read history state and expose undo/redo callbacks         |
+| `useProjection`           | Read projection or projection selector                    |
+| `useInput`                | Read/update scalar or collection projection input         |
 
 <!-- exports:doxum/react:end -->
 
 ```ts
+<ProjectionProvider runtime={runtime} fallback={null}>...</ProjectionProvider>
 <ProjectionProvider value={runtimeOrScope}>...</ProjectionProvider>
+useProjectionScope(): ProjectionScope
 
 useProjection(projection): T
 useProjection(projection, selector, equality?): R
@@ -628,6 +640,13 @@ useDocumentSelector(document, selector, equality?): R
 useReadable(readable): T
 useHistory(history): HistoryState & { undo(): OperationResult<C>; redo(): OperationResult<C> }
 ```
+
+Managed `runtime` mode owns only a child scope, acquired after commit. Initial render
+and SSR use `fallback` (default `null`); StrictMode setup replay and runtime replacement
+create a fresh scope generation and remount its subtree. Borrowed `value` mode injects
+synchronously and never disposes the supplied owner. Use it for synchronous SSR with
+request-owned resources. `useProjectionScope()` requires a scope in context, including
+an explicitly injected scope; an injected root Runtime does not implicitly create one.
 
 ## `doxum/local-sync`
 

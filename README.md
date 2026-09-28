@@ -276,8 +276,8 @@ runtime.dispose();
 
 The stable vocabulary is `read` for a synchronous current value, `select` for a
 `Readable`, and `observe` for declaring a lazy source boundary. `ProjectionRuntime`
-exposes `read`, `select`, `items`, `update`, `batch`, `scope` and `dispose`.
-`ProjectionScope` mirrors `read`, `select`, `items`, `update`, `batch` and `dispose`, plus
+exposes `read`, `select`, `items`, `update`, `batch`, `scope`, `onDispose` and `dispose`.
+`ProjectionScope` mirrors `read`, `select`, `items`, `update`, `batch`, `onDispose` and `dispose`, plus
 `own(definitionOrTree)` for lifecycle ownership of lazy projection definitions.
 
 ### Commands inside a batch
@@ -638,7 +638,39 @@ values. Ordinary source resets preserve retained state when one exists. If a pro
 faults, the Runtime owns recovery, recreates declared state, and performs a reset
 evaluation. Stateless processors use the same recovery path without a state object.
 
+### Projection disposal
+
+`runtime.dispose()`, `scope.dispose()` and Doxum unsubscribe functions are idempotent.
+A parent Runtime ends its scopes, so later component cleanup can safely dispose them
+again. Every subscription registration is independent, including registrations with
+the same callback; an old unsubscribe cannot cancel a later subscription.
+
+`runtime.onDispose(cleanup)` / `scope.onDispose(cleanup)` register synchronous,
+cancellable callbacks. The returned function unregisters that callback without
+executing it. Owner callbacks run in LIFO order; Runtime shutdown runs child scope
+callbacks before its own while all projections remain readable. Cleanup may read
+current values and unsubscribe, but cannot update, batch, subscribe or register new
+resources. Perform domain writes before disposal. After callbacks, consumers and
+producers are released, then source connections; failures do not prevent remaining
+cleanup, and are thrown after disposal completes. Repeated disposal does not retry
+failed callbacks. Reads, commands and new subscriptions still throw after disposal.
+
 ### React
+
+```tsx
+// runtime is owned by the application/service; this Provider owns only its scope.
+<ProjectionProvider runtime={runtime} fallback={<span>Loading…</span>}>
+  <TaskList />
+</ProjectionProvider>
+```
+
+Managed Providers acquire a scope after commit and release it on cleanup. StrictMode
+setup replay creates a fresh scope; runtime replacement also remounts the scoped subtree.
+`useProjectionScope()` returns that scope for `scope.own(...)` and `scope.onDispose(...)`.
+The initial render and SSR render `fallback` (default `null`). For synchronous SSR or
+an externally managed lifetime, use `<ProjectionProvider value={runtimeOrScope}>`;
+this mode only injects the owner and never disposes it. The two modes are mutually
+exclusive. Do not create disposable scopes in `useMemo` or revive a disposed scope.
 
 ```ts
 const task = useProjection(tasks, tasks => tasks.get(taskId), equality);
@@ -648,8 +680,8 @@ const [selectedRows, updateSelectedRows] = useInput(selection);
 
 `useProjection(projection, selector, equality?)` uses the same keyed selector semantics
 as Core. `useInput` handles both scalar `Input<T>` and `CollectionInput<K,V>`; collection
-updates receive a keyed draft callback. `ProjectionProvider` accepts either a
-`ProjectionRuntime` or `ProjectionScope`.
+updates receive a keyed draft callback. Reading a root projection through a managed
+scope does not transfer its ownership; use `scope.own(...)` for local definitions.
 
 See [projection contracts](docs/projections.md).
 

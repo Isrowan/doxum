@@ -4,7 +4,10 @@ const expected = new Map([
   ['doxum', ['createDocument', 'createProjectionRuntime', 'derive', 'input', 'observe']],
   ['doxum/advanced', ['incremental']],
   ['doxum/local-sync', ['LocalSyncError', 'attachLocalSync']],
-  ['doxum/react', ['ProjectionProvider', 'useHistory', 'useInput', 'useProjection']],
+  [
+    'doxum/react',
+    ['ProjectionProvider', 'useHistory', 'useInput', 'useProjection', 'useProjectionScope'],
+  ],
 ]);
 
 const require = createRequire(import.meta.url);

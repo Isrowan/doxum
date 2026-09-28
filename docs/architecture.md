@@ -342,7 +342,7 @@ Local root reset is reversible. Remote commits invalidate local history.
 Projection definitions explicitly declare dependencies and are lazy. A single
 `ProjectionRuntime` owns materialization, processor closures, readable handles,
 batching, errors and disposal; there is no second Engine owner. Its public spine is
-`read`, `select`, `items`, overloaded `update`, `scope`, `batch` and `dispose`.
+`read`, `select`, `items`, overloaded `update`, `scope`, `batch`, `onDispose` and `dispose`.
 `projection/definition.ts` contains only opaque references, producer descriptions and
 ownership rules. `projection/input.ts` and `projection/observe.ts` build lazy source
 definitions; materialization and document Runtime lookup stay outside the definition
@@ -445,6 +445,37 @@ cannot be materialized by another scope or by the root, and root definitions can
 depend on scoped definitions. Root materialization seals a definition's root ownership;
 `scope.own` cannot reclassify it afterward. The root projection Runtime therefore does not
 depend on advanced factory implementations.
+The scheduler owns Runtime `active -> closing -> disposed` state and command/read
+admission. Each scope owns only its own status and resource membership. `cleanup.ts`
+owns cancellable owner-local LIFO callback stacks; it does not own another Runtime.
+The cleanup phase admits demand reads (including lazy materialization), but blocks
+commands and new public resource registrations. Nested computation restores its caller
+phase. Document guards are depth-balanced: newly registered connections inherit the
+current lock, and detaching a locked connection removes its lock before unregistering.
+This preserves cleanup's read-only window without leaving documents locked afterward.
+Runtime close drains all child callbacks (reverse scope creation), then root callbacks,
+before any scope/graph teardown. Standalone scope close drains only that scope. Teardown
+invalidates consumers first, releases processors in reverse registration/dependency
+order, and releases source connections last. Errors accumulate without preventing
+remaining cleanup; terminal state is installed before errors escape. Repeated dispose
+and late unsubscribe do no work, including after failed cleanup.
+
+`subscription.ts` owns unique callback registration identity and at-most-once removal
+for simple listener sets across projections, document selectors, history and local sync.
+It leaves notification order, snapshots and error reporting to those domain owners.
+Document impact subscriptions retain their existing independent indexed entry records.
+Source/selector connections clear their unsubscribe slot before invoking external cleanup.
+An old removal closure cannot cancel a later registration of the same callback.
+
+`react/projection.ts` owns React scope acquisition and context injection using public
+Core APIs. Managed `ProjectionProvider runtime={...}` acquires only in Effect setup,
+renders a fallback before acquisition (including SSR), and remounts each new scope
+generation. This handles StrictMode replay, abandoned render, runtime replacement and
+parent-first disposal without reviving Core owners or adding delayed release timers.
+Borrowed `value={runtimeOrScope}` injects synchronously with external lifecycle ownership.
+`useProjectionScope()` only resolves an existing context scope. React never owns a copy
+of the projection graph, and a Provider never disposes a supplied Runtime.
+
 Inputs are source producers. `source/input.ts` owns their latest accepted values and the internal `InputWrite` capability; `runtime.ts` resolves writes through existing materialization records. All public projection/readable reads request current output from the scheduler. There is no borrowed batch reader or separate public input read path.
 
 Scalar assignment and collection drafts validate equality against the latest accepted value and the notification baseline before installation, retaining equivalent references. Input advancement then uses `Object.is`; other boundaries retain their own equality policies. A draft stores final entries and final append order, not a per-write log. A failed edit installs nothing; callback failure still settles earlier successes.

@@ -1,3 +1,4 @@
+import { addListener } from './subscription';
 import type { ChangeSet, ChangeDirection } from './changes';
 import type {
   HistoryState,
@@ -104,10 +105,7 @@ export const createHistory = <TCommit>(input: {
     revision: () => revision,
     subscribe: listener => {
       if (disposed) throw new DocumentDisposedError();
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      return addListener(listeners, listener);
     },
     undo: () => {
       input.assertIdle();

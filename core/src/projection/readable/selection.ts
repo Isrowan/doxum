@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import { iterableMatchesArray } from '@/value/array';
 import type { Unsubscribe } from '@/runtime/contract';
 import {
@@ -102,7 +103,7 @@ export const createDirectReadable = <T>(source: ProjectionReadableSource<T>): Re
   Object.freeze({
     current: source.current,
     revision: source.revision,
-    subscribe: (listener: () => void) => source.subscribe(() => listener()),
+    subscribe: source.subscribe,
   });
 
 /** Consumer-side selector tracking; it never mutates processor dependencies. */
@@ -224,15 +225,24 @@ export const createSelectorReadable = <T, R>(
     },
     subscribe: (listener: () => void) => {
       ensureCurrent();
-      listeners.add(listener);
-      installSource();
-      return () => {
-        listeners.delete(listener);
-        if (!listeners.size && unsubscribeSource) {
-          unsubscribeSource();
+      const unsubscribe = addListener(listeners, listener, () => {
+        if (!listeners.size) {
+          const stop = unsubscribeSource;
           unsubscribeSource = undefined;
+          stop?.();
         }
-      };
+      });
+      try {
+        installSource();
+      } catch (error) {
+        try {
+          unsubscribe();
+        } catch {
+          /* Preserve subscription failure. */
+        }
+        throw error;
+      }
+      return unsubscribe;
     },
   });
 };

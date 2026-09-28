@@ -59,11 +59,12 @@ export type ProcessorRecord = ProducerBase & {
 export type ProducerRecord = SourceBoundaryRecord | ProcessorRecord;
 
 export const createScheduler = (onError: (error: ProjectionError) => void) => {
-  let disposed = false;
+  let lifecycle: 'active' | 'closing' | 'disposed' = 'active';
+  let lockDepth = 0;
   let depth = 0;
   let batchSequence = 0;
   let activeBatch: BatchContext | undefined;
-  let phase: 'idle' | 'input' | 'compute' | 'notify' = 'idle';
+  let phase: 'idle' | 'input' | 'compute' | 'notify' | 'cleanup' | 'release' = 'idle';
   let sequence = 0;
   const sources = new Set<SourceBoundaryRecord>();
   const processors = new Set<ProcessorRecord>();
@@ -78,16 +79,43 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   const guards = new Set<(locked: boolean) => void>();
 
   const assertActive = () => {
-    if (disposed) throw new ProjectionDisposedError();
+    if (lifecycle === 'disposed' || phase === 'release') throw new ProjectionDisposedError();
   };
   const assertIdle = () => {
     assertActive();
-    if (phase !== 'idle')
+    if (phase !== 'idle' && phase !== 'cleanup')
       throw new Error(
         'Projection cannot be re-entered during input callbacks, processing or notification.'
       );
   };
-  const lock = (value: boolean) => guards.forEach(guard => guard(value));
+  const assertCommand = () => {
+    assertActive();
+    if (lifecycle === 'closing' || phase === 'cleanup')
+      throw new Error('Projection cleanup only permits reads and unsubscribe.');
+    assertIdle();
+  };
+  const lock = (value: boolean) => {
+    const previous = lockDepth;
+    lockDepth += value ? 1 : -1;
+    if (!previous || !lockDepth) guards.forEach(guard => guard(value));
+  };
+  const beginClose = (): boolean => {
+    if (lifecycle !== 'active') return false;
+    assertCommand();
+    lifecycle = 'closing';
+    return true;
+  };
+  const withPhase = <T>(next: 'compute' | 'cleanup' | 'release', run: () => T): T => {
+    const previous = phase;
+    phase = next;
+    lock(true);
+    try {
+      return run();
+    } finally {
+      lock(false);
+      phase = previous;
+    }
+  };
 
   const markDirty = (producer: ProducerRecord): void => {
     const pending = [producer];
@@ -112,7 +140,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   ) => new ProjectionError(kind, cause);
 
   const capture = (source: SourceBoundaryRecord) => {
-    if (disposed) return;
+    if (lifecycle === 'disposed') return;
     if (phase !== 'idle') {
       source.fault = errorFor(
         source,
@@ -259,18 +287,9 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     }
   };
 
-  const compute = <T>(run: () => T): T => {
-    phase = 'compute';
-    lock(true);
-    try {
-      return run();
-    } finally {
-      lock(false);
-      phase = 'idle';
-    }
-  };
+  const compute = <T>(run: () => T): T => withPhase('compute', run);
   const settle = () => {
-    if (disposed || depth || phase !== 'idle') return;
+    if (lifecycle !== 'active' || depth || phase !== 'idle') return;
     const cause = settleCause();
     compute(() => {
       for (const producer of dirty) advance(producer, cause);
@@ -289,7 +308,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   };
 
   const flush = (): readonly ObserverError[] => {
-    if (disposed || depth) return [];
+    if (lifecycle !== 'active' || depth || phase === 'cleanup' || phase === 'release') return [];
     if (emissions.size || completed.size) profile.projection('flushes');
     phase = 'notify';
     lock(true);
@@ -348,7 +367,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   };
 
   const batch = <T>(callback: () => T, options?: BatchOptions): T => {
-    assertIdle();
+    assertCommand();
     const outer = depth === 0;
     if (outer)
       activeBatch = Object.freeze({
@@ -383,7 +402,8 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   };
 
   const releaseProducer = (producer: ProducerRecord) => {
-    assertIdle();
+    if (producer.disposed) return;
+    if (phase !== 'release') assertIdle();
     if (producer.outputs.some(output => output.hasConsumers()))
       throw new Error('Projection producer is still used by another processor.');
     producer.disposed = true;
@@ -415,6 +435,16 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
   return {
     assertActive,
     assertIdle,
+    assertCommand,
+    beginClose,
+    cleanup<T>(run: () => T): T {
+      assertIdle();
+      return withPhase('cleanup', run);
+    },
+    releaseOwned<T>(run: () => T): T {
+      assertIdle();
+      return withPhase('release', run);
+    },
     capture,
     settle,
     ensureCurrent,
@@ -423,15 +453,17 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     registerGuard(guard: (locked: boolean) => void): Unsubscribe {
       assertActive();
       guards.add(guard);
+      if (lockDepth) guard(true);
       let registered = true;
       return () => {
         if (!registered) return;
         registered = false;
         guards.delete(guard);
+        if (lockDepth) guard(false);
       };
     },
     get active() {
-      return !disposed;
+      return lifecycle !== 'disposed' && phase !== 'release';
     },
     addSource(source: SourceBoundaryRecord) {
       assertIdle();
@@ -445,7 +477,7 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     releaseProducer,
     nextId: () => sequence++,
     acceptInput<T>(callback: () => T): T {
-      assertIdle();
+      assertCommand();
       phase = 'input';
       lock(true);
       try {
@@ -461,38 +493,42 @@ export const createScheduler = (onError: (error: ProjectionError) => void) => {
     },
     batch,
     batchContext: () => activeBatch,
-    dispose() {
-      if (disposed) return;
-      assertIdle();
-      disposed = true;
+    dispose(releaseConsumers: () => void, releaseSources: () => void) {
+      if (lifecycle === 'disposed') return;
+      if (lifecycle === 'active') beginClose();
       const failures: unknown[] = [];
-      processors.forEach(processor => {
-        processor.disposed = true;
+      const attempt = (run: () => void) => {
         try {
-          processor.release();
+          run();
         } catch (error) {
           failures.push(error);
         }
-      });
-      sources.forEach(source => {
-        source.disposed = true;
-        try {
-          source.release();
-        } catch (error) {
-          failures.push(error);
-        }
-      });
-      processors.clear();
-      sources.clear();
-      pendingSources.clear();
-      dirty.clear();
-      queued.clear();
-      completed.clear();
-      emissions.clear();
-      forced.clear();
-      guards.clear();
-      errors.length = 0;
-      reportingFailures = [];
+      };
+      try {
+        withPhase('release', () => {
+          attempt(releaseConsumers);
+          // Dependencies are registered before consumers during materialization.
+          // Reverse registration releases dependents before their dependencies.
+          for (const processor of [...processors].reverse())
+            attempt(() => releaseProducer(processor));
+          for (const source of [...sources].reverse()) attempt(() => releaseProducer(source));
+          attempt(releaseSources);
+        });
+      } finally {
+        lifecycle = 'disposed';
+        processors.clear();
+        sources.clear();
+        pendingSources.clear();
+        dirty.clear();
+        queued.clear();
+        completed.clear();
+        emissions.clear();
+        forced.clear();
+        guards.clear();
+        errors.length = 0;
+        reportingFailures = [];
+      }
+      if (failures.length === 1) throw failures[0];
       if (failures.length) throw new AggregateError(failures, 'Projection cleanup failed.');
     },
   };

@@ -200,3 +200,7 @@ export const portableSingletonPreview = derive.keyed.singleton(
 );
 export const portableScalarSingleton = derive.keyed.singleton(portableOptional, () => 'optional');
 export const portableConstantSingleton = derive.keyed.singleton({}, () => ['constant', 1]);
+
+export const portableProjectionRuntime = createProjectionRuntime();
+export const portableProjectionScope = portableProjectionRuntime.scope();
+export const portableCancelCleanup = portableProjectionScope.onDispose(() => undefined);

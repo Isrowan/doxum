@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import type { Readable } from '@/readable';
 import type { Unsubscribe } from '@/runtime/contract';
 import { ProjectionDisposedError, type CollectionChange } from '@/projection/contract';
@@ -29,7 +30,8 @@ type ItemState<K extends string, V> = {
 /** Runtime-owned keyed consumer family over one materialized collection output. */
 export const createProjectionItems = <K extends string, V>(
   source: ProjectionReadableSource<ReadonlyMap<K, V>>,
-  checkOwner: () => void
+  checkOwner: () => void,
+  checkSubscription: () => void
 ): ProjectionItemsController<K, V> => {
   if (source.kind !== 'collection')
     throw new TypeError('Projection items require a keyed collection projection.');
@@ -178,12 +180,12 @@ export const createProjectionItems = <K extends string, V>(
       subscribe: (listener: () => void): Unsubscribe => {
         check();
         ensureObserved();
-        state.listeners.add(listener);
-        if (!state.tracked && !state.ended) registerWaiting(state);
-        return () => {
-          state.listeners.delete(listener);
+        checkSubscription();
+        const unsubscribe = addListener(state.listeners, listener, () => {
           if (!state.listeners.size && !state.tracked) unregisterWaiting(state);
-        };
+        });
+        if (!state.tracked && !state.ended) registerWaiting(state);
+        return unsubscribe;
       },
     });
     return state;
@@ -251,8 +253,8 @@ export const createProjectionItems = <K extends string, V>(
     },
     subscribe: listener => {
       check();
-      keyListeners.add(listener);
-      return () => keyListeners.delete(listener);
+      checkSubscription();
+      return addListener(keyListeners, listener);
     },
   });
 
@@ -260,6 +262,7 @@ export const createProjectionItems = <K extends string, V>(
     keys,
     get: (key: K) => {
       check();
+      checkSubscription();
       const current = source.current();
       if (source.revision() !== settledRevision) pendingKeys.add(key);
       const canonical = active.get(key);

@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import { profile } from '@/profile';
 import type { ValueContext } from '@/projection/contract';
 import {
@@ -142,8 +143,7 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
     },
     observe: listener => {
       binding.check();
-      observers.add(listener);
-      return () => observers.delete(listener);
+      return addListener(observers, listener);
     },
     hasConsumers: () => consumers.size > 0,
     forEachConsumer: run => consumers.forEach((_revision, consumer) => run(consumer)),
@@ -169,8 +169,7 @@ export const createValueOutput = <T>(binding: ValueOutputBinding): ValueOutputSt
     },
     subscribe: listener => {
       binding.check();
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      return addListener(listeners, listener);
     },
   };
 };

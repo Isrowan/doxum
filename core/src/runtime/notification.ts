@@ -69,6 +69,7 @@ const addRoot = <TSchema extends ObjectSchema<object>>(
   const entry: RootEntry<TSchema> = { listener, active: true };
   notification.root.add(entry);
   return () => {
+    if (!entry.active) return;
     entry.active = false;
     if (!notification.notifying) notification.root.delete(entry);
     else

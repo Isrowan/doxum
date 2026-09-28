@@ -393,6 +393,7 @@ Stable verbs:
 | `update(collectionInput, draft => ...)`    | Atomically edit keyed Runtime-local state.                    |
 | `batch(run, options?)`                     | Defer notifications; reads may advance demanded computations. |
 | `scope()`                                  | Create a local projection lifetime.                           |
+| `onDispose(cleanup)`                       | Register a synchronous LIFO cleanup; returns cancellation.    |
 | `dispose()`                                | Release Runtime-owned materialization and attachments.        |
 
 A Runtime batch does not delay document commits or document listeners. Projection
@@ -494,6 +495,51 @@ advanced definitions use that same ownership protocol. Scoped definitions may de
 root definitions; root or sibling scopes cannot depend on a scoped definition. One
 definition can belong to only one scope, and ownership must be assigned before the
 definition is first materialized as a root.
+
+## Cleanup and disposal
+
+Runtime and scope `dispose()` are idempotent, including after a previous disposal
+reported cleanup failures. Parent Runtime disposal closes every child scope; a later
+React cleanup may safely call `scope.dispose()` or unsubscribe again. Calling disposal
+for the first time during input/processor callbacks or notification remains illegal.
+
+```ts
+const cancel = scope.onDispose(() => {
+  const lastSelection = scope.read(selection);
+  releaseExternalResource(lastSelection);
+});
+// cancel() unregisters this callback without running it.
+```
+
+`onDispose<R>(cleanup: () => Synchronous<R>): () => void` is available on both owners.
+Each registration is independent. Callbacks run once, in LIFO order within their owner;
+a Runtime runs scopes in reverse creation order, then its own callbacks. All callbacks
+finish before graph teardown starts. A standalone scope runs only its own callbacks.
+Callbacks can cancel not-yet-run registrations and repeat disposal of an already-closing
+owner. They cannot begin another owner's shutdown during this read-only window.
+
+Cleanup is synchronous and read-only: `read`, existing `Readable.current/revision`,
+collection view reads and unsubscribe remain available. Reads preserve normal lazy
+materialization, demand advancement, ownership and fault checks. Updates, batches,
+new scope/selection/items handles, subscriptions, `own` and new cleanup registration
+are rejected. Connected document writes remain locked, including documents first
+connected by a lazy cleanup read. Cleanup does not flush projection notifications.
+Perform domain commands before starting disposal; asynchronous work cannot extend the
+projection lifetime.
+
+Teardown first ends owned consumers, then releases processors in reverse dependency
+order and source producers/connections. Internal producer release and external source
+unsubscribe are teardown, not read-capable user cleanup. They cannot re-enter public
+projection operations. Callbacks and teardown are attempted exhaustively: one failure
+is rethrown unchanged, multiple failures are aggregated after the owner is fully closed.
+Disposed owners reject normal reads/commands/resource creation. Existing Readables and
+owner-checked collection views remain subject to disposal checks; there are no fallback
+values and disposed owners are never revived.
+
+All Doxum unsubscribe functions end one registration at most once, even after owner
+disposal or a release failure. Registering the same listener twice creates independent
+registrations; an old unsubscribe cannot remove a subsequent subscription. Delivery
+still follows each notification owner's existing snapshot/error-isolation policy.
 
 ## Collection values and changes
 
@@ -677,7 +723,7 @@ path without a state object. There is no public rebuild token or manual recovery
 doxum/react consumes only public Core capabilities:
 
 ```tsx
-<ProjectionProvider value={runtime}>
+<ProjectionProvider runtime={runtime} fallback={null}>
   <TaskList />
 </ProjectionProvider>;
 
@@ -688,7 +734,38 @@ function TaskList() {
 }
 ```
 
-ProjectionProvider accepts ProjectionRuntime or ProjectionScope.
+`ProjectionProvider` has two mutually exclusive ownership modes:
+
+- `runtime={runtime}` creates a scope after commit, disposes that scope on cleanup, and
+  leaves the supplied Runtime alive. The first render and SSR return `fallback`
+  (default `null`); server rendering and abandoned renders acquire no scope. Each
+  Effect setup creates a fresh scope, so StrictMode replay never reuses a disposed one.
+  Runtime replacement remounts the scoped subtree with new local definitions/state.
+- `value={runtimeOrScope}` synchronously injects an externally owned Runtime or scope;
+  the Provider never disposes it. Use this for synchronous SSR with request-owned
+  resources, or an application-managed scope. It does not accept `fallback`.
+
+`useProjectionScope()` returns the context's scope (managed or explicitly injected).
+It throws outside a scope Provider, including when `value` is a root Runtime; it never
+implicitly allocates a scope. A managed Provider does not own the supplied Runtime and
+does not adopt root definitions merely because children read them. Assign local
+ownership explicitly before materialization:
+
+```tsx
+function LocalPanel() {
+  const scope = useProjectionScope();
+  const mode = useMemo(() => scope.own(input('all')), [scope]);
+  const [value, update] = useInput(mode);
+  // ...
+}
+```
+
+Use `scope.onDispose` for read-capable finalization, rather than assuming a particular
+parent/child React Effect cleanup order. Ordinary Effect cleanup can cancel registrations
+and unsubscribe after the parent Runtime is already disposed. Do not manually combine
+`useMemo(() => runtime.scope())` with `useEffect(scope.dispose)`, defer destruction with
+a timer, or resurrect disposed scopes. If a subtree must server-render synchronously,
+provide an external owner rather than expecting managed Effect acquisition on the server.
 useProjection(projection, selector, equality?) uses Core keyed selector tracking.
 useInput overloads scalar and collection inputs. Collection updates receive a
 CollectionInputDraft.

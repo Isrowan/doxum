@@ -71,6 +71,19 @@ This file is maintainer-only. Application/library consumers should use [Public A
    Sorting changed keys is internal lookup work, never formal order. Count node
    allocations and sorting separately from selector calls; this is not an O(delta)
    guarantee for all collection maintenance.
+   Scheduler owns Runtime active/closing/disposed state and cleanup/read/command
+   admission; scope owns only its status and local resource membership. Cleanup stacks
+   are cancellable and LIFO, child callbacks precede parent callbacks, and graph teardown
+   starts only after all callbacks. Cleanup permits demanded/lazy reads but no new public
+   resources or writes. Restore the caller phase after nested computation and balance
+   document locks for connections registered/detached while a lock is held. Release
+   dependents before dependencies; close all resources even after failures. Disposed
+   reads still throw; only repeated dispose/unsubscribe/cancellation are no-ops.
+   Simple listener sets share subscription.ts registration identity/removal semantics;
+   notification snapshot order/error policy remains with each notification owner.
+   React managed scope acquisition happens after commit, never in render/useMemo;
+   borrowed owner injection never takes disposal ownership. Fresh Effect setups own
+   fresh scopes/subtrees. Keep the managed first-render/SSR fallback explicit.
 10. Local sync uses Web Lock leadership and contiguous durable sequence. Writes precede
     asynchronous persistence. Version 5 / format 3 rejects old databases without editing
     them. External replace and remote apply are prohibited while attached.

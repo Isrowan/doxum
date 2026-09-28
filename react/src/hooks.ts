@@ -1,3 +1,4 @@
+import { ProjectionContext } from './projection';
 import type {
   ReadonlyDocument,
   ObjectSchema,
@@ -6,18 +7,13 @@ import type {
   LocalHistory,
   OperationResult,
   Readable,
-  ProjectionRuntime,
-  ProjectionScope,
   Projection,
   Input,
   CollectionInput,
   CollectionInputDraft,
 } from 'doxum';
 import { select } from 'doxum';
-import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react';
-
-const ProjectionContext = createContext<ProjectionRuntime | ProjectionScope | undefined>(undefined);
-export const ProjectionProvider = ProjectionContext.Provider;
+import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react';
 
 export function useProjection<T>(projection: Projection<T>): T;
 export function useProjection<T, R>(

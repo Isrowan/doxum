@@ -1,3 +1,4 @@
+import { addListener } from '@/subscription';
 import { createCollectionChanges } from '@/projection/collection/changes';
 import { profile } from '@/profile';
 import { createCollectionChange } from '@/projection/collection/change';
@@ -270,8 +271,7 @@ export const createCollectionOutput = <K extends string, V>(
     },
     observe: listener => {
       binding.check();
-      observers.add(listener);
-      return () => observers.delete(listener);
+      return addListener(observers, listener);
     },
     hasConsumers: () => consumers.size > 0,
     forEachConsumer: run => consumers.forEach((_pending, consumer) => run(consumer)),
@@ -303,8 +303,7 @@ export const createCollectionOutput = <K extends string, V>(
     },
     subscribe: listener => {
       binding.check();
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      return addListener(listeners, listener);
     },
   };
 };

@@ -1,3 +1,4 @@
+import { createCleanupStack } from './cleanup';
 import type { Synchronous, Unsubscribe } from '@/runtime/contract';
 import { collectionView, mapRead, snapshotCollectionView } from '@/projection/collection/view';
 import type { CollectionRead } from './contract';
@@ -52,6 +53,7 @@ export type ProjectionRuntime = {
   ): void;
   batch<T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T;
   scope(): ProjectionScope;
+  onDispose<R>(cleanup: () => Synchronous<R>): Unsubscribe;
   dispose(): void;
 };
 
@@ -76,6 +78,7 @@ export type ProjectionScope = {
     run: (draft: CollectionInputDraft<K, V>) => Synchronous<R>
   ): void;
   batch<T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T;
+  onDispose<R>(cleanup: () => Synchronous<R>): Unsubscribe;
   dispose(): void;
 };
 
@@ -86,7 +89,8 @@ type MaterializedProducer = {
 };
 
 type ScopeState = {
-  active: boolean;
+  status: 'active' | 'closing' | 'disposed';
+  readonly cleanups: ReturnType<typeof createCleanupStack>;
   readonly materialized: ProducerDefinition[];
   readonly subscriptions: Set<Unsubscribe>;
   readonly items: Map<OutputRecord, ProjectionItemsController<string, unknown>>;
@@ -103,6 +107,7 @@ export const createProjectionRuntime = (options?: {
     { readonly revision: number; readonly value: ReadonlyMap<string, unknown> }
   >();
   const scopes = new Set<ScopeState>();
+  const cleanups = createCleanupStack();
   const rootItems = new Map<OutputRecord, ProjectionItemsController<string, unknown>>();
 
   const disposeItemControllers = (
@@ -143,7 +148,7 @@ export const createProjectionRuntime = (options?: {
     const owner = definition.owner;
     if (owner === undefined) return;
     if (owner !== requester) throw new TypeError('Projection belongs to another scope.');
-    if (!requester?.active) throw new ProjectionDisposedError();
+    if (requester?.status === 'disposed') throw new ProjectionDisposedError();
   };
 
   const rememberScoped = (
@@ -244,8 +249,14 @@ export const createProjectionRuntime = (options?: {
         assertOutput(output);
         return output.revision();
       },
-      subscribe: output.subscribe,
-      observe: output.observe,
+      subscribe: listener => {
+        scheduler.assertCommand();
+        return output.subscribe(listener);
+      },
+      observe: listener => {
+        scheduler.assertCommand();
+        return output.observe(listener);
+      },
     });
   };
 
@@ -253,6 +264,7 @@ export const createProjectionRuntime = (options?: {
     projection: KeyedProjection<K, V>,
     requester?: ScopeState
   ): ProjectionItems<K, V> => {
+    scheduler.assertCommand();
     const output = resolveOutput(projection as Projection<unknown>, requester);
     if (output.kind !== 'collection')
       throw new TypeError('Projection items require a keyed collection projection.');
@@ -262,10 +274,11 @@ export const createProjectionRuntime = (options?: {
     const controller = createProjectionItems(
       readableSource(projection as Projection<ReadonlyMap<K, V>>, requester),
       () => {
-        if (requester && !requester.active) throw new ProjectionDisposedError();
+        if (requester?.status === 'disposed') throw new ProjectionDisposedError();
         scheduler.ensureCurrent(output);
         assertOutput(output);
-      }
+      },
+      scheduler.assertCommand
     );
     registry.set(output, controller as unknown as ProjectionItemsController<string, unknown>);
     return controller.items;
@@ -277,6 +290,7 @@ export const createProjectionRuntime = (options?: {
     equality?: (previous: R, next: R) => boolean,
     requester?: ScopeState
   ): Readable<T | R> => {
+    scheduler.assertCommand();
     const source = readableSource(projection, requester);
     return selector
       ? createSelectorReadable(source, selector, equality)
@@ -298,8 +312,8 @@ export const createProjectionRuntime = (options?: {
   }
 
   const inputAccess = (target: Projection<unknown>, requester?: ScopeState): InputWrite => {
-    scheduler.assertIdle();
-    if (requester && !requester.active) throw new ProjectionDisposedError();
+    scheduler.assertCommand();
+    if (requester?.status === 'disposed') throw new ProjectionDisposedError();
     const ref = projectionRef(target);
     if (ref.output !== 0 || ref.producer.kind !== 'source')
       throw new TypeError('Projection is not an input.');
@@ -340,11 +354,9 @@ export const createProjectionRuntime = (options?: {
   const batch = <T>(run: () => Synchronous<T>, options?: { readonly cause?: unknown }): T =>
     scheduler.batch(run, options);
 
-  const disposeScope = (state: ScopeState): void => {
-    if (!state.active) return;
-    scheduler.assertIdle();
-    state.active = false;
-    const failures: unknown[] = [];
+  const releaseScope = (state: ScopeState, failures: unknown[]): void => {
+    state.status = 'disposed';
+    scopes.delete(state);
     disposeScopeConsumers(state, failures);
     for (let index = state.materialized.length - 1; index >= 0; index--) {
       const definition = state.materialized[index];
@@ -359,14 +371,28 @@ export const createProjectionRuntime = (options?: {
       }
     }
     state.materialized.length = 0;
-    scopes.delete(state);
+  };
+
+  const disposeScope = (state: ScopeState): void => {
+    if (state.status !== 'active') return;
+    scheduler.assertCommand();
+    state.status = 'closing';
+    const failures: unknown[] = [];
+    try {
+      scheduler.cleanup(() => state.cleanups.drain(failures));
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      scheduler.releaseOwned(() => releaseScope(state, failures));
+    }
     throwCleanupFailures(failures, 'Projection scope cleanup failed.');
   };
 
   const createScope = (): ProjectionScope => {
-    scheduler.assertIdle();
+    scheduler.assertCommand();
     const state: ScopeState = {
-      active: true,
+      status: 'active',
+      cleanups: createCleanupStack(),
       materialized: [],
       subscriptions: new Set(),
       items: new Map(),
@@ -374,13 +400,14 @@ export const createProjectionRuntime = (options?: {
     scopes.add(state);
 
     const assertActive = () => {
-      if (!state.active) throw new ProjectionDisposedError();
+      if (state.status === 'disposed') throw new ProjectionDisposedError();
       scheduler.assertActive();
     };
     function own<P extends Projection<unknown>>(projection: P): P;
     function own<T extends ProjectionOwnershipTree>(tree: T): T;
     function own<T extends Projection<unknown> | ProjectionOwnershipTree>(target: T): T {
       assertActive();
+      scheduler.assertCommand();
       const projections: Projection<unknown>[] = [];
       const collect = (value: Projection<unknown> | ProjectionOwnershipTree): void => {
         if (isProjection(value)) {
@@ -474,6 +501,11 @@ export const createProjectionRuntime = (options?: {
       },
       update: scopeUpdate,
       batch: scopeBatch,
+      onDispose: callback => {
+        assertActive();
+        scheduler.assertCommand();
+        return state.cleanups.add(callback);
+      },
       dispose: () => disposeScope(state),
     });
   };
@@ -485,24 +517,33 @@ export const createProjectionRuntime = (options?: {
     update,
     batch,
     scope: createScope,
+    onDispose: callback => {
+      scheduler.assertCommand();
+      return cleanups.add(callback);
+    },
     dispose: () => {
-      if (!scheduler.active) return;
-      scheduler.assertIdle();
+      if (!scheduler.beginClose()) return;
       const failures: unknown[] = [];
-      for (const scope of scopes) {
-        scope.active = false;
-        disposeScopeConsumers(scope, failures);
-        scope.materialized.length = 0;
-      }
-      scopes.clear();
-      disposeItemControllers(rootItems, failures);
+      const owned = [...scopes].reverse();
+      for (const scope of owned) scope.status = 'closing';
       try {
-        sources.dispose();
+        scheduler.cleanup(() => {
+          for (const scope of owned) scope.cleanups.drain(failures);
+          cleanups.drain(failures);
+        });
       } catch (error) {
         failures.push(error);
       }
       try {
-        scheduler.dispose();
+        scheduler.dispose(() => {
+          for (const scope of owned) {
+            scope.status = 'disposed';
+            scope.materialized.length = 0;
+            disposeScopeConsumers(scope, failures);
+          }
+          scopes.clear();
+          disposeItemControllers(rootItems, failures);
+        }, sources.dispose);
       } catch (error) {
         failures.push(error);
       }
